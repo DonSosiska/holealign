@@ -1,0 +1,4 @@
+nf_tables 282624 412 nft_compat,nft_chain_nat, Live 0xffffffffc0a40000
+nft_compat 20480 2 - Live 0xffffffffc0a00000
+overlay 176128 3 - Live 0xffffffffc09b0000
+veth 49152 0 - Live 0xffffffffc0990000
