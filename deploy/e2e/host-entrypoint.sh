@@ -12,11 +12,13 @@ if [ -n "${SSHD_EXTRA:-}" ]; then
 fi
 
 labels=$(printf '%s' "$HOST_LABELS" | sed 's/,/, /g')
+umask 077
 cat > /etc/panoptes/agent.yaml <<YAML
 server_url: ${PANOPTES_SERVER_URL}
 enroll_token: "${PANOPTES_ENROLL_TOKEN}"
 labels: [${labels}]
 state_dir: /var/lib/panoptes-agent
+allow_insecure_http: true   # test network only; production requires https
 YAML
 
 sshd -T >/dev/null  # fail early if sshd_config is broken
