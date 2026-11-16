@@ -3,6 +3,7 @@ module panoptes
 go 1.27.1
 
 require (
+	cel.dev/cel-go v0.33.2
 	github.com/anchore/syft v1.57.1
 	golang.org/x/sys v0.50.0
 	gopkg.in/yaml.v3 v3.0.1
@@ -53,6 +54,7 @@ require (
 	github.com/anchore/packageurl-go v0.2.0 // indirect
 	github.com/anchore/stereoscope v0.4.1 // indirect
 	github.com/andybalholm/brotli v1.2.8 // indirect
+	github.com/antlr4-go/antlr/v4 v4.13.1 // indirect
 	github.com/apparentlymart/go-textseg/v15 v15.0.0 // indirect
 	github.com/apparentlymart/go-textseg/v17 v17.0.1 // indirect
 	github.com/aquasecurity/go-pep440-version v0.0.1 // indirect
