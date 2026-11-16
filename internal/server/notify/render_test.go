@@ -216,9 +216,9 @@ func TestRenderOmitsUnsafeLink(t *testing.T) {
 }
 
 func TestRenderSummaryCapsLines(t *testing.T) {
-	var rest []model.Event
+	var rest []group
 	for i := range 55 {
-		rest = append(rest, testEvent(model.EventExploitable, fmt.Sprintf("CVE-%d", i), "web01"))
+		rest = append(rest, group{evs: []model.Event{testEvent(model.EventExploitable, fmt.Sprintf("CVE-%d", i), "web01")}})
 	}
 	m := renderSummary(rest, "https://panoptes.example/findings")
 	if !strings.HasPrefix(m.Body, "…and 55 more findings\n") {
@@ -240,7 +240,7 @@ func TestRenderSummaryCapsLines(t *testing.T) {
 }
 
 func TestRenderSummaryEscapesHost(t *testing.T) {
-	rest := []model.Event{testEvent(model.EventExploitable, "CVE-1", "<script>x</script>")}
+	rest := []group{{evs: []model.Event{testEvent(model.EventExploitable, "CVE-1", "<script>x</script>")}}}
 	m := renderSummary(rest, "")
 	if strings.Contains(m.FormattedBody, "<script>") {
 		t.Errorf("summary not escaped: %s", m.FormattedBody)

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"html"
 	"net/url"
+	"slices"
 	"strings"
 
 	"panoptes/internal/model"
@@ -27,41 +28,75 @@ func (l *lineSet) render() (string, string) {
 // esc HTML-escapes a value that comes from a host, finding or rule.
 func esc(s string) string { return html.EscapeString(s) }
 
-// renderEvent returns the plain-text body and the HTML formatted_body for an event.
+// renderEvent renders a single event; it is renderGroup of one.
 func renderEvent(ev model.Event) (plain, formatted string) {
-	f := ev.Finding
-	host := ev.Host.Hostname
+	return renderGroup([]model.Event{ev})
+}
+
+// distinct returns the non-empty values of vals in first-seen order without duplicates.
+func distinct(vals []string) []string {
+	var out []string
+	for _, v := range vals {
+		if v != "" && !slices.Contains(out, v) {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// renderGroup returns the plain-text body and the HTML formatted_body for a group of events
+// that share kind, host, vulnerability and target. Values are merged as described in the
+// package documentation: packages listed, severity maxima, deduplicated reasons and fixes.
+func renderGroup(evs []model.Event) (string, string) {
+	g := group{evs: evs}
+	first := g.first()
+	f := first.Finding
+	host := first.Host.Hostname
 	var l lineSet
 
-	switch ev.Kind {
-	case model.EventResolved:
+	if first.Kind == model.EventResolved {
+		var plain, h []string
+		for _, ev := range evs {
+			p := ev.Finding.PackageName + " " + ev.Finding.PackageVer + ": now " + string(ev.Finding.Verdict)
+			plain = append(plain, p)
+			h = append(h, esc(ev.Finding.PackageName)+" "+esc(ev.Finding.PackageVer)+": now "+esc(string(ev.Finding.Verdict)))
+		}
 		l.add("✅ RESOLVED: "+f.VulnID+" on "+host,
 			"✅ <b>RESOLVED: "+esc(f.VulnID)+" on "+esc(host)+"</b>")
-		l.add(f.PackageName+" "+f.PackageVer+": now "+string(f.Verdict),
-			esc(f.PackageName)+" "+esc(f.PackageVer)+": now "+esc(string(f.Verdict)))
+		l.add(strings.Join(distinct(plain), "; "), strings.Join(distinct(h), "; "))
 		return l.render()
+	}
 
+	switch first.Kind {
 	case model.EventUnknownCritical:
 		l.add("🟠 CHECK: "+f.VulnID+" on "+host,
 			"🟠 <b>CHECK: "+esc(f.VulnID)+" on "+esc(host)+"</b>")
-
 	case model.EventExploitable:
 		l.add("🔴 EXPLOITABLE: "+f.VulnID+" on "+host,
 			"🔴 <b>EXPLOITABLE: "+esc(f.VulnID)+" on "+esc(host)+"</b>")
-
 	default:
-		l.add("ℹ️ "+string(ev.Kind)+": "+f.VulnID+" on "+host,
-			"ℹ️ <b>"+esc(string(ev.Kind))+": "+esc(f.VulnID)+" on "+esc(host)+"</b>")
+		l.add("ℹ️ "+string(first.Kind)+": "+f.VulnID+" on "+host,
+			"ℹ️ <b>"+esc(string(first.Kind))+": "+esc(f.VulnID)+" on "+esc(host)+"</b>")
 	}
 
-	// Package and fix availability.
-	pkgPlain := f.PackageName + " " + f.PackageVer
-	pkgHTML := esc(f.PackageName) + " " + esc(f.PackageVer)
-	if len(f.FixedVersions) > 0 {
-		fixed := strings.Join(f.FixedVersions, ", ")
-		l.add("Package: "+pkgPlain+" → fixed in "+fixed, "Package: "+pkgHTML+" → fixed in "+esc(fixed))
+	// Packages with their fix availability, deduplicated.
+	var pkgPlain, pkgHTML []string
+	for _, ev := range evs {
+		name := ev.Finding.PackageName + " " + ev.Finding.PackageVer
+		if len(ev.Finding.FixedVersions) > 0 {
+			fixed := strings.Join(ev.Finding.FixedVersions, ", ")
+			pkgPlain = append(pkgPlain, name+" → fixed in "+fixed)
+			pkgHTML = append(pkgHTML, esc(name)+" → fixed in "+esc(fixed))
+		} else {
+			pkgPlain = append(pkgPlain, name+" → no fix yet")
+			pkgHTML = append(pkgHTML, esc(name)+" → no fix yet")
+		}
+	}
+	pkgPlain, pkgHTML = distinct(pkgPlain), distinct(pkgHTML)
+	if len(pkgPlain) == 1 {
+		l.add("Package: "+pkgPlain[0], "Package: "+pkgHTML[0])
 	} else {
-		l.add("Package: "+pkgPlain+" → no fix yet", "Package: "+pkgHTML+" → no fix yet")
+		l.add("Packages: "+strings.Join(pkgPlain, "; "), "Packages: "+strings.Join(pkgHTML, "; "))
 	}
 
 	// Target.
@@ -71,21 +106,21 @@ func renderEvent(ev model.Event) (plain, formatted string) {
 		l.add("Target: host", "Target: host")
 	}
 
-	// Severity, CVSS, EPSS, KEV.
+	// Severity, CVSS, EPSS, KEV: maxima over the group.
 	var sevP, sevH []string
-	if f.Severity != "" {
-		sevP = append(sevP, "Severity "+f.Severity)
-		sevH = append(sevH, "Severity "+esc(f.Severity))
+	if sev := g.maxSeverity(); sev != "" {
+		sevP = append(sevP, "Severity "+sev)
+		sevH = append(sevH, "Severity "+esc(sev))
 	}
-	if f.CVSS > 0 {
-		s := fmt.Sprintf("CVSS %.1f", f.CVSS)
+	if cvss := g.maxCVSS(); cvss > 0 {
+		s := fmt.Sprintf("CVSS %.1f", cvss)
 		sevP, sevH = append(sevP, s), append(sevH, s)
 	}
-	if f.EPSS > 0 {
-		s := fmt.Sprintf("EPSS %.1f%%", f.EPSS*100)
+	if epss := g.maxEPSS(); epss > 0 {
+		s := fmt.Sprintf("EPSS %.1f%%", epss*100)
 		sevP, sevH = append(sevP, s), append(sevH, s)
 	}
-	if f.KEV {
+	if g.anyKEV() {
 		sevP = append(sevP, "🚨 KEV")
 		sevH = append(sevH, "🚨 <b>KEV</b>")
 	}
@@ -93,60 +128,93 @@ func renderEvent(ev model.Event) (plain, formatted string) {
 		l.add(strings.Join(sevP, " · "), strings.Join(sevH, " · "))
 	}
 
-	// Why it matters.
-	if ev.Kind == model.EventUnknownCritical {
-		if f.VerdictReason != "" {
-			l.add("Conditions not verified: "+f.VerdictReason, "Conditions not verified: "+esc(f.VerdictReason))
-		}
-	} else if f.VerdictReason != "" {
-		l.add("Why: "+f.VerdictReason, "Why: "+esc(f.VerdictReason))
+	// Why it matters, one line per distinct reason.
+	var reasons []string
+	for _, ev := range evs {
+		reasons = append(reasons, ev.Finding.VerdictReason)
+	}
+	label := "Why: "
+	if first.Kind == model.EventUnknownCritical {
+		label = "Conditions not verified: "
+	}
+	for _, r := range distinct(reasons) {
+		l.add(label+r, label+esc(r))
 	}
 
-	// Rule.
-	if ev.Rule != nil {
+	// Rules, one line per distinct rule.
+	var rules []string
+	for _, ev := range evs {
+		if ev.Rule == nil {
+			continue
+		}
 		text := ev.Rule.Title
 		if ev.Rule.Explanation != "" {
 			text += " — " + ev.Rule.Explanation
 		}
-		if text != "" {
-			l.add("Rule: "+text, "Rule: "+esc(text))
+		rules = append(rules, text)
+	}
+	for _, r := range distinct(rules) {
+		l.add("Rule: "+r, "Rule: "+esc(r))
+	}
+	for _, ev := range evs {
+		if ev.Finding.RuleStatus == model.RuleDraft {
+			l.add("⚠️ rule is an unreviewed LLM draft", "⚠️ <b>rule is an unreviewed LLM draft</b>")
+			break
 		}
 	}
-	if f.RuleStatus == model.RuleDraft {
-		l.add("⚠️ rule is an unreviewed LLM draft", "⚠️ <b>rule is an unreviewed LLM draft</b>")
+
+	// Fix commands (distinct), falling back to rule upgrade advice.
+	var cmds []string
+	for _, ev := range evs {
+		cmds = append(cmds, ev.FixCmd)
+	}
+	if cmds = distinct(cmds); len(cmds) > 0 {
+		for _, c := range cmds {
+			l.add("Fix: "+c, "Fix: <code>"+esc(c)+"</code>")
+		}
+	} else {
+		var upgrades []string
+		for _, ev := range evs {
+			if ev.Rule != nil {
+				upgrades = append(upgrades, ev.Rule.Fix.Upgrade)
+			}
+		}
+		for _, u := range distinct(upgrades) {
+			l.add("Fix: "+u, "Fix: "+esc(u))
+		}
 	}
 
-	// Fix and mitigation.
-	switch {
-	case ev.FixCmd != "":
-		l.add("Fix: "+ev.FixCmd, "Fix: <code>"+esc(ev.FixCmd)+"</code>")
-	case ev.Rule != nil && ev.Rule.Fix.Upgrade != "":
-		l.add("Fix: "+ev.Rule.Fix.Upgrade, "Fix: "+esc(ev.Rule.Fix.Upgrade))
+	// Mitigations, deduplicated.
+	var mitigations []string
+	for _, ev := range evs {
+		if ev.Rule != nil {
+			mitigations = append(mitigations, ev.Rule.Fix.Mitigation)
+		}
 	}
-	if ev.Rule != nil && ev.Rule.Fix.Mitigation != "" {
-		l.add("Mitigation: "+ev.Rule.Fix.Mitigation, "Mitigation: "+esc(ev.Rule.Fix.Mitigation))
+	for _, m := range distinct(mitigations) {
+		l.add("Mitigation: "+m, "Mitigation: "+esc(m))
 	}
 
-	// Link.
-	if ev.WebURL != "" && isHTTP(ev.WebURL) {
-		l.add("Details: "+ev.WebURL, `Details: <a href="`+esc(ev.WebURL)+`">`+esc(ev.WebURL)+`</a>`)
+	// Link to the first event's finding.
+	if first.WebURL != "" && isHTTP(first.WebURL) {
+		l.add("Details: "+first.WebURL, `Details: <a href="`+esc(first.WebURL)+`">`+esc(first.WebURL)+`</a>`)
 	}
 	return l.render()
 }
 
-// renderSummary builds the burst summary for the findings that were not sent individually.
+// renderSummary builds the burst summary for the groups that were not sent individually.
 // findingsLink may be empty.
-func renderSummary(rest []model.Event, findingsLink string) message {
+func renderSummary(rest []group, findingsLink string) message {
 	var l lineSet
 	header := fmt.Sprintf("…and %d more findings", len(rest))
 	l.add(header, esc(header))
-	for i, ev := range rest {
+	for i, g := range rest {
 		if i == summaryMaxLines {
 			more := fmt.Sprintf("…and %d more not listed", len(rest)-summaryMaxLines)
 			l.add(more, esc(more))
 			break
 		}
-		item := ev.Finding.VulnID + "@" + ev.Host.Hostname
+		item := g.first().Finding.VulnID + "@" + g.first().Host.Hostname
 		l.add("• "+item, "• "+esc(item))
 	}
 	if findingsLink != "" {
