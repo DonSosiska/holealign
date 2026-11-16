@@ -202,6 +202,7 @@ func TestDailyLimit(t *testing.T) {
 	e := newEnv(t, 1, goodJSON)
 	f1, f2 := finding(), finding()
 	f2.VulnID = "CVE-2030-0002"
+	f2.Aliases = nil
 	e.run(f1)
 	e.run(f2)
 	if e.prov.n() != 1 {
@@ -319,13 +320,13 @@ func TestParseDedupesAndSortsPackages(t *testing.T) {
 		t.Fatalf("packages = %+v, want %+v", r.Packages, want)
 	}
 
-	reply = `{"title":"t","packages":[{"name":"zlib"},{"name":"tar","type":"rpm"},{"name":"tar","type":"deb"},{"name":"tar","type":"rpm"}],"exploitable_if":"true"}`
+	// model-supplied selectors outside {finding, siblings} are dropped
+	reply = `{"title":"t","packages":[{"name":"*"},{"name":"zlib"},{"name":"tar","type":"rpm"},{"name":"t*","type":"deb"}],"exploitable_if":"true"}`
 	r, err = e.dr.parse(reply, f, nil, "id")
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []model.PackageSelector{{Name: "tar", Type: "deb"}, {Name: "tar", Type: "rpm"}, {Name: "zlib"}}
-	if !reflect.DeepEqual(r.Packages, want) {
+	if want := []model.PackageSelector{{Name: "tar", Type: "deb"}}; !reflect.DeepEqual(r.Packages, want) {
 		t.Fatalf("packages = %+v, want %+v", r.Packages, want)
 	}
 }

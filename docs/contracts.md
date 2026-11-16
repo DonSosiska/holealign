@@ -95,7 +95,17 @@ Command execution rules for collectors: fixed argv (no shell), 10 s timeout, std
 ## 4. Rules
 
 YAML files in `rules/` (shipped, `status: reviewed`) plus rules in the DB (LLM drafts, user edits).
-DB rules with the same `id` override files.
+A DB rule with the same `id` as a file rule overrides it, except a DB `draft`, which never replaces a
+file rule (the file rule is kept and a problem is reported). Rule ids match `^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`.
+
+`fact_requests` policy (enforced by `Validate`): at most 5 per rule; name `file.match:<ruleID-sanitized>.<id>`
+(`[a-z0-9._-]`, at most 64 chars after the prefix; ruleID lowercased, other characters become `-`); `path` absolute,
+clean, under `/etc/`, `/opt/*/conf/`, `/opt/*/etc/` or `/usr/local/etc/`, without `[`, `]`, `\`, and unable to match
+a denylist of secret locations (`shadow*`, `sudoers*`, `ssh/ssh_host_*`, `ssl/private`, `*.key`, `*.pem`, `*secret*`,
+`*credential*`, `*token*`, `panoptes`, ...; see `rules.FileMatchPathAllowed`); `pattern` at most 256 chars, valid RE2,
+not match-all (must not match the empty string nor almost any single character). Only `reviewed` rules'
+fact requests are sent to agents; drafts are inert. Evaluation reasons never contain `file.match` values, only
+`file.match:<id>=<N> matching lines`.
 
 ```yaml
 id: CVE-2024-6387
@@ -123,7 +133,7 @@ A rule applies when `finding.vuln_id` or any of `finding.aliases` is in `rule.vu
 `packages` selector matches (`name` matches as a `path.Match` glob, e.g. `nginx*`, `linux-image-*`;
 `type` equal or empty). `status: rejected` rules are ignored. Several rules may cover the same CVE for
 different packages (e.g. `CVE-2023-44487-nginx` and `CVE-2023-44487-apache`); if more than one applies,
-the DB one wins over the file one, then the first by ID.
+the winner is chosen by status (`reviewed` over `draft`), then DB over file, then the first by ID.
 
 ### CEL environment
 Variables:
@@ -138,7 +148,7 @@ Custom functions:
 
 CEL optional types are enabled (`cel.OptionalTypes()`), so rules can write
 `facts["kernel.sysctl"][?"user.max_user_namespaces"].orValue("1")` for map keys that may be missing.
-Expressions must return bool. Evaluation cost limit 10 000; timeout 50 ms.
+The legacy spelling `m.?["k"]` is rejected by `Validate` (use `m[?"key"]`). Facts must be read as `facts["literal"]`. Expressions must return bool. Evaluation cost limit 10 000; timeout 50 ms.
 
 ### Verdict algorithm (per finding)
 1. Find the applicable rule (DB overrides file). None → `conditions_unknown`, reason "no rule".
@@ -146,13 +156,15 @@ Expressions must return bool. Evaluation cost limit 10 000; timeout 50 ms.
 3. `not_affected_if` set and true → `affected_not_exploitable`.
 4. `exploitable_if` true → `exploitable`, else `affected_not_exploitable`.
 5. Expression error → `conditions_unknown`, reason contains the error.
-6. Ungrounded-draft guard (applied to the result of steps 3–4). A rule is *ungrounded* when
-   `status` is `draft` and its `facts` + `fact_requests` are empty or all of the form `<x>.installed`
-   (no host evidence). For an ungrounded draft: `exploitable` → `conditions_unknown`, reason
-   `LLM draft (unreviewed, no host evidence): likely exploitable — <explanation[:200]>`;
-   `affected_not_exploitable` stays, reason prefixed `LLM draft (unreviewed): `, except for KEV
-   findings, which become `conditions_unknown`. `reviewed` rules are never affected.
-   `Evaluation.Rule`/`RuleStatus` remain set.
+6. Draft guard (applied to the result of steps 3–4; only when `status` is `draft` and the verdict is
+   `exploitable` or `affected_not_exploitable`). Referenced facts are determined from the checked CEL AST
+   (`facts["literal"]` index/select); names in string literals or only listed in `facts` do not count. A draft is
+   *grounded* only if its expressions reference at least one fact that is not `<x>.installed`.
+   - Ungrounded draft: always `conditions_unknown`, reason `LLM draft suggests <verdict>: <explanation[:200]>`.
+   - Grounded draft: `exploitable` is allowed (reason prefixed `LLM draft (unreviewed): `);
+     `affected_not_exploitable` is allowed only if the finding is not KEV and its severity is not Critical;
+     otherwise `conditions_unknown`, reason `LLM draft suggests not exploitable (unreviewed; KEV/Critical need review): <explanation[:200]>`.
+   `reviewed` rules are never affected. `Evaluation.Rule`/`RuleStatus` remain set.
 
 `Evaluation.Reason` is short, human readable, mentions the deciding facts and their values
 (e.g. `os.libc=glibc, sshd.config.logingracetime=120`).

@@ -3,6 +3,7 @@ package rules
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path"
 	"sort"
@@ -43,6 +44,7 @@ type compiled struct {
 	fromDB   bool
 	declared []string // facts that must be present
 	refs     []factRef
+	redact   bool // rule reads file.match facts: never echo values in errors
 }
 
 type snapshot struct {
@@ -92,19 +94,18 @@ func (e *Engine) Reload(ctx context.Context) error {
 		if err := Validate(r); err != nil {
 			return nil, err
 		}
-		c := &compiled{rule: r, fromDB: fromDB, declared: declaredFacts(r), refs: expressionFactRefs(r.ExploitableIf, r.NotAffectedIf)}
-		if r.Status == model.RuleRejected {
-			return c, nil
-		}
+		c := &compiled{rule: r, fromDB: fromDB, declared: declaredFacts(r), redact: len(r.FactRequests) > 0}
 		var err error
-		if c.exploit, err = compileBool(r.ExploitableIf); err != nil {
+		var r1, r2 []factRef
+		if c.exploit, r1, err = compileBool(r.ExploitableIf); err != nil {
 			return nil, err
 		}
 		if r.NotAffectedIf != "" {
-			if c.notAff, err = compileBool(r.NotAffectedIf); err != nil {
+			if c.notAff, r2, err = compileBool(r.NotAffectedIf); err != nil {
 				return nil, err
 			}
 		}
+		c.refs = mergeRefs(r1, r2)
 		return c, nil
 	}
 
@@ -125,7 +126,12 @@ func (e *Engine) Reload(ctx context.Context) error {
 				s.problems = append(s.problems, RuleProblem{RuleID: r.ID, Source: src(grp.db), Err: err})
 				continue
 			}
-			byID[r.ID] = c // DB processed last: overrides file
+			if old := byID[r.ID]; grp.db && old != nil && !old.fromDB && r.Status == model.RuleDraft {
+				s.problems = append(s.problems, RuleProblem{RuleID: r.ID, Source: "db",
+					Err: errors.New("draft rule cannot override a file rule with the same id; file rule kept")})
+				continue
+			}
+			byID[r.ID] = c // DB processed last: overrides file (except drafts, see above)
 		}
 	}
 
@@ -142,6 +148,9 @@ func (e *Engine) Reload(ctx context.Context) error {
 			continue
 		}
 		s.active = append(s.active, c)
+		if c.rule.Status != model.RuleReviewed {
+			continue // only reviewed rules may request host data
+		}
 		for _, fr := range c.rule.FactRequests {
 			if !reqSeen[fr.Name] {
 				reqSeen[fr.Name] = true
@@ -178,7 +187,7 @@ func (e *Engine) Lookup(vulnID string) []model.Rule {
 	return out
 }
 
-// FactRequests returns the union of all active rules' fact requests, deduped by name.
+// FactRequests returns the union of the fact requests of reviewed rules only, deduped by name.
 func (e *Engine) FactRequests() []model.FactRequest {
 	return append([]model.FactRequest(nil), e.snap.Load().requests...)
 }
@@ -193,6 +202,24 @@ func selectorMatches(sels []model.PackageSelector, name, typ string) bool {
 		}
 	}
 	return false
+}
+
+func statusRank(s model.RuleStatus) int {
+	if s == model.RuleReviewed {
+		return 2
+	}
+	return 1
+}
+
+// better orders candidates: reviewed over draft, then DB over file, then lowest ID.
+func better(a, b *compiled) bool {
+	if ra, rb := statusRank(a.rule.Status), statusRank(b.rule.Status); ra != rb {
+		return ra > rb
+	}
+	if a.fromDB != b.fromDB {
+		return a.fromDB
+	}
+	return a.rule.ID < b.rule.ID
 }
 
 func (e *Engine) find(f model.Finding) *compiled {
@@ -210,30 +237,23 @@ func (e *Engine) find(f model.Finding) *compiled {
 		if !hit || !selectorMatches(c.rule.Packages, f.PackageName, f.PackageType) {
 			continue
 		}
-		if best == nil || (c.fromDB && !best.fromDB) { // DB over file, then first by ID
+		if best == nil || better(c, best) {
 			best = c
 		}
 	}
 	return best
 }
 
-// ungrounded reports whether c is an unreviewed (draft) rule that reads no host
-// evidence: no declared facts or fact requests, or only "<x>.installed" facts
-// (installed-ness is already implied by the package being present).
-func (c *compiled) ungrounded() bool {
-	if c.rule.Status != model.RuleDraft {
-		return false
-	}
-	names := append([]string(nil), c.declared...)
+// grounded reports whether the expressions of c actually reference at least
+// one host fact that is not "<x>.installed" (installed-ness is already implied
+// by the package being present).
+func (c *compiled) grounded() bool {
 	for _, r := range c.refs {
-		names = append(names, r.Name)
-	}
-	for _, n := range names {
-		if !strings.HasSuffix(n, ".installed") {
-			return false
+		if !strings.HasSuffix(r.Name, ".installed") {
+			return true
 		}
 	}
-	return true
+	return false
 }
 
 func firstChars(s string, n int) string {
@@ -251,21 +271,25 @@ func (e *Engine) Evaluate(ctx context.Context, hc core.HostContext, f model.Find
 		return core.Evaluation{Verdict: model.VerdictConditionsUnknown, Reason: "no rule"}
 	}
 	ev := e.evaluate(ctx, c, hc, f)
-	if !c.ungrounded() {
+	if c.rule.Status != model.RuleDraft {
 		return ev
 	}
-	switch ev.Verdict {
-	case model.VerdictExploitable:
-		ev.Verdict = model.VerdictConditionsUnknown
-		ev.Reason = "LLM draft (unreviewed, no host evidence): likely exploitable \u2014 " + firstChars(c.rule.Explanation, 200)
-	case model.VerdictNotExploitable:
-		if f.KEV {
-			ev.Verdict = model.VerdictConditionsUnknown
-			ev.Reason = "LLM draft (unreviewed, no host evidence): judged not exploitable, but the CVE is actively exploited (KEV) \u2014 " + firstChars(c.rule.Explanation, 200)
-		} else {
-			ev.Reason = "LLM draft (unreviewed): " + ev.Reason
-		}
+	if ev.Verdict != model.VerdictExploitable && ev.Verdict != model.VerdictNotExploitable {
+		return ev
 	}
+	expl := firstChars(c.rule.Explanation, 200)
+	if !c.grounded() {
+		suggested := string(ev.Verdict)
+		ev.Verdict = model.VerdictConditionsUnknown
+		ev.Reason = "LLM draft suggests " + suggested + ": " + expl
+		return ev
+	}
+	if ev.Verdict == model.VerdictNotExploitable && (f.KEV || strings.EqualFold(strings.TrimSpace(f.Severity), "critical")) {
+		ev.Verdict = model.VerdictConditionsUnknown
+		ev.Reason = "LLM draft suggests not exploitable (unreviewed; KEV/Critical need review): " + expl
+		return ev
+	}
+	ev.Reason = "LLM draft (unreviewed): " + ev.Reason
 	return ev
 }
 
@@ -301,7 +325,7 @@ func (e *Engine) evaluate(ctx context.Context, c *compiled, hc core.HostContext,
 		b, err := evalBool(ectx, c.notAff, vars)
 		if err != nil {
 			ev.Verdict = model.VerdictConditionsUnknown
-			ev.Reason = "not_affected_if error: " + singleLine(err)
+			ev.Reason = "not_affected_if error: " + errText(c, err)
 			return ev
 		}
 		if b {
@@ -313,7 +337,7 @@ func (e *Engine) evaluate(ctx context.Context, c *compiled, hc core.HostContext,
 	b, err := evalBool(ectx, c.exploit, vars)
 	if err != nil {
 		ev.Verdict = model.VerdictConditionsUnknown
-		ev.Reason = "exploitable_if error: " + singleLine(err)
+		ev.Reason = "exploitable_if error: " + errText(c, err)
 		return ev
 	}
 	if b {
@@ -323,6 +347,13 @@ func (e *Engine) evaluate(ctx context.Context, c *compiled, hc core.HostContext,
 	}
 	ev.Reason = describe(c, act)
 	return ev
+}
+
+func errText(c *compiled, err error) string {
+	if c.redact {
+		return "evaluation failed (details withheld: rule reads file.match facts)"
+	}
+	return singleLine(err)
 }
 
 func evalBool(ctx context.Context, p cel.Program, vars map[string]any) (bool, error) {
@@ -373,6 +404,14 @@ func describe(c *compiled, facts map[string]any) string {
 			parts = append(parts, label+"=<unset>")
 			return
 		}
+		if strings.HasPrefix(label, FileMatchPrefix) {
+			n := 0
+			if l, isList := v.([]any); isList {
+				n = len(l)
+			}
+			parts = append(parts, fmt.Sprintf("%s=%d matching lines", label, n))
+			return
+		}
 		parts = append(parts, label+"="+shorten(formatValue(v)))
 	}
 	for _, r := range c.refs {
@@ -380,7 +419,7 @@ func describe(c *compiled, facts map[string]any) string {
 		if !ok {
 			continue
 		}
-		if r.Key == "" {
+		if r.Key == "" || strings.HasPrefix(r.Name, FileMatchPrefix) {
 			add(r.Name, v, true)
 			continue
 		}

@@ -181,25 +181,32 @@ func TestCVE20244577(t *testing.T) {
 }
 
 func TestFactRequestsUnionAndFileMatch(t *testing.T) {
-	r := validRule()
-	r.ID = "X-1"
-	r.Facts = []string{"file.match:proxy"}
-	r.FactRequests = []model.FactRequest{{Name: "file.match:proxy", Collector: "file.match", Params: map[string]string{"path": "/etc/apache2/*.conf", "pattern": "ProxyPass"}}}
-	r.ExploitableIf = `size(facts["file.match:proxy"]) > 0`
-	r2 := r
-	r2.ID = "X-2"
-	r2.Vulns = []string{"CVE-2000-0002"}
+	mk := func(id, vuln string, st model.RuleStatus) model.Rule {
+		r := validRule()
+		r.ID, r.Status = id, st
+		r.Vulns = []string{vuln}
+		name := "file.match:" + strings.ToLower(id) + ".proxy"
+		r.Facts = []string{name}
+		r.FactRequests = []model.FactRequest{{Name: name, Collector: "file.match", Params: map[string]string{"path": "/etc/apache2/*.conf", "pattern": "ProxyPass"}}}
+		r.ExploitableIf = `size(facts["` + name + `"]) > 0`
+		return r
+	}
+	r, r2 := mk("X-1", "CVE-2000-0001", model.RuleReviewed), mk("X-2", "CVE-2000-0002", model.RuleDraft)
 	e := New(append(loadShipped(t), r, r2), nil)
 	if p := e.Problems(); len(p) != 0 {
 		t.Fatal(p)
 	}
 	frs := e.FactRequests()
-	if len(frs) != 1 || frs[0].Name != "file.match:proxy" {
-		t.Fatalf("fact requests: %+v", frs)
+	if len(frs) != 1 || frs[0].Name != "file.match:x-1.proxy" {
+		t.Fatalf("only reviewed rules may request facts: %+v", frs)
 	}
-	ev := eval(t, e, "CVE-2000-0001", "pkg", "deb", map[string]any{"file.match:proxy": []any{"/etc/apache2/a.conf:ProxyPass /"}})
-	want(t, ev, model.VerdictExploitable, "file.match:proxy=")
-	want(t, eval(t, e, "CVE-2000-0001", "pkg", "deb", map[string]any{}), model.VerdictConditionsUnknown, "file.match:proxy")
+	secret := "/etc/apache2/a.conf:ProxyPass SECRETVALUE"
+	ev := eval(t, e, "CVE-2000-0001", "pkg", "deb", map[string]any{"file.match:x-1.proxy": []any{secret}})
+	want(t, ev, model.VerdictExploitable, "file.match:x-1.proxy=1 matching lines")
+	if strings.Contains(ev.Reason, "SECRETVALUE") || strings.Contains(ev.Reason, "a.conf") {
+		t.Fatalf("describe leaked file content: %s", ev.Reason)
+	}
+	want(t, eval(t, e, "CVE-2000-0001", "pkg", "deb", map[string]any{}), model.VerdictConditionsUnknown, "file.match:x-1.proxy")
 }
 
 func TestIntPortsFromJSON(t *testing.T) {
@@ -294,16 +301,26 @@ func TestDBOverrideAndRejected(t *testing.T) {
 	if err := e.Reload(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	// A DB draft with the same ID never replaces the file rule.
 	ev := eval(t, e, "CVE-2023-44487", "nginx", "deb", nginx)
-	want(t, ev, model.VerdictNotExploitable)
-	if ev.RuleStatus != model.RuleDraft {
+	want(t, ev, model.VerdictExploitable)
+	if ev.RuleStatus != model.RuleReviewed {
 		t.Errorf("status = %s", ev.RuleStatus)
 	}
+	if p := e.Problems(); len(p) != 1 || !strings.Contains(p[0].Err.Error(), "cannot override") {
+		t.Errorf("problems: %v", p)
+	}
+	// A reviewed DB rule with the same ID does override.
+	o.Status = model.RuleReviewed
+	db.rules = []model.Rule{o}
+	_ = e.Reload(context.Background())
+	want(t, eval(t, e, "CVE-2023-44487", "nginx", "deb", nginx), model.VerdictNotExploitable)
 
 	// A DB rule with a different ID for the same CVE/package beats the file rule too.
 	o2 := o
 	o2.ID = "AAA-other"
 	o2.ExploitableIf = `true`
+	o2.Status = model.RuleReviewed
 	o.Status = model.RuleRejected
 	db.rules = []model.Rule{o2}
 	_ = e.Reload(context.Background())
@@ -403,19 +420,19 @@ func TestValidate(t *testing.T) {
 		{"non-bool", func(r *model.Rule) { r.ExploitableIf = `"a" + "b"` }, "must return bool"},
 		{"bad not_affected_if", func(r *model.Rule) { r.NotAffectedIf = `1 + 1` }, "not_affected_if"},
 		{"undeclared file.match", func(r *model.Rule) {
-			r.Facts = []string{"file.match:x"}
+			r.Facts = []string{"file.match:test-1.x"}
 			r.ExploitableIf = `true`
 		}, "not declared in fact_requests"},
 		{"wrong collector", func(r *model.Rule) {
-			r.Facts = []string{"file.match:x"}
-			r.FactRequests = []model.FactRequest{{Name: "file.match:x", Collector: "exec", Params: map[string]string{"path": "/etc/a", "pattern": "a"}}}
+			r.Facts = []string{"file.match:test-1.x"}
+			r.FactRequests = []model.FactRequest{{Name: "file.match:test-1.x", Collector: "exec", Params: map[string]string{"path": "/etc/a", "pattern": "a"}}}
 		}, "collector"},
 		{"missing params", func(r *model.Rule) {
-			r.Facts = []string{"file.match:x"}
-			r.FactRequests = []model.FactRequest{{Name: "file.match:x", Collector: "file.match", Params: map[string]string{"path": "/etc/a"}}}
+			r.Facts = []string{"file.match:test-1.x"}
+			r.FactRequests = []model.FactRequest{{Name: "file.match:test-1.x", Collector: "file.match", Params: map[string]string{"path": "/etc/a"}}}
 		}, "params.pattern"},
 		{"bad regexp", func(r *model.Rule) {
-			r.FactRequests = []model.FactRequest{{Name: "file.match:x", Collector: "file.match", Params: map[string]string{"path": "/etc/a", "pattern": "("}}}
+			r.FactRequests = []model.FactRequest{{Name: "file.match:test-1.x", Collector: "file.match", Params: map[string]string{"path": "/etc/a", "pattern": "("}}}
 		}, "RE2"},
 		{"undeclared fact in expr", func(r *model.Rule) { r.ExploitableIf = `facts["os.libc"] == "glibc"` }, "not listed in facts"},
 		{"bad status", func(r *model.Rule) { r.Status = "maybe" }, "status"},
