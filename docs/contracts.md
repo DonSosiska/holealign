@@ -52,7 +52,7 @@ sets `<x>.installed = false` and omits the other `<x>.*` facts.
 | `os.libc_version` | string | ldd --version |
 | `kernel.release` | string | uname -r |
 | `kernel.modules` | list<string> | /proc/modules (names) |
-| `kernel.sysctl` | map<string,string> | /proc/sys for an allowlist: `kernel.unprivileged_userns_clone`, `user.max_user_namespaces`, `kernel.unprivileged_bpf_disabled`, `kernel.kptr_restrict`, `kernel.yama.ptrace_scope`, `kernel.dmesg_restrict`, `net.ipv4.ip_forward`, `net.ipv6.conf.all.disable_ipv6`, `fs.protected_symlinks`, `fs.protected_hardlinks`, `vm.unprivileged_userfaultfd`, `kernel.io_uring_disabled` |
+| `kernel.sysctl` | map<string,string> | /proc/sys for an allowlist: `kernel.unprivileged_userns_clone`, `user.max_user_namespaces`, `kernel.unprivileged_bpf_disabled`, `kernel.kptr_restrict`, `kernel.yama.ptrace_scope`, `kernel.dmesg_restrict`, `net.ipv4.ip_forward`, `net.ipv6.conf.all.disable_ipv6`, `fs.protected_symlinks`, `fs.protected_hardlinks`, `vm.unprivileged_userfaultfd`, `kernel.io_uring_disabled`, `kernel.apparmor_restrict_unprivileged_userns` |
 | `services.active` | list<string> | `systemctl list-units --type=service --state=running --no-legend` (unit names without `.service`) |
 | `sockets.listening` | list<map{proto,addr,port(int),process}> | /proc/net/{tcp,tcp6,udp,udp6} + /proc/*/fd inode mapping |
 | `sockets.ports` | list<int> | distinct listening ports |
@@ -119,7 +119,10 @@ references: [https://www.qualys.com/2024/07/01/cve-2024-6387/regresshion.txt]
 
 ### Matching a rule to a finding
 A rule applies when `finding.vuln_id` or any of `finding.aliases` is in `rule.vulns`, AND a
-`packages` selector matches (`name` equal; `type` equal or empty). `status: rejected` rules are ignored.
+`packages` selector matches (`name` matches as a `path.Match` glob, e.g. `nginx*`, `linux-image-*`;
+`type` equal or empty). `status: rejected` rules are ignored. Several rules may cover the same CVE for
+different packages (e.g. `CVE-2023-44487-nginx` and `CVE-2023-44487-apache`); if more than one applies,
+the DB one wins over the file one, then the first by ID.
 
 ### CEL environment
 Variables:
@@ -132,6 +135,8 @@ Custom functions:
   (numeric segments compared numerically, e.g. `"6.1.10" < "6.10.0"`).
 - `has_module(list, name)` — sugar for `name in list`.
 
+CEL optional types are enabled (`cel.OptionalTypes()`), so rules can write
+`facts["kernel.sysctl"].?["user.max_user_namespaces"].orValue("1")` for map keys that may be missing.
 Expressions must return bool. Evaluation cost limit 10 000; timeout 50 ms.
 
 ### Verdict algorithm (per finding)
