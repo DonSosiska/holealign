@@ -329,4 +329,60 @@ func TestFixCmd(t *testing.T) {
 	}
 }
 
-var _ = time.Second
+func graceEnv(t *testing.T) (*env, *time.Time) {
+	e := setup(t)
+	clock := time.Now()
+	e.p.Shutdown()
+	e.p = New(e.st, e.m, e.ev, e.n, e.d, Options{PublicURL: "https://x", UnknownGrace: time.Hour, Now: func() time.Time { return clock }})
+	t.Cleanup(e.p.Shutdown)
+	return e, &clock
+}
+
+func TestUnknownGraceThenNotifyPass(t *testing.T) {
+	e, clock := graceEnv(t)
+	e.m.set(vuln("CVE-C", "Critical", false), vuln("CVE-M", "Medium", false))
+	if ev := e.run(t); len(ev) != 0 {
+		t.Fatalf("grace: no event on first run: %+v", ev)
+	}
+	ctx := context.Background()
+	if err := e.p.RunNotifyPass(ctx); err != nil || len(e.n.take()) != 0 {
+		t.Fatal("pass before grace must be silent")
+	}
+	*clock = clock.Add(2 * time.Hour)
+	if err := e.p.RunNotifyPass(ctx); err != nil {
+		t.Fatal(err)
+	}
+	ev := e.n.take()
+	if len(ev) != 1 || ev[0].Kind != model.EventUnknownCritical || ev[0].Finding.VulnID != "CVE-C" || ev[0].Host.Hostname != "web1" {
+		t.Fatalf("want exactly one unknown_critical, got %+v", ev)
+	}
+	if err := e.p.RunNotifyPass(ctx); err != nil || len(e.n.take()) != 0 {
+		t.Fatal("must not repeat")
+	}
+	if ev := e.run(t); len(ev) != 0 {
+		t.Fatalf("run after pass must not repeat: %+v", ev)
+	}
+}
+
+func TestGraceRuleArrivesFirst(t *testing.T) {
+	e, clock := graceEnv(t)
+	e.m.set(vuln("CVE-C", "Critical", false))
+	e.run(t)
+	e.ev.setVerdict("CVE-C", model.VerdictNotExploitable) // drafter produced a rule
+	if ev := e.run(t); len(ev) != 0 {
+		t.Fatalf("%+v", ev)
+	}
+	*clock = clock.Add(2 * time.Hour)
+	if err := e.p.RunNotifyPass(context.Background()); err != nil || len(e.n.take()) != 0 {
+		t.Fatal("no unknown_critical once a rule decided")
+	}
+}
+
+func TestGraceExploitableStaysImmediate(t *testing.T) {
+	e, _ := graceEnv(t)
+	e.ev.setVerdict("CVE-1", model.VerdictExploitable)
+	e.m.set(vuln("CVE-1", "Critical", false))
+	if ev := e.run(t); len(ev) != 1 || ev[0].Kind != model.EventExploitable {
+		t.Fatalf("%+v", ev)
+	}
+}
