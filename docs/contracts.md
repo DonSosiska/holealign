@@ -53,7 +53,8 @@ sets `<x>.installed = false` and omits the other `<x>.*` facts.
 | `kernel.release` | string | uname -r |
 | `kernel.modules` | list<string> | /proc/modules (names) |
 | `kernel.sysctl` | map<string,string> | /proc/sys for an allowlist: `kernel.unprivileged_userns_clone`, `user.max_user_namespaces`, `kernel.unprivileged_bpf_disabled`, `kernel.kptr_restrict`, `kernel.yama.ptrace_scope`, `kernel.dmesg_restrict`, `net.ipv4.ip_forward`, `net.ipv6.conf.all.disable_ipv6`, `fs.protected_symlinks`, `fs.protected_hardlinks`, `vm.unprivileged_userfaultfd`, `kernel.io_uring_disabled`, `kernel.apparmor_restrict_unprivileged_userns` |
-| `services.active` | list<string> | `systemctl list-units --type=service --state=running --no-legend` (unit names without `.service`) |
+| `services.active` | list<string> | `systemctl list-units --type=service --state=running --no-legend` (unit names without `.service`). If systemctl is missing or fails: fallback to `/proc/<pid>/comm`, mapped through a table of well-known daemons (e.g. `sshd`→`ssh`,`sshd`; `apache2`/`httpd`→both), other names as-is (lowercase); kernel threads and shells/tools excluded; sorted, deduplicated |
+| `services.source` | string `systemd`\|`proc` | origin of `services.active` (absent together with it) |
 | `sockets.listening` | list<map{proto,addr,port(int),process}> | /proc/net/{tcp,tcp6,udp,udp6} + /proc/*/fd inode mapping |
 | `sockets.ports` | list<int> | distinct listening ports |
 | `sshd.installed` | bool | `sshd` binary exists |
