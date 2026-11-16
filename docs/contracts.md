@@ -145,6 +145,13 @@ Expressions must return bool. Evaluation cost limit 10 000; timeout 50 ms.
 3. `not_affected_if` set and true → `affected_not_exploitable`.
 4. `exploitable_if` true → `exploitable`, else `affected_not_exploitable`.
 5. Expression error → `conditions_unknown`, reason contains the error.
+6. Ungrounded-draft guard (applied to the result of steps 3–4). A rule is *ungrounded* when
+   `status` is `draft` and its `facts` + `fact_requests` are empty or all of the form `<x>.installed`
+   (no host evidence). For an ungrounded draft: `exploitable` → `conditions_unknown`, reason
+   `LLM draft (unreviewed, no host evidence): likely exploitable — <explanation[:200]>`;
+   `affected_not_exploitable` stays, reason prefixed `LLM draft (unreviewed): `, except for KEV
+   findings, which become `conditions_unknown`. `reviewed` rules are never affected.
+   `Evaluation.Rule`/`RuleStatus` remain set.
 
 `Evaluation.Reason` is short, human readable, mentions the deciding facts and their values
 (e.g. `os.libc=glibc, sshd.config.logingracetime=120`).

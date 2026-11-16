@@ -217,12 +217,59 @@ func (e *Engine) find(f model.Finding) *compiled {
 	return best
 }
 
+// ungrounded reports whether c is an unreviewed (draft) rule that reads no host
+// evidence: no declared facts or fact requests, or only "<x>.installed" facts
+// (installed-ness is already implied by the package being present).
+func (c *compiled) ungrounded() bool {
+	if c.rule.Status != model.RuleDraft {
+		return false
+	}
+	names := append([]string(nil), c.declared...)
+	for _, r := range c.refs {
+		names = append(names, r.Name)
+	}
+	for _, n := range names {
+		if !strings.HasSuffix(n, ".installed") {
+			return false
+		}
+	}
+	return true
+}
+
+func firstChars(s string, n int) string {
+	r := []rune(strings.TrimSpace(s))
+	if len(r) > n {
+		r = r[:n]
+	}
+	return string(r)
+}
+
 // Evaluate implements core.RuleEvaluator (verdict algorithm of contracts section 4).
 func (e *Engine) Evaluate(ctx context.Context, hc core.HostContext, f model.Finding) core.Evaluation {
 	c := e.find(f)
 	if c == nil {
 		return core.Evaluation{Verdict: model.VerdictConditionsUnknown, Reason: "no rule"}
 	}
+	ev := e.evaluate(ctx, c, hc, f)
+	if !c.ungrounded() {
+		return ev
+	}
+	switch ev.Verdict {
+	case model.VerdictExploitable:
+		ev.Verdict = model.VerdictConditionsUnknown
+		ev.Reason = "LLM draft (unreviewed, no host evidence): likely exploitable \u2014 " + firstChars(c.rule.Explanation, 200)
+	case model.VerdictNotExploitable:
+		if f.KEV {
+			ev.Verdict = model.VerdictConditionsUnknown
+			ev.Reason = "LLM draft (unreviewed, no host evidence): judged not exploitable, but the CVE is actively exploited (KEV) \u2014 " + firstChars(c.rule.Explanation, 200)
+		} else {
+			ev.Reason = "LLM draft (unreviewed): " + ev.Reason
+		}
+	}
+	return ev
+}
+
+func (e *Engine) evaluate(ctx context.Context, c *compiled, hc core.HostContext, f model.Finding) core.Evaluation {
 	rule := c.rule
 	ev := core.Evaluation{Rule: &rule, RuleStatus: rule.Status}
 

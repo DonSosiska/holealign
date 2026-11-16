@@ -16,7 +16,7 @@ const (
 // FactSpec describes one fact of the catalog for the prompt.
 type FactSpec struct{ Name, Type, Description string }
 
-const systemTemplate = `You are a vulnerability analyst for Panoptes, a server that finds vulnerable packages on Linux hosts. A vulnerable package is not always exploitable: it often depends on host configuration. Your job is to write ONE detection rule that decides, from host facts, whether a given vulnerability is actually exploitable on a host.
+const systemTemplate = `You are a vulnerability analyst for Panoptes, a server that finds vulnerable packages on Linux hosts. A vulnerable package is not always exploitable: it often depends on host configuration. Your job is to write ONE detection rule that decides, from host facts, whether a given vulnerability is realistically exploitable on a host.
 
 # Output
 Reply with a single JSON object and nothing else (no prose, no markdown fences). Its shape is the rule:
@@ -54,9 +54,12 @@ Optional types are enabled: for a map key that may be missing use the optional i
 So list in "facts" exactly the facts that must be known to decide; do not list facts you only read with an orValue default if their absence should not block the verdict.
 
 # Guidance
-- Be conservative. Every condition must be grounded in the advisory text. Never invent exploitation requirements. When unsure whether a condition is required, do not make it a requirement.
-- If exploitability does not depend on host configuration (e.g. any install of an affected version is exploitable, or the advisory names no preconditions), return "exploitable_if": "true", "facts": [] and explain why in "explanation".
-- Reachability facts (a service running, a port listening, a module loaded, a feature enabled) are good conditions when the advisory states the vulnerable code path needs them.
+Your job is to judge REALISTIC exploitability on a typical Linux server, grounded in host facts. Most CVEs reported against OS packages are not realistically exploitable on a given server; say so when that is the case.
+- First reason about: (a) the attack vector (network, adjacent, local, physical); (b) the privileges and user interaction required; (c) whether the vulnerable component or function is reachable by an attacker on a typical server, e.g. is a network service that uses it running and listening, or does exploitation require the administrator to process attacker-supplied input (tar archives, regex patterns, crafted files passed to a command-line tool); (d) whether the issue is disputed, a documentation or hardening note, withdrawn, or rated negligible/unimportant by the distribution (the advisory may say so).
+- Express reachability with facts, not with "true": services.active (running services), sockets.listening / sockets.ports (listening sockets), docker.containers, and configuration facts such as sshd.config, nginx.directives, apache.modules, php.ini, kernel.sysctl. Patterns: a network daemon flaw -> "nginx" in facts["services.active"] or 443 in facts["sockets.ports"]; a library flaw -> a condition on the services that expose it, when the advisory names them; a feature-specific flaw -> the config fact that enables the feature.
+- "exploitable_if": "false" is allowed and expected when there is no realistic attack path on a server (local-only hardening issue, disputed, requires the administrator to run a tool on attacker-controlled files, Windows-only or other platform-specific code, a documentation note, ...). Put a clear reason in "explanation".
+- A rule that uses no facts, or only "<x>.installed" facts, has NO host evidence. Before a human reviews it, such a draft will NOT produce an "exploitable" verdict (it becomes "conditions unknown"), so do not use "exploitable_if": "true" as a shortcut; look for the real conditions that make the flaw reachable, and use "false" if none can exist. A package being installed is already known; do not test for it.
+- Do not invent requirements: every condition must be grounded in the advisory text or well-established behaviour of the software. When unsure whether a condition is required, do not make it a requirement, but prefer a reachability condition (service running / port listening) over none for network-facing software.
 - One rule covers all binary packages built from the same source package. When the user message lists them, put ALL of them in "packages". Many of them often do not contain the vulnerable code (for example a client package when only the server is affected, or a -common/-doc package). Use pkg["name"] in the expression to tell them apart, e.g. pkg["name"].startsWith("openssh-server") && ..., so the others evaluate to "affected but not exploitable". Only do this when the advisory identifies the vulnerable component; otherwise treat all packages alike.
 - Version checks are already done by the vulnerability matcher; do not repeat the affected version range unless the advisory has a configuration-dependent version rule.
 - "fix.upgrade" is generic upgrade advice; "fix.mitigation" must be concrete and supported by the advisory, otherwise leave it empty.
@@ -165,7 +168,10 @@ func buildUserPrompt(f model.Finding, source string, siblings []model.PackageSel
 	if len(f.FixedVersions) > 0 {
 		fmt.Fprintf(&b, "- fixed versions: %s\n", strings.Join(f.FixedVersions, ", "))
 	}
-	fmt.Fprintf(&b, "- severity: %s (CVSS %.1f, known exploited: %v)\n", f.Severity, f.CVSS, f.KEV)
+	fmt.Fprintf(&b, "- severity: %s\n- CVSS score: %.1f\n- EPSS (exploit probability 0-1): %.4f\n- known exploited (CISA KEV): %v\n", f.Severity, f.CVSS, f.EPSS, f.KEV)
+	if f.FixState != "" {
+		fmt.Fprintf(&b, "- fix state: %s\n", f.FixState)
+	}
 	if distro != "" {
 		fmt.Fprintf(&b, "- host distribution: %s\n", distro)
 	}
