@@ -416,6 +416,7 @@ func (s *Server) handleRuleEdit(w http.ResponseWriter, r *http.Request, sess *se
 		s.renderRule(w, r, sess, http.StatusUnprocessableEntity, cur, text, err.Error())
 		return
 	}
+	s.auditRule(r, sess.Username, "rule_edit", current, rule)
 	s.redirectOK(w, r, "/rules/"+url.PathEscape(id), "saved")
 }
 
@@ -427,6 +428,7 @@ func (s *Server) handleRuleSetStatus(st model.RuleStatus) handler {
 			s.notFound(w, r, sess)
 			return
 		}
+		before := rule
 		rule.Status = st
 		if rule.Source == "" || rule.Source == "builtin" {
 			rule.Source = "user"
@@ -440,10 +442,18 @@ func (s *Server) handleRuleSetStatus(st model.RuleStatus) handler {
 			s.renderRule(w, r, sess, http.StatusUnprocessableEntity, rule, ruleYAML(rule), err.Error())
 			return
 		}
-		flash := "approved"
+		flash, action := "approved", "rule_approve"
 		if st == model.RuleRejected {
-			flash = "rejected"
+			flash, action = "rejected", "rule_reject"
 		}
+		s.auditRule(r, sess.Username, action, before, rule)
 		s.redirectOK(w, r, "/rules/"+url.PathEscape(id), flash)
 	}
+}
+
+func (s *Server) auditRule(r *http.Request, actor, action string, old, nw model.Rule) {
+	s.audit(r, actor, action, nw.ID,
+		"old_status", string(old.Status), "new_status", string(nw.Status),
+		"old_exploitable_if_sha256", sha256hex(old.ExploitableIf), "new_exploitable_if_sha256", sha256hex(nw.ExploitableIf),
+		"old_not_affected_if_sha256", sha256hex(old.NotAffectedIf), "new_not_affected_if_sha256", sha256hex(nw.NotAffectedIf))
 }

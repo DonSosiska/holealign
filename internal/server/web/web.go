@@ -16,6 +16,7 @@ import (
 	"html/template"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"sort"
@@ -59,16 +60,24 @@ type Server struct {
 	cfg     *config.Config
 	pages   map[string]*template.Template
 	csrfKey []byte
-	lim     *limiter
+	lim     *limiter // ip|user
+	limIP   *limiter // per client IP, any username
+	limUser *limiter // per username, any IP (locks the name)
 	secure  bool
+
+	sessName, loginName string
+	bcryptSem           chan struct{}
 }
 
 const (
-	cookieName    = "panoptes_session"
-	loginCSRFName = "panoptes_login"
-	sessionTTL    = 12 * time.Hour
-	pageSize      = 50
-	staleAfter    = 30 * time.Minute
+	cookieName     = "panoptes_session"
+	loginCSRFName  = "panoptes_login"
+	sessionTTL     = 12 * time.Hour // absolute session lifetime
+	sessionIdle    = time.Hour      // idle timeout
+	sessionRefresh = 5 * time.Minute
+	minPasswordLen = 12
+	pageSize       = 50
+	staleAfter     = 30 * time.Minute
 )
 
 // New builds the UI server and parses the embedded templates.
@@ -93,6 +102,15 @@ func New(d Deps) (*Server, error) {
 		return nil, err
 	}
 	s.lim = newLimiter(s.now)
+	s.limIP = newLimiterCfg(s.now, maxIPFailures, ipFailWindow, 0, limiterCap)
+	s.limUser = newLimiterCfg(s.now, maxUserFailures, userFailWindow, userLockFor, limiterCap)
+	s.bcryptSem = make(chan struct{}, bcryptParallel)
+	s.sessName, s.loginName = cookieName, loginCSRFName
+	if s.secure {
+		s.sessName, s.loginName = "__Host-"+cookieName, "__Host-"+loginCSRFName
+	} else if !isLoopbackURL(s.cfg.PublicURL) {
+		s.log.Warn("web: public_url is plain http and not loopback; credentials and session cookies cross the network unencrypted. Serve the UI over https.", "public_url", s.cfg.PublicURL)
+	}
 	if err := s.parseTemplates(); err != nil {
 		return nil, err
 	}
@@ -113,17 +131,18 @@ func (s *Server) parseTemplates() error {
 			}
 			return t.UTC().Format("2006-01-02 15:04 UTC")
 		},
-		"vlabel": verdictLabel,
-		"vclass": verdictClass,
-		"join":   strings.Join,
-		"json":   prettyJSON,
-		"nvd":    func(id string) string { return "https://nvd.nist.gov/vuln/detail/" + url.PathEscape(id) },
-		"osv":    func(id string) string { return "https://osv.dev/vulnerability/" + url.PathEscape(id) },
-		"isCVE":  func(id string) bool { return strings.HasPrefix(strings.ToUpper(id), "CVE-") },
-		"fixcmd": pipeline.FixCmd,
-		"add":    func(a, b int) int { return a + b },
-		"pct":    func(f float64) string { return fmt.Sprintf("%.1f%%", f*100) },
-		"score":  func(f float64) string { return fmt.Sprintf("%.1f", f) },
+		"vlabel":  verdictLabel,
+		"vclass":  verdictClass,
+		"join":    strings.Join,
+		"json":    prettyJSON,
+		"nvd":     func(id string) string { return "https://nvd.nist.gov/vuln/detail/" + url.PathEscape(id) },
+		"osv":     func(id string) string { return "https://osv.dev/vulnerability/" + url.PathEscape(id) },
+		"isCVE":   func(id string) bool { return strings.HasPrefix(strings.ToUpper(id), "CVE-") },
+		"fixcmd":  pipeline.FixCmd,
+		"safeRef": safeRef,
+		"add":     func(a, b int) int { return a + b },
+		"pct":     func(f float64) string { return fmt.Sprintf("%.1f%%", f*100) },
+		"score":   func(f float64) string { return fmt.Sprintf("%.1f", f) },
 		"tbl": func(f []model.Finding, names map[string]string, showHost bool) findingsTbl {
 			return findingsTbl{f, names, showHost}
 		},
@@ -160,8 +179,13 @@ func (s *Server) Mount(mux *http.ServeMux) {
 	static, _ := fs.Sub(assets, "static")
 	fsrv := http.StripPrefix("/static/", http.FileServer(http.FS(static)))
 	mux.HandleFunc("GET /static/", func(w http.ResponseWriter, r *http.Request) {
+		s.secHeaders(w)
+		name := strings.TrimPrefix(r.URL.Path, "/static/")
+		if fi, err := fs.Stat(static, name); name == "" || strings.HasSuffix(name, "/") || err != nil || fi.IsDir() {
+			http.NotFound(w, r) // no directory listings
+			return
+		}
 		w.Header().Set("Cache-Control", "public, max-age=3600")
-		w.Header().Set("X-Content-Type-Options", "nosniff")
 		fsrv.ServeHTTP(w, r)
 	})
 	mux.HandleFunc("GET /login", s.handleLoginForm)
@@ -206,7 +230,7 @@ func (s *Server) csrfFor(token string) string {
 }
 
 func (s *Server) sessionFrom(r *http.Request) *session {
-	c, err := r.Cookie(cookieName)
+	c, err := r.Cookie(s.sessName)
 	if err != nil || c.Value == "" {
 		return nil
 	}
@@ -217,11 +241,19 @@ func (s *Server) sessionFrom(r *http.Request) *session {
 		}
 		return nil
 	}
+	if exp, ok := nextExpiry(sess.CreatedAt, sess.ExpiresAt, s.now()); ok {
+		if err := s.d.Store.ExtendSession(r.Context(), store.HashSecret(c.Value), exp, s.now()); err != nil && !errors.Is(err, store.ErrNotFound) {
+			s.log.Error("web: extend session", "err", err)
+		}
+	}
 	return &session{Username: sess.Username, token: c.Value, CSRF: s.csrfFor(c.Value)}
 }
 
-func secHeaders(w http.ResponseWriter) {
+func (s *Server) secHeaders(w http.ResponseWriter) {
 	h := w.Header()
+	if s.secure {
+		h.Set("Strict-Transport-Security", "max-age=31536000")
+	}
 	h.Set("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("X-Frame-Options", "DENY")
@@ -233,7 +265,7 @@ type handler func(w http.ResponseWriter, r *http.Request, sess *session)
 
 func (s *Server) get(h handler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		secHeaders(w)
+		s.secHeaders(w)
 		sess := s.sessionFrom(r)
 		if sess == nil {
 			http.Redirect(w, r, "/login", http.StatusSeeOther)
@@ -259,7 +291,7 @@ func sameOrigin(r *http.Request) bool {
 
 func (s *Server) post(h handler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		secHeaders(w)
+		s.secHeaders(w)
 		if !sameOrigin(r) {
 			s.fail(w, r, nil, http.StatusForbidden, "Cross-origin request rejected.", nil)
 			return
@@ -332,7 +364,7 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, sess *session, cod
 	if err != nil {
 		s.log.Error("web: request failed", "path", r.URL.Path, "status", code, "err", err)
 	}
-	secHeaders(w)
+	s.secHeaders(w)
 	s.render(w, r, sess, code, "error", map[string]any{"Code": code, "Status": http.StatusText(code), "Message": msg})
 }
 
@@ -350,7 +382,7 @@ func (s *Server) storeErr(w http.ResponseWriter, r *http.Request, sess *session,
 }
 
 func (s *Server) handleFallback(w http.ResponseWriter, r *http.Request) {
-	secHeaders(w)
+	s.secHeaders(w)
 	if strings.HasPrefix(r.URL.Path, "/api/") {
 		http.NotFound(w, r)
 		return
@@ -506,4 +538,47 @@ func (s *Server) findRule(ctx context.Context, id string) (model.Rule, bool) {
 		return r, true
 	}
 	return model.Rule{}, false
+}
+
+// nextExpiry implements the idle timeout without a last_seen column. The stored expiry is always
+// "last refresh + sessionIdle", so the last refresh is expires-sessionIdle. When that is more than
+// sessionRefresh ago the expiry is pushed to now+sessionIdle, never past created+sessionTTL.
+func nextExpiry(created, expires, now time.Time) (time.Time, bool) {
+	if now.Sub(expires.Add(-sessionIdle)) <= sessionRefresh {
+		return expires, false
+	}
+	exp := now.Add(sessionIdle)
+	if limit := created.Add(sessionTTL); exp.After(limit) {
+		exp = limit
+	}
+	return exp, exp.After(expires)
+}
+
+func isLoopbackURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	h := strings.ToLower(u.Hostname())
+	if h == "localhost" || strings.HasSuffix(h, ".localhost") {
+		return true
+	}
+	ip := net.ParseIP(h)
+	return ip != nil && ip.IsLoopback()
+}
+
+var refHosts = map[string]bool{
+	"nvd.nist.gov": true, "www.cve.org": true, "cve.mitre.org": true, "osv.dev": true, "github.com": true,
+	"security-tracker.debian.org": true, "ubuntu.com": true, "access.redhat.com": true, "www.openwall.com": true,
+	"lists.debian.org": true, "www.qualys.com": true, "httpd.apache.org": true, "nginx.org": true, "www.openssh.com": true,
+}
+
+// safeRef reports whether a rule reference may be rendered as a link: https, allowlisted host,
+// no credentials, default port.
+func safeRef(raw string) bool {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Scheme != "https" || u.User != nil || u.Port() != "" || u.Opaque != "" {
+		return false
+	}
+	return refHosts[strings.ToLower(u.Hostname())]
 }

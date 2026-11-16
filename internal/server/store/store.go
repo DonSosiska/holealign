@@ -128,6 +128,8 @@ type Store interface {
 	CreateSession(ctx context.Context, s Session) error
 	GetSession(ctx context.Context, tokenHash string, now time.Time) (Session, error)
 	DeleteSession(ctx context.Context, tokenHash string) error
+	// ExtendSession moves a live session's expiry to expiresAt (idle-timeout refresh).
+	ExtendSession(ctx context.Context, tokenHash string, expiresAt, now time.Time) error
 	DeleteExpiredSessions(ctx context.Context, now time.Time) error
 
 	// Settings (JSON values edited in the web UI, e.g. "matrix.routes") and kv (feed timestamps).

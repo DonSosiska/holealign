@@ -116,15 +116,20 @@ func (s *Server) handleMatrixSave(w http.ResponseWriter, r *http.Request, sess *
 		s.renderSettings(w, r, sess, http.StatusUnprocessableEntity, map[string]any{"MatrixError": err.Error(), "RoutesText": text})
 		return
 	}
+	oldN := len(s.storedRoutes(r))
 	raw, _ := json.Marshal(routes)
 	if err := s.d.Store.SetSetting(r.Context(), matrixSettingKey, raw, s.now()); err != nil {
 		s.fail(w, r, sess, http.StatusInternalServerError, "Could not save routes; see server log.", err)
 		return
 	}
+	s.audit(r, sess.Username, "matrix_routes_change", matrixSettingKey, "old_routes", oldN, "new_routes", len(routes))
 	s.redirectOK(w, r, "/settings", "saved")
 }
 
 func (s *Server) handleTokenCreate(w http.ResponseWriter, r *http.Request, sess *session) {
+	if !s.reauth(w, r, sess) {
+		return
+	}
 	name := strings.TrimSpace(r.PostFormValue("name"))
 	if !nameRe.MatchString(name) {
 		s.renderSettings(w, r, sess, http.StatusUnprocessableEntity, map[string]any{
@@ -144,6 +149,7 @@ func (s *Server) handleTokenCreate(w http.ResponseWriter, r *http.Request, sess 
 		s.fail(w, r, sess, http.StatusInternalServerError, "Could not create the token; see server log.", err)
 		return
 	}
+	s.audit(r, sess.Username, "token_create", name)
 	snippet := fmt.Sprintf("server_url: %s\nenroll_token: %q\nlabels: []\n", s.cfg.PublicURL, secret)
 	s.renderSettings(w, r, sess, http.StatusOK, map[string]any{"NewTokenName": name, "NewToken": secret, "Snippet": snippet})
 }
@@ -153,18 +159,22 @@ func (s *Server) handleTokenRevoke(w http.ResponseWriter, r *http.Request, sess 
 		s.storeErr(w, r, sess, err)
 		return
 	}
+	s.audit(r, sess.Username, "token_revoke", r.PathValue("name"))
 	s.redirectOK(w, r, "/settings", "revoked")
 }
 
 func (s *Server) handleUserAdd(w http.ResponseWriter, r *http.Request, sess *session) {
+	if !s.reauth(w, r, sess) {
+		return
+	}
 	name := strings.TrimSpace(r.PostFormValue("username"))
 	pw := r.PostFormValue("password")
 	msg := ""
 	switch {
 	case !nameRe.MatchString(name):
 		msg = "Username must be 1-64 characters: letters, digits, '.', '_', '-', '@'."
-	case len(pw) < 8:
-		msg = "Password must be at least 8 characters."
+	case len(pw) < minPasswordLen:
+		msg = "Password must be at least 12 characters."
 	}
 	if msg != "" {
 		s.renderSettings(w, r, sess, http.StatusUnprocessableEntity, map[string]any{"UserError": msg, "UserName": name})
@@ -183,14 +193,18 @@ func (s *Server) handleUserAdd(w http.ResponseWriter, r *http.Request, sess *ses
 		s.fail(w, r, sess, http.StatusInternalServerError, "Could not create the user; see server log.", err)
 		return
 	}
+	s.audit(r, sess.Username, "user_add", name)
 	s.redirectOK(w, r, "/settings", "created")
 }
 
 func (s *Server) handleUserPassword(w http.ResponseWriter, r *http.Request, sess *session) {
+	if !s.reauth(w, r, sess) {
+		return
+	}
 	name := r.PathValue("name")
 	pw := r.PostFormValue("password")
-	if len(pw) < 8 {
-		s.renderSettings(w, r, sess, http.StatusUnprocessableEntity, map[string]any{"UserError": "Password must be at least 8 characters."})
+	if len(pw) < minPasswordLen {
+		s.renderSettings(w, r, sess, http.StatusUnprocessableEntity, map[string]any{"UserError": "Password must be at least 12 characters."})
 		return
 	}
 	hash, err := store.HashPassword(pw)
@@ -202,10 +216,14 @@ func (s *Server) handleUserPassword(w http.ResponseWriter, r *http.Request, sess
 		s.storeErr(w, r, sess, err)
 		return
 	}
+	s.audit(r, sess.Username, "user_password_change", name)
 	s.redirectOK(w, r, "/settings", "password")
 }
 
 func (s *Server) handleUserDelete(w http.ResponseWriter, r *http.Request, sess *session) {
+	if !s.reauth(w, r, sess) {
+		return
+	}
 	name := r.PathValue("name")
 	if name == sess.Username {
 		s.renderSettings(w, r, sess, http.StatusUnprocessableEntity, map[string]any{"UserError": "You cannot delete your own account."})
@@ -215,5 +233,6 @@ func (s *Server) handleUserDelete(w http.ResponseWriter, r *http.Request, sess *
 		s.storeErr(w, r, sess, err)
 		return
 	}
+	s.audit(r, sess.Username, "user_delete", name)
 	s.redirectOK(w, r, "/settings", "deleted")
 }

@@ -44,6 +44,7 @@
 <form method="post" action="/settings/tokens" class="inline">
   <input type="hidden" name="csrf" value="{{.CSRF}}">
   <label>New token name <input name="name" value="{{.TokenName}}" placeholder="prod-fleet" required></label>
+  <label>Your password <input type="password" name="current_password" autocomplete="current-password" required></label>
   <button type="submit" class="primary">Create token</button>
 </form>
 </section>
@@ -55,13 +56,14 @@
 <thead><tr><th>Username</th><th>Created</th><th>Change password</th><th></th></tr></thead>
 <tbody>{{range .Users}}
 <tr><td>{{.Username}}{{if eq .Username $.Me}} <span class="muted">(you)</span>{{end}}</td><td>{{ts .CreatedAt}}</td>
-<td><form method="post" action="/settings/users/{{.Username}}/password" class="inline"><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="password" name="password" minlength="8" placeholder="new password" autocomplete="new-password" required><button type="submit" class="btn small">Change</button></form></td>
-<td>{{if ne .Username $.Me}}<form method="post" action="/settings/users/{{.Username}}/delete" data-confirm="Delete this user?"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button type="submit" class="danger small">Delete</button></form>{{end}}</td></tr>
+<td><form method="post" action="/settings/users/{{.Username}}/password" class="inline"><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="password" name="current_password" placeholder="your current password" autocomplete="current-password" required><input type="password" name="password" minlength="12" placeholder="new password (12+)" autocomplete="new-password" required><button type="submit" class="btn small">Change</button></form></td>
+<td>{{if ne .Username $.Me}}<form method="post" action="/settings/users/{{.Username}}/delete" data-confirm="Delete this user?"><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="password" name="current_password" placeholder="your current password" autocomplete="current-password" required><button type="submit" class="danger small">Delete</button></form>{{end}}</td></tr>
 {{end}}</tbody></table></div>
 <form method="post" action="/settings/users" class="inline">
   <input type="hidden" name="csrf" value="{{.CSRF}}">
   <label>Username <input name="username" value="{{.UserName}}" autocomplete="off" required></label>
-  <label>Password <input type="password" name="password" minlength="8" autocomplete="new-password" required></label>
+  <label>Password (12+) <input type="password" name="password" minlength="12" autocomplete="new-password" required></label>
+  <label>Your password <input type="password" name="current_password" autocomplete="current-password" required></label>
   <button type="submit" class="primary">Add user</button>
 </form>
 </section>
