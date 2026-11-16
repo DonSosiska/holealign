@@ -1,5 +1,7 @@
 name: ci
 
+# pull_request (not pull_request_target): PRs from forks run without secrets
+# and with a read-only token.
 on:
   push:
   pull_request:
@@ -7,15 +9,20 @@ on:
 permissions:
   contents: read
 
+env:
+  GOFLAGS: -mod=readonly
+
 jobs:
   test:
     runs-on: ubuntu-latest
     env:
       CGO_ENABLED: "0"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: go.mod
           cache: true
@@ -29,7 +36,12 @@ jobs:
       - name: Build
         run: go build ./...
 
-      - name: Shell checks for the installer
+      - name: Vulnerability check
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+          govulncheck ./...
+
+      - name: Shell checks for the installer and e2e scripts
         run: |
           sh -n deploy/install.sh
-          shellcheck deploy/install.sh
+          shellcheck deploy/install.sh deploy/e2e/*.sh

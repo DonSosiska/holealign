@@ -154,6 +154,41 @@ and more, listed in the contract). A fact that is missing on a host means the ve
   [deploy/server.yaml.example](deploy/server.yaml.example),
   [deploy/server.env.example](deploy/server.env.example).
 
+## Verifying releases
+
+Each release publishes `checksums.txt`, a keyless Sigstore signature for it
+(`checksums.txt.sig` and `checksums.txt.pem`), SPDX SBOMs for the archives, and
+GitHub build provenance attestations. Signatures are made by the release workflow
+in this repository, so the certificate identity must match that workflow and tag.
+Replace `OWNER` with the GitHub owner of the repository.
+
+1. Verify the checksum file was signed by the release workflow:
+
+   ```sh
+   cosign verify-blob --certificate checksums.txt.pem --signature checksums.txt.sig --certificate-identity-regexp 'https://github.com/OWNER/panoptes/.github/workflows/release.yml@refs/tags/v.*' --certificate-oidc-issuer https://token.actions.githubusercontent.com checksums.txt
+   ```
+
+2. Check the files you downloaded against the verified checksums. `--ignore-missing`
+   skips the files you did not download:
+
+   ```sh
+   sha256sum -c checksums.txt --ignore-missing
+   ```
+
+3. Verify the server image signature (replace `VERSION` with the release version, for
+   example `1.2.3`):
+
+   ```sh
+   cosign verify ghcr.io/OWNER/panoptes-server:VERSION --certificate-identity-regexp 'https://github.com/OWNER/panoptes/.github/workflows/release.yml@refs/tags/v.*' --certificate-oidc-issuer https://token.actions.githubusercontent.com
+   ```
+
+4. Verify the build provenance of a downloaded archive, `.deb` or `.rpm` (requires the
+   [GitHub CLI](https://cli.github.com/)):
+
+   ```sh
+   gh attestation verify panoptes-agent_VERSION_linux_amd64.tar.gz --repo OWNER/panoptes
+   ```
+
 ## License
 
 Apache License 2.0. See [LICENSE](LICENSE).
