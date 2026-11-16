@@ -1,12 +1,16 @@
 #!/bin/sh
 # Panoptes agent installer (Linux with systemd, root required).
 #
-#   curl -fsSL https://raw.githubusercontent.com/OWNER/panoptes/main/deploy/install.sh | \
-#     sudo sh -s -- --server https://panoptes.example.com --token pt_xxx --labels prod,web
+#   curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/OWNER/panoptes/main/deploy/install.sh | \
+#     sudo PANOPTES_ENROLL_TOKEN=pt_xxx sh -s -- --server https://panoptes.example.com --labels prod,web
 #
 # Options:
-#   --server URL      panoptes-server base URL (http:// or https://). Required on first install.
-#   --token TOKEN     enrollment token from `panoptes-server token create`. Required on first install.
+#   --server URL      panoptes-server base URL (https://, no user:password@). Required on first install.
+#   --token-file PATH read the enrollment token (from `panoptes-server token create`) from PATH.
+#   --token TOKEN     enrollment token; visible in `ps` and shell history, prefer --token-file or
+#                     the PANOPTES_ENROLL_TOKEN environment variable. One of the three is required
+#                     on first install.
+#   --allow-insecure-http  accept an http:// --server (testing only).
 #   --labels a,b      comma-separated labels (optional).
 #   --version VER     release to install, e.g. 1.2.3 or v1.2.3 (default: latest).
 #   --binary PATH     install this local panoptes-agent binary instead of downloading (air-gapped).
@@ -17,6 +21,7 @@
 #
 # Environment:
 #   PANOPTES_REPO     GitHub repository to download from (default: OWNER/panoptes).
+#   PANOPTES_ENROLL_TOKEN  enrollment token (alternative to --token-file).
 #
 # The token is written to the config file only and is never printed.
 # The systemd unit below mirrors deploy/systemd/panoptes-agent.service, except that
@@ -27,7 +32,9 @@ set -eu
 REPO="${PANOPTES_REPO:-OWNER/panoptes}"
 VERSION="latest"
 SERVER=""
-TOKEN=""
+TOKEN="${PANOPTES_ENROLL_TOKEN:-}"
+TOKEN_FILE=""
+ALLOW_HTTP=0
 LABELS=""
 BINARY_SRC=""
 FORCE=0
@@ -50,7 +57,7 @@ log() {
 }
 
 usage() {
-    sed -n '2,22p' "$0" 2>/dev/null | sed 's/^# \{0,1\}//' || true
+    sed -n '2,24p' "$0" 2>/dev/null | sed 's/^# \{0,1\}//' || true
 }
 
 # --- argument parsing -------------------------------------------------------
@@ -62,7 +69,13 @@ while [ $# -gt 0 ]; do
             SERVER="$2"; shift 2 ;;
         --token)
             [ $# -ge 2 ] || die "--token needs a value"
+            printf 'warning: --token is visible in the process list and shell history; use --token-file or PANOPTES_ENROLL_TOKEN\n' >&2
             TOKEN="$2"; shift 2 ;;
+        --token-file)
+            [ $# -ge 2 ] || die "--token-file needs a path"
+            TOKEN_FILE="$2"; shift 2 ;;
+        --allow-insecure-http)
+            ALLOW_HTTP=1; shift ;;
         --labels)
             [ $# -ge 2 ] || die "--labels needs a value"
             LABELS="$2"; shift 2 ;;
@@ -83,6 +96,8 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+printf '%s\n' "$REPO" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' || die "PANOPTES_REPO must look like owner/name"
+
 [ "$(id -u)" -eq 0 ] || die "must run as root (use sudo)"
 [ "$(uname -s)" = "Linux" ] || die "only Linux is supported"
 command -v systemctl >/dev/null 2>&1 || die "systemd (systemctl) is required"
@@ -97,7 +112,7 @@ if [ "$UNINSTALL" -eq 1 ]; then
     if [ "$FORCE" -eq 1 ]; then
         log "removing $CONF_FILE and $STATE_DIR"
         rm -f "$CONF_FILE"
-        rm -rf "$STATE_DIR"
+        rm -rf "${STATE_DIR:?}"
         rmdir "$CONF_DIR" 2>/dev/null || true
     else
         log "kept $CONF_FILE and $STATE_DIR (use --uninstall --force to remove them)"
@@ -114,17 +129,31 @@ WRITE_CONFIG=0
 if [ "$CONFIG_EXISTS" -eq 0 ] || [ "$FORCE" -eq 1 ]; then
     WRITE_CONFIG=1
 fi
+# the config holds the enrollment token: never leave an existing one readable by others
+if [ "$CONFIG_EXISTS" -eq 1 ]; then
+    chmod 0600 "$CONF_FILE"
+fi
 
 if [ "$WRITE_CONFIG" -eq 1 ]; then
     [ -n "$SERVER" ] || die "--server is required"
     case "$SERVER" in
-        http://*|https://*) ;;
-        *) die "--server must start with http:// or https://" ;;
+        https://*) ;;
+        http://*) [ "$ALLOW_HTTP" -eq 1 ] || die "--server must use https:// (or pass --allow-insecure-http for testing)" ;;
+        *) die "--server must start with https://" ;;
+    esac
+    server_authority="${SERVER#*://}"
+    server_authority="${server_authority%%/*}"
+    case "$server_authority" in
+        *@*) die "--server must not contain user:password@" ;;
     esac
     case "$SERVER" in
         *[!A-Za-z0-9._:/~%@+-]*) die "--server contains unsupported characters" ;;
     esac
-    [ -n "$TOKEN" ] || die "--token is required"
+    if [ -n "$TOKEN_FILE" ]; then
+        [ -f "$TOKEN_FILE" ] || die "--token-file: file not found: $TOKEN_FILE"
+        TOKEN="$(tr -d ' \t\r\n' < "$TOKEN_FILE")"
+    fi
+    [ -n "$TOKEN" ] || die "an enrollment token is required (--token-file PATH or PANOPTES_ENROLL_TOKEN)"
     case "$TOKEN" in
         *[!A-Za-z0-9_-]*) die "--token has an invalid format" ;;
     esac
@@ -200,7 +229,7 @@ ensure_prerequisites
 # --- get the binary ---------------------------------------------------------
 
 TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT INT TERM
+trap 'rm -rf "${TMP:?}"' EXIT INT TERM
 
 if [ -n "$BINARY_SRC" ]; then
     [ -f "$BINARY_SRC" ] || die "--binary: file not found: $BINARY_SRC"
@@ -209,7 +238,7 @@ if [ -n "$BINARY_SRC" ]; then
 else
     if [ "$VERSION" = "latest" ]; then
         log "resolving latest release of $REPO"
-        final_url="$(curl -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/$REPO/releases/latest")" \
+        final_url="$(curl --proto '=https' --tlsv1.2 -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/$REPO/releases/latest")" \
             || die "cannot resolve the latest release of $REPO"
         TAG="${final_url##*/}"
     else
@@ -227,8 +256,8 @@ else
     BASE="https://github.com/$REPO/releases/download/$TAG"
 
     log "downloading panoptes-agent $TAG ($ARCH)"
-    curl -fsSL -o "$TMP/$ASSET" "$BASE/$ASSET" || die "download failed: $ASSET"
-    curl -fsSL -o "$TMP/checksums.txt" "$BASE/checksums.txt" || die "download failed: checksums.txt"
+    curl --proto '=https' --tlsv1.2 -fsSL -o "$TMP/$ASSET" "$BASE/$ASSET" || die "download failed: $ASSET"
+    curl --proto '=https' --tlsv1.2 -fsSL -o "$TMP/checksums.txt" "$BASE/checksums.txt" || die "download failed: checksums.txt"
 
     expected="$(awk -v f="$ASSET" '$2 == f {print $1; exit}' "$TMP/checksums.txt")"
     [ -n "$expected" ] || die "no checksum listed for $ASSET"
@@ -268,6 +297,9 @@ enroll_token: "$TOKEN"
 labels: $yaml_labels
 state_dir: $STATE_DIR
 EOF
+    if [ "$ALLOW_HTTP" -eq 1 ]; then
+        printf 'allow_insecure_http: true\n' >> "$tmp_conf"
+    fi
     chmod 0600 "$tmp_conf"
     mv -f "$tmp_conf" "$CONF_FILE"
     umask "$old_umask"
@@ -298,14 +330,35 @@ StateDirectory=panoptes-agent
 StateDirectoryMode=0700
 ReadWritePaths=/var/lib/panoptes-agent
 
+# Hardening that keeps read access to the whole system. The agent needs to read
+# everything, so ProtectHome and ProtectProc are deliberately not set.
 ProtectSystem=strict
 PrivateTmp=yes
 NoNewPrivileges=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
+ProtectKernelLogs=yes
 ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
 RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
 LockPersonality=yes
+MemoryDenyWriteExecute=yes
+PrivateDevices=yes
+SystemCallArchitectures=native
+UMask=0077
+# DAC_READ_SEARCH/DAC_OVERRIDE: read root-only files and open docker.sock;
+# SYS_PTRACE: resolve /proc/*/fd socket inodes of other users' processes.
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_DAC_OVERRIDE CAP_SYS_PTRACE
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @mount
+# NOTE: child processes (sshd -T, nginx -T, php -i, apachectl, systemctl, ...) inherit
+# these limits. Verify on a real host that every collector still works
+# (run `panoptes-agent -print-facts` under `systemd-run` with the same properties).
 
 Nice=10
 IOSchedulingClass=idle

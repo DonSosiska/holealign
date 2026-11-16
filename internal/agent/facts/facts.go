@@ -18,6 +18,16 @@ type Env struct {
 	Runner       CommandRunner
 	FS           fs.FS  // rooted at "/", paths without leading slash ("etc/os-release")
 	DockerSocket string // unix socket of the Docker Engine API
+
+	// SafeOpen opens a resolved physical path without following symlinks
+	// (TOCTOU-safe, linux only); nil falls back to FS.Open.
+	SafeOpen func(physical string) (fs.File, error)
+	// TreeTrust verifies that config trees (path globs) are root-owned and not
+	// group/world-writable before the agent runs a tool that parses them as
+	// root; nil = trust everything (tests).
+	TreeTrust func(roots []string) error
+
+	skips skipLog
 }
 
 // collector is one built-in collector; it returns the facts it could determine.
@@ -46,6 +56,8 @@ func defaultEnv() *Env {
 		Runner:       execRunner{},
 		FS:           os.DirFS("/"),
 		DockerSocket: "/var/run/docker.sock",
+		SafeOpen:     safeOpen,
+		TreeTrust:    treeTrusted,
 	}
 }
 
@@ -86,6 +98,10 @@ func collect(ctx context.Context, env *Env, reqs []model.FactRequest) model.Fact
 		}
 	}
 
+	if sk := env.skipped(); len(sk) > 0 {
+		out["agent.skipped"] = sk
+	}
+
 	for name, v := range runFileMatchRequests(ctx, env, reqs) {
 		out[name] = v
 	}
@@ -95,6 +111,9 @@ func collect(ctx context.Context, env *Env, reqs []model.FactRequest) model.Fact
 // runFileMatchRequests evaluates the parametrised requests, isolating panics per request.
 func runFileMatchRequests(ctx context.Context, env *Env, reqs []model.FactRequest) map[string]any {
 	out := map[string]any{}
+	ctx, cancel := context.WithTimeout(ctx, fmDeadline)
+	defer cancel()
+	bud := newFMBudget()
 	for _, req := range selectFileMatchRequests(reqs) {
 		func() {
 			defer func() {
@@ -102,7 +121,7 @@ func runFileMatchRequests(ctx context.Context, env *Env, reqs []model.FactReques
 					log.Printf("facts: file.match %q panicked: %v", req.Name, fmt.Sprint(r))
 				}
 			}()
-			if lines, ok := evalFileMatch(ctx, env, req); ok {
+			if lines, ok := evalFileMatchB(ctx, env, req, bud); ok {
 				out[req.Name] = lines
 			}
 		}()

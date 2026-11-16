@@ -50,7 +50,7 @@ func parseNginxDirectives(data []byte) map[string][]string {
 	endStatement := func() {
 		flushWord()
 		if len(tokens) > 0 {
-			out[tokens[0]] = append(out[tokens[0]], strings.Join(tokens[1:], " "))
+			out[tokens[0]] = append(out[tokens[0]], maskDirective(tokens[0], strings.Join(tokens[1:], " ")))
 		}
 		tokens = tokens[:0]
 	}
@@ -127,6 +127,23 @@ func parseNginxDirectives(data []byte) map[string][]string {
 	return out
 }
 
+const nginxMaxValue = 256
+
+// maskDirective masks secrets in a directive value: the directive name and its
+// arguments are scanned together, so `proxy_set_header Authorization Bearer x`
+// and `fastcgi_param DB_PASSWORD x` lose their secret part. Values are capped.
+func maskDirective(name, value string) string {
+	if value != "" {
+		full := name + " " + value
+		if masked := maskSecrets(full); masked != full && strings.HasPrefix(masked, name+" ") {
+			value = masked[len(name)+1:]
+		} else if masked != full {
+			value = "***"
+		}
+	}
+	return truncateBytes(value, nginxMaxValue)
+}
+
 // nginxHTTP2 reports whether `http2 on;` or a `listen ... http2` flag is present.
 func nginxHTTP2(d map[string][]string) bool {
 	for _, v := range d["http2"] {
@@ -144,6 +161,10 @@ func nginxHTTP2(d map[string][]string) bool {
 	return false
 }
 
+// nginxConfigRoots are the config trees nginx -T/-V may load (load_module
+// directives run arbitrary shared objects as root).
+var nginxConfigRoots = []string{"/etc/nginx", "/usr/local/etc/nginx", "/usr/local/nginx/conf"}
+
 func collectNginx(ctx context.Context, env *Env) model.Facts {
 	f := model.Facts{}
 
@@ -155,6 +176,10 @@ func collectNginx(ctx context.Context, env *Env) model.Facts {
 	f["nginx.installed"] = true
 	if m := reNginxVersion.FindSubmatch(v); m != nil {
 		f["nginx.version"] = string(m[1])
+	}
+
+	if !env.treeOK("nginx", nginxConfigRoots...) {
+		return f
 	}
 
 	if out, err := env.run(ctx, "nginx", "-V"); err == nil {

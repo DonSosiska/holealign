@@ -32,7 +32,9 @@ func Scan(ctx context.Context, cfg config.Config) (model.InventoryPayload, error
 		return model.InventoryPayload{}, err
 	}
 
-	hostSBOM, err := scanHost(ctx, cfg, enc)
+	hostSBOM, err := safeScan("host", cfg.HostScanTimeout, ctx, func(c context.Context) ([]byte, error) {
+		return scanHost(c, cfg, enc)
+	})
 	if err != nil {
 		return model.InventoryPayload{}, fmt.Errorf("scan host: %w", err)
 	}
@@ -51,7 +53,9 @@ func Scan(ctx context.Context, cfg config.Config) (model.InventoryPayload, error
 			if ctx.Err() != nil {
 				return model.InventoryPayload{}, ctx.Err()
 			}
-			raw, err := scanImage(ctx, cfg, enc, r)
+			raw, err := safeScan("image "+r.Name, cfg.ImageScanTimeout, ctx, func(c context.Context) ([]byte, error) {
+				return scanImage(c, cfg, enc, r)
+			})
 			if err != nil {
 				slog.Warn("scan image failed", "image", r.Name, "err", err)
 				continue
@@ -68,6 +72,22 @@ func Scan(ctx context.Context, cfg config.Config) (model.InventoryPayload, error
 		Hash:        ComputeHash(targets), // also sorts targets
 		Targets:     targets,
 	}, nil
+}
+
+// safeScan runs fn with a per-scan timeout and converts a panic inside the
+// scanner library into an error, so a malformed filesystem cannot crash the agent.
+func safeScan(what string, timeout time.Duration, ctx context.Context, fn func(context.Context) ([]byte, error)) (out []byte, err error) {
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			out, err = nil, fmt.Errorf("scan %s panicked: %v", what, r)
+		}
+	}()
+	return fn(ctx)
 }
 
 func newEncoder() (sbom.FormatEncoder, error) {

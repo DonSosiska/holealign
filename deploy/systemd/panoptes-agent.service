@@ -22,9 +22,28 @@ PrivateTmp=yes
 NoNewPrivileges=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
+ProtectKernelLogs=yes
 ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
 RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
 LockPersonality=yes
+MemoryDenyWriteExecute=yes
+PrivateDevices=yes
+SystemCallArchitectures=native
+UMask=0077
+# DAC_READ_SEARCH/DAC_OVERRIDE: read root-only files and open docker.sock;
+# SYS_PTRACE: resolve /proc/*/fd socket inodes of other users' processes.
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_DAC_OVERRIDE CAP_SYS_PTRACE
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @mount
+# NOTE: child processes (sshd -T, nginx -T, php -i, apachectl, systemctl, ...) inherit
+# these limits. Verify on a real host that every collector still works
+# (run `panoptes-agent -print-facts` under `systemd-run` with the same properties).
 
 # Resource limits: scans must not disturb the host.
 Nice=10

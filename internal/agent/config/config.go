@@ -28,11 +28,15 @@ type Config struct {
 	DockerSocket         string        `yaml:"docker_socket"`
 	ScanLanguagePackages bool          `yaml:"scan_language_packages"`
 	ExcludePaths         []string      `yaml:"exclude_paths"`
+	AllowInsecureHTTP    bool          `yaml:"allow_insecure_http"`
+	HostScanTimeout      time.Duration `yaml:"host_scan_timeout"`
+	ImageScanTimeout     time.Duration `yaml:"image_scan_timeout"`
 }
 
 // DefaultExcludePaths are excluded from the host scan unless configured otherwise.
 func DefaultExcludePaths() []string {
-	return []string{"/proc", "/sys", "/dev", "/run", "/var/lib/docker", "/var/lib/containerd", "/snap"}
+	return []string{"/proc", "/sys", "/dev", "/run", "/var/lib/docker", "/var/lib/containerd", "/snap",
+		"/mnt", "/media", "/var/lib/containers", "/var/lib/kubelet", "/var/lib/lxc", "/var/lib/lxd", "/home/*/.cache"}
 }
 
 // Default returns the configuration with all defaults applied.
@@ -44,6 +48,8 @@ func Default() Config {
 		DockerSocket:         "/var/run/docker.sock",
 		ScanLanguagePackages: true,
 		ExcludePaths:         DefaultExcludePaths(),
+		HostScanTimeout:      10 * time.Minute,
+		ImageScanTimeout:     5 * time.Minute,
 	}
 }
 
@@ -87,7 +93,16 @@ func (c *Config) Validate() error {
 	}
 	u, err := url.Parse(c.ServerURL)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return fmt.Errorf("config: server_url %q must be an http(s) URL with a host", c.ServerURL)
+		return fmt.Errorf("config: server_url must be an https URL with a host")
+	}
+	if u.User != nil {
+		return fmt.Errorf("config: server_url must not contain credentials")
+	}
+	if u.Scheme == "http" && !c.AllowInsecureHTTP {
+		return fmt.Errorf("config: server_url must use https:// (set allow_insecure_http: true to permit http)")
+	}
+	if c.HostScanTimeout <= 0 || c.ImageScanTimeout <= 0 {
+		return fmt.Errorf("config: scan timeouts must be positive")
 	}
 	if c.CheckinInterval <= 0 {
 		return fmt.Errorf("config: checkin_interval must be positive")

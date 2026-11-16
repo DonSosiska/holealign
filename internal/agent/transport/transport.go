@@ -5,12 +5,15 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math/rand/v2"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,6 +24,10 @@ import (
 
 // ErrUnauthorized is returned when the server answers 401.
 var ErrUnauthorized = errors.New("transport: unauthorized (401)")
+
+// ErrEnrollConflict is returned when enrollment answers 409: the host already
+// exists and the previous agent key is required (or an operator must allow re-enroll).
+var ErrEnrollConflict = errors.New("transport: enroll conflict (409): host exists; previous key required")
 
 // Credentials are the per-agent credentials returned by enrollment.
 type Credentials struct {
@@ -33,9 +40,11 @@ type Client struct {
 	BaseURL string
 	Key     string // agent key; empty before enrollment
 
-	HTTP             *http.Client
-	InventoryTimeout time.Duration
-	RequestTimeout   time.Duration
+	HTTP *http.Client
+	// AllowInsecureHTTP permits an http:// BaseURL (config allow_insecure_http).
+	AllowInsecureHTTP bool
+	InventoryTimeout  time.Duration
+	RequestTimeout    time.Duration
 
 	// MaxAttempts bounds attempts per call (0 = retry until ctx is done).
 	MaxAttempts int
@@ -46,16 +55,46 @@ type Client struct {
 
 // New creates a client with the contract defaults (30 s timeout, 5 min for inventory, backoff cap 5 min).
 func New(baseURL, key string) *Client {
+	baseURL = strings.TrimRight(baseURL, "/")
 	return &Client{
-		BaseURL:          strings.TrimRight(baseURL, "/"),
+		BaseURL:          baseURL,
 		Key:              key,
-		HTTP:             &http.Client{},
+		HTTP:             newHTTPClient(baseURL),
 		InventoryTimeout: 5 * time.Minute,
 		RequestTimeout:   30 * time.Second,
 		BaseBackoff:      2 * time.Second,
 		MaxBackoff:       5 * time.Minute,
 		sleep:            sleepCtx,
 	}
+}
+
+// newHTTPClient builds a client that never follows redirects (a redirect could
+// re-send the bearer key or the body elsewhere) and requires TLS 1.2+.
+func newHTTPClient(baseURL string) *http.Client {
+	var tr *http.Transport
+	if dt, ok := http.DefaultTransport.(*http.Transport); ok {
+		tr = dt.Clone()
+	} else {
+		tr = &http.Transport{Proxy: http.ProxyFromEnvironment}
+	}
+	if tr.TLSClientConfig == nil {
+		tr.TLSClientConfig = &tls.Config{}
+	}
+	tr.TLSClientConfig.MinVersion = tls.VersionTLS12
+	if req, err := http.NewRequest(http.MethodGet, baseURL, nil); err == nil && tr.Proxy != nil {
+		if pu, err := tr.Proxy(req); err == nil && pu != nil {
+			slog.Info("using proxy from environment", "proxy", redactURL(pu))
+		}
+	}
+	return &http.Client{
+		Transport:     tr,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+}
+
+// redactURL renders a URL without userinfo, path or query.
+func redactURL(u *url.URL) string {
+	return (&url.URL{Scheme: u.Scheme, Host: u.Host}).String()
 }
 
 func sleepCtx(ctx context.Context, d time.Duration) error {
@@ -69,7 +108,8 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 	}
 }
 
-// Enroll registers the agent. It does not send the bearer key.
+// Enroll registers the agent. When the client holds a previous agent key it is
+// sent as the bearer token so the server can verify the host's identity.
 func (c *Client) Enroll(ctx context.Context, req model.EnrollRequest) (model.EnrollResponse, error) {
 	var resp model.EnrollResponse
 	body, err := json.Marshal(req)
@@ -140,6 +180,9 @@ func (c *Client) backoff(attempt int) time.Duration {
 }
 
 func (c *Client) once(ctx context.Context, path string, body []byte, gz bool, timeout time.Duration, out any) (error, bool) {
+	if err := c.checkURL(); err != nil {
+		return err, false
+	}
 	rctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(rctx, http.MethodPost, c.BaseURL+path, bytes.NewReader(body))
@@ -151,7 +194,7 @@ func (c *Client) once(ctx context.Context, path string, body []byte, gz bool, ti
 	if gz {
 		req.Header.Set("Content-Encoding", "gzip")
 	}
-	if c.Key != "" && path != "/api/v1/enroll" {
+	if c.Key != "" {
 		req.Header.Set("Authorization", "Bearer "+c.Key)
 	}
 	resp, err := c.HTTP.Do(req)
@@ -166,8 +209,12 @@ func (c *Client) once(ctx context.Context, path string, body []byte, gz bool, ti
 	switch {
 	case resp.StatusCode == http.StatusUnauthorized:
 		return ErrUnauthorized, false
+	case resp.StatusCode == http.StatusConflict && path == "/api/v1/enroll":
+		return ErrEnrollConflict, false
 	case resp.StatusCode >= 500:
 		return fmt.Errorf("POST %s: server error %d: %s", path, resp.StatusCode, errMsg(data)), true
+	case resp.StatusCode >= 300 && resp.StatusCode < 400:
+		return fmt.Errorf("POST %s: unexpected redirect (status %d) refused", path, resp.StatusCode), false
 	case resp.StatusCode >= 300:
 		return fmt.Errorf("POST %s: status %d: %s", path, resp.StatusCode, errMsg(data)), false
 	}
@@ -177,6 +224,27 @@ func (c *Client) once(ctx context.Context, path string, body []byte, gz bool, ti
 		}
 	}
 	return nil, false
+}
+
+// checkURL enforces https (unless allowed) and rejects credentials in the URL.
+func (c *Client) checkURL() error {
+	u, err := url.Parse(c.BaseURL)
+	if err != nil || u.Host == "" {
+		return fmt.Errorf("transport: invalid server URL")
+	}
+	if u.User != nil {
+		return errors.New("transport: server URL must not contain credentials")
+	}
+	switch u.Scheme {
+	case "https":
+	case "http":
+		if !c.AllowInsecureHTTP {
+			return errors.New("transport: http:// server URL refused (set allow_insecure_http to override)")
+		}
+	default:
+		return fmt.Errorf("transport: unsupported scheme %q", u.Scheme)
+	}
+	return nil
 }
 
 func errMsg(data []byte) string {

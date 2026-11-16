@@ -19,13 +19,13 @@ func TestDefaults(t *testing.T) {
 	if c.StateDir != "/var/lib/panoptes-agent" || c.DockerSocket != "/var/run/docker.sock" || !c.ScanLanguagePackages {
 		t.Errorf("defaults wrong: %+v", c)
 	}
-	if len(c.ExcludePaths) != 7 {
+	if len(c.ExcludePaths) != 14 {
 		t.Errorf("exclude %v", c.ExcludePaths)
 	}
 }
 
 func TestOverrides(t *testing.T) {
-	c, err := Parse([]byte("server_url: http://x:8080\nlabels: [a, b]\ncheckin_interval: 30s\nscan_language_packages: false\nexclude_paths: [/tmp]\n"))
+	c, err := Parse([]byte("server_url: http://x:8080\nallow_insecure_http: true\nlabels: [a, b]\ncheckin_interval: 30s\nscan_language_packages: false\nexclude_paths: [/tmp]\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +35,7 @@ func TestOverrides(t *testing.T) {
 }
 
 func TestValidation(t *testing.T) {
-	for _, in := range []string{"", "server_url: ftp://x", "server_url: nohost", "server_url: http://x\ncheckin_interval: 0s"} {
+	for _, in := range []string{"", "server_url: ftp://x", "server_url: nohost", "server_url: http://x\ncheckin_interval: 0s", "server_url: http://x:8080", "server_url: https://u:p@x", "server_url: https://x\nhost_scan_timeout: 0s"} {
 		if _, err := Parse([]byte(in)); err == nil {
 			t.Errorf("expected error for %q", in)
 		}
