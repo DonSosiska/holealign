@@ -9,6 +9,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -27,7 +28,9 @@ import (
 	"panoptes/internal/server/core"
 	"panoptes/internal/server/feeds"
 	"panoptes/internal/server/match"
+	"panoptes/internal/server/notify"
 	"panoptes/internal/server/pipeline"
+	"panoptes/internal/server/rules"
 	"panoptes/internal/server/store"
 )
 
@@ -119,18 +122,81 @@ type components struct {
 	Mount []func(mux *http.ServeMux)
 }
 
+// lateTrigger lets components built before the pipeline (web UI, LLM drafter)
+// re-run it later. The pipeline pointer is set right after pipeline.New.
+type lateTrigger struct {
+	p   *pipeline.Pipeline
+	log *slog.Logger
+}
+
+func (l *lateTrigger) TriggerAll() {
+	if l == nil || l.p == nil {
+		return
+	}
+	go func() {
+		if err := l.p.TriggerAll(context.Background()); err != nil {
+			l.log.Error("re-run pipeline", "err", err)
+		}
+	}()
+}
+
+// settingsRoutes reads Matrix routes edited in the web UI (setting "matrix.routes").
+type settingsRoutes struct{ st store.Store }
+
+func (s settingsRoutes) MatrixRoutes(ctx context.Context) ([]notify.Route, error) {
+	raw, err := s.st.GetSetting(ctx, "matrix.routes")
+	if errors.Is(err, store.ErrNotFound) || len(raw) == 0 {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var routes []notify.Route
+	if err := json.Unmarshal(raw, &routes); err != nil {
+		return nil, fmt.Errorf("setting matrix.routes: %w", err)
+	}
+	return routes, nil
+}
+
 // wire is THE place where real implementations replace the no-op defaults.
-// TODO(wave 2): rules.NewEngine(...) -> Evaluator, notify.NewMatrix(...) -> Notifier,
-// llm.NewDrafter(...) -> Drafter, web.Mount -> Mount.
-func wire(cfg *config.Config, st store.Store, log *slog.Logger) components {
-	_ = cfg
-	_ = st
-	_ = log
-	return components{
+func wire(cfg *config.Config, st store.Store, log *slog.Logger, trig *lateTrigger) components {
+	comp := components{
 		Evaluator: core.NoopEvaluator{},
 		Notifier:  core.NoopNotifier{},
 		Drafter:   core.NoopDrafter{},
 	}
+
+	// Rules: shipped YAML + DB rules (LLM drafts, user edits).
+	fileRules, err := rules.LoadDir(cfg.RulesDir)
+	if err != nil {
+		log.Warn("loading rules dir", "dir", cfg.RulesDir, "err", err)
+	}
+	engine := rules.New(fileRules, st)
+	for _, p := range engine.Problems() {
+		log.Warn("invalid rule skipped", "rule", p.RuleID, "source", p.Source, "err", p.Err)
+	}
+	log.Info("rules loaded", "count", len(engine.Rules()))
+	comp.Evaluator = engine
+
+	// Matrix notifier (optional).
+	if cfg.Matrix.Homeserver != "" {
+		mcfg := notify.Config{
+			Homeserver:   cfg.Matrix.Homeserver,
+			AccessToken:  os.Getenv(cfg.Matrix.AccessTokenEnv),
+			DefaultRooms: cfg.Matrix.DefaultRooms,
+		}
+		for _, r := range cfg.Matrix.Routes {
+			mcfg.Routes = append(mcfg.Routes, notify.Route{Label: r.Label, Rooms: r.Rooms})
+		}
+		m, err := notify.NewMatrix(mcfg, settingsRoutes{st}, nil)
+		if err != nil {
+			log.Error("matrix notifier disabled", "err", err)
+		} else {
+			comp.Notifier = m
+			log.Info("matrix notifier enabled", "homeserver", cfg.Matrix.Homeserver)
+		}
+	}
+	return comp
 }
 
 // --- serve ------------------------------------------------------------------
@@ -154,11 +220,13 @@ func serve(cfg *config.Config) error {
 		return err
 	}
 
-	comp := wire(cfg, st, log)
+	trig := &lateTrigger{log: log}
+	comp := wire(cfg, st, log, trig)
 	grypeDB := match.NewGrype(cfg.GrypeDBDir(), log)
 	defer grypeDB.Close()
 	pipe := pipeline.New(st, grypeDB, comp.Evaluator, comp.Notifier, comp.Drafter,
 		pipeline.Options{PublicURL: cfg.PublicURL, Logger: log})
+	trig.p = pipe
 
 	mux := api.NewMux(api.Deps{Store: st, Evaluator: comp.Evaluator, Pipeline: pipe, Logger: log})
 	for _, m := range comp.Mount {
