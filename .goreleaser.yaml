@@ -1,0 +1,136 @@
+# GoReleaser v2 configuration.
+# Local dry run:  make release-snapshot
+# Real release:   push a tag v* (see .github/workflows/release.yml)
+version: 2
+
+project_name: panoptes
+
+builds:
+  - id: panoptes-agent
+    main: ./cmd/panoptes-agent
+    binary: panoptes-agent
+    env:
+      - CGO_ENABLED=0
+    goos: [linux]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags: ["-s -w -X main.version={{ .Version }}"]
+
+  - id: panoptes-server
+    main: ./cmd/panoptes-server
+    binary: panoptes-server
+    env:
+      - CGO_ENABLED=0
+    goos: [linux]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags: ["-s -w -X main.version={{ .Version }}"]
+
+archives:
+  - id: panoptes-agent
+    ids: [panoptes-agent]
+    name_template: "panoptes-agent_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+
+  - id: panoptes-server
+    ids: [panoptes-server]
+    name_template: "panoptes-server_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+nfpms:
+  - id: panoptes-agent
+    ids: [panoptes-agent]
+    package_name: panoptes-agent
+    file_name_template: "{{ .PackageName }}_{{ .Version }}_{{ .Arch }}"
+    formats: [deb, rpm]
+    vendor: Panoptes
+    homepage: https://github.com/OWNER/panoptes # replace OWNER
+    maintainer: "Panoptes <noreply@panoptes.invalid>"
+    description: "Panoptes agent: sends host facts and package inventory to panoptes-server."
+    license: Apache-2.0
+    bindir: /usr/bin
+    contents:
+      - src: deploy/systemd/panoptes-agent.service
+        dst: /usr/lib/systemd/system/panoptes-agent.service
+      - src: deploy/agent.yaml.example
+        dst: /etc/panoptes/agent.yaml
+        type: config|noreplace # keeps an edited file on upgrade
+        file_info:
+          mode: 0600 # holds the enroll token
+    scripts:
+      postinstall: deploy/nfpm/postinstall.sh
+
+  - id: panoptes-server
+    ids: [panoptes-server]
+    package_name: panoptes-server
+    file_name_template: "{{ .PackageName }}_{{ .Version }}_{{ .Arch }}"
+    formats: [deb, rpm]
+    vendor: Panoptes
+    homepage: https://github.com/OWNER/panoptes # replace OWNER
+    maintainer: "Panoptes <noreply@panoptes.invalid>"
+    description: "Panoptes server: matches vulnerabilities, evaluates exploitability, alerts to Matrix."
+    license: Apache-2.0
+    bindir: /usr/bin
+    contents:
+      - src: deploy/systemd/panoptes-server.service
+        dst: /usr/lib/systemd/system/panoptes-server.service
+      - src: deploy/server.yaml.example
+        dst: /etc/panoptes/server.yaml
+        type: config|noreplace
+        file_info:
+          mode: 0644 # secrets live in server.env, not here
+      - src: rules/*.yaml
+        dst: /usr/share/panoptes/rules/
+    scripts:
+      postinstall: deploy/nfpm/postinstall.sh
+
+# Container images for the server. Replace OWNER with the GitHub user or org
+# (lowercase) that publishes to ghcr.io. The release workflow logs in to ghcr.io
+# with GITHUB_TOKEN, which needs packages: write.
+dockers:
+  - id: panoptes-server-amd64
+    ids: [panoptes-server]
+    goos: linux
+    goarch: amd64
+    use: buildx
+    dockerfile: deploy/Dockerfile.server
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.source=https://github.com/OWNER/panoptes"
+    image_templates:
+      - "ghcr.io/OWNER/panoptes-server:{{ .Version }}-amd64"
+    extra_files:
+      - rules
+
+  - id: panoptes-server-arm64
+    ids: [panoptes-server]
+    goos: linux
+    goarch: arm64
+    use: buildx
+    dockerfile: deploy/Dockerfile.server
+    build_flag_templates:
+      - "--platform=linux/arm64"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.source=https://github.com/OWNER/panoptes"
+    image_templates:
+      - "ghcr.io/OWNER/panoptes-server:{{ .Version }}-arm64"
+    extra_files:
+      - rules
+
+docker_manifests:
+  - name_template: "ghcr.io/OWNER/panoptes-server:{{ .Version }}"
+    image_templates:
+      - "ghcr.io/OWNER/panoptes-server:{{ .Version }}-amd64"
+      - "ghcr.io/OWNER/panoptes-server:{{ .Version }}-arm64"
+
+  - name_template: "ghcr.io/OWNER/panoptes-server:latest"
+    image_templates:
+      - "ghcr.io/OWNER/panoptes-server:{{ .Version }}-amd64"
+      - "ghcr.io/OWNER/panoptes-server:{{ .Version }}-arm64"

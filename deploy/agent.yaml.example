@@ -1,0 +1,31 @@
+# Panoptes agent configuration, installed as /etc/panoptes/agent.yaml (mode 0600).
+# Values shown are the defaults unless marked required.
+
+# Base URL of panoptes-server (required). Must be http:// or https:// with a host.
+server_url: https://panoptes.example.com
+
+# Enrollment token from `panoptes-server token create <name>`. Only needed until the
+# agent has enrolled. The agent has no environment override for it, so it lives in
+# this file; keep the file mode 0600.
+enroll_token: "pt_replace-me"
+
+# Labels select Matrix rooms on the server (see the label routes in the web UI).
+labels: [prod, web]
+
+# Where agent_id and agent_key are stored. Must match StateDirectory in the systemd unit.
+state_dir: /var/lib/panoptes-agent
+
+# How often the agent checks in (facts, labels, OS).
+checkin_interval: 5m
+
+# Full host and image rescan. Changes to package databases trigger an earlier scan.
+inventory_interval: 6h
+
+# Docker API socket. Container images are scanned when the socket exists.
+docker_socket: /var/run/docker.sock
+
+# Also scan language packages (pip, npm, gems, ...), not only OS packages.
+scan_language_packages: true
+
+# Paths skipped by the filesystem scan.
+exclude_paths: [/proc, /sys, /dev, /run, /var/lib/docker, /var/lib/containerd, /snap]

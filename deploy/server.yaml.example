@@ -1,0 +1,51 @@
+# Panoptes server configuration, installed as /etc/panoptes/server.yaml.
+# Every key is optional; the values shown are the defaults.
+# Secrets are never stored here: they come from environment variables
+# (see server.env.example). Any scalar can also be set as PANOPTES_<SECTION>_<KEY>.
+
+# Address to listen on.
+listen: ":8080"
+
+# Public URL of this server, used for links in notifications.
+public_url: "http://localhost:8080"
+
+# SQLite database and Grype DB cache. Must match StateDirectory in the systemd unit.
+data_dir: /var/lib/panoptes
+
+# Shipped exploitability rules (YAML files).
+rules_dir: /usr/share/panoptes/rules
+
+feeds:
+  # How often vulnerability data (Grype DB, KEV, EPSS) is refreshed.
+  interval: 6h
+  # false disables all network updates (air-gapped hosts, tests).
+  update: true
+
+matrix:
+  # Homeserver for alerts, e.g. https://matrix.example.com. Empty disables Matrix.
+  homeserver: ""
+  # Name of the environment variable holding the bot's access token.
+  access_token_env: PANOPTES_MATRIX_TOKEN
+  # Rooms used when no label route matches, e.g. ["!abc:example.com"].
+  default_rooms: []
+  # Label to rooms. Web UI edits are stored in the database and merged with these.
+  # Example:
+  #   routes:
+  #     - {label: prod, rooms: ["!prod:example.com"]}
+  routes: []
+
+llm:
+  # none | anthropic | openai-compatible (e.g. Ollama)
+  provider: none
+  model: claude-sonnet-5-5
+  # openai-compatible only, e.g. http://ollama:11434/v1
+  base_url: ""
+  # Name of the environment variable holding the API key.
+  api_key_env: PANOPTES_LLM_API_KEY
+  # Maximum rule-drafting calls per day.
+  daily_limit: 50
+
+admin:
+  # Environment variable with the password for user "admin". Used only when no
+  # web user exists yet (first start).
+  initial_password_env: PANOPTES_ADMIN_PASSWORD

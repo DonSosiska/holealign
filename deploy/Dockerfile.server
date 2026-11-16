@@ -1,0 +1,22 @@
+# Image used by goreleaser (.goreleaser.yaml). goreleaser stages the
+# linux binary as ./panoptes-server and the rules/ directory in the build context.
+# For building from source, use Dockerfile.server.build instead.
+FROM busybox:1.37 AS prep
+# Create the data directory owned by the distroless "nonroot" user (uid 65532).
+RUN mkdir -p /var/lib/panoptes && chown 65532:65532 /var/lib/panoptes
+
+FROM gcr.io/distroless/static-debian12:nonroot
+
+COPY panoptes-server /usr/bin/panoptes-server
+COPY rules/ /usr/share/panoptes/rules/
+COPY --from=prep --chown=65532:65532 /var/lib/panoptes /var/lib/panoptes
+
+# Config is optional: without /etc/panoptes/server.yaml the server uses its
+# defaults plus PANOPTES_* environment overrides. PANOPTES_CONFIG is deliberately
+# not set here, because an explicit path that does not exist is a startup error.
+VOLUME /var/lib/panoptes
+EXPOSE 8080
+
+# -version works as: docker run --rm <image> -version
+ENTRYPOINT ["/usr/bin/panoptes-server"]
+CMD ["serve"]

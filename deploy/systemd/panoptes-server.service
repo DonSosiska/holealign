@@ -1,0 +1,45 @@
+[Unit]
+Description=Panoptes server (vulnerability matching, exploitability rules, alerts)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+# PANOPTES_CONFIG makes the file mandatory: install it (the package does) or remove this line.
+Environment=PANOPTES_CONFIG=/etc/panoptes/server.yaml
+# Secrets (admin password, Matrix token, LLM key). The leading "-" means optional.
+EnvironmentFile=-/etc/panoptes/server.env
+ExecStart=/usr/bin/panoptes-server serve
+Restart=on-failure
+RestartSec=5
+
+# Unprivileged dynamic user; /var/lib/panoptes is created and owned by it.
+DynamicUser=yes
+StateDirectory=panoptes
+StateDirectoryMode=0700
+UMask=0077
+
+# Full sandboxing.
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target
