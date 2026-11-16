@@ -31,6 +31,7 @@ var factCatalog = map[string]FactType{
 	"kernel.modules":    TStringList,
 	"kernel.sysctl":     TStringMap,
 	"services.active":   TStringList,
+	"services.source":   TString,
 	"sockets.listening": TObjectList,
 	"sockets.ports":     TIntList,
 	"sshd.installed":    TBool,

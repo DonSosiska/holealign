@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -303,5 +304,28 @@ func TestExtractJSON(t *testing.T) {
 	}
 	if _, err := extractJSON("none"); err == nil {
 		t.Fatal("want error")
+	}
+}
+
+func TestParseDedupesAndSortsPackages(t *testing.T) {
+	e := newEnv(t, 50)
+	f := model.Finding{VulnID: "CVE-2030-0002", PackageName: "tar", PackageType: "deb"}
+	reply := `{"title":"t","packages":[{"name":"tar","type":"deb"},{"name":"tar","type":"deb"},{"name":"tar","type":"deb"}],"exploitable_if":"true"}`
+	r, err := e.dr.parse(reply, f, nil, "id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []model.PackageSelector{{Name: "tar", Type: "deb"}}; !reflect.DeepEqual(r.Packages, want) {
+		t.Fatalf("packages = %+v, want %+v", r.Packages, want)
+	}
+
+	reply = `{"title":"t","packages":[{"name":"zlib"},{"name":"tar","type":"rpm"},{"name":"tar","type":"deb"},{"name":"tar","type":"rpm"}],"exploitable_if":"true"}`
+	r, err = e.dr.parse(reply, f, nil, "id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []model.PackageSelector{{Name: "tar", Type: "deb"}, {Name: "tar", Type: "rpm"}, {Name: "zlib"}}
+	if !reflect.DeepEqual(r.Packages, want) {
+		t.Fatalf("packages = %+v, want %+v", r.Packages, want)
 	}
 }

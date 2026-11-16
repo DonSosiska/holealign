@@ -328,12 +328,37 @@ func (d *Drafter) parse(reply string, f model.Finding, siblings []model.PackageS
 			r.Packages = append(r.Packages, sel)
 		}
 	}
+	r.Packages = normalizeSelectors(r.Packages)
 	for i := range r.FactRequests {
 		if r.FactRequests[i].Collector == "" {
 			r.FactRequests[i].Collector = "file.match"
 		}
 	}
 	return r, nil
+}
+
+// normalizeSelectors drops exact duplicate package selectors and sorts the rest
+// by name, then type, so that drafted rules have stable output.
+func normalizeSelectors(sels []model.PackageSelector) []model.PackageSelector {
+	if sels == nil {
+		return nil
+	}
+	seen := make(map[model.PackageSelector]bool, len(sels))
+	out := make([]model.PackageSelector, 0, len(sels))
+	for _, s := range sels {
+		if seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Name != out[j].Name {
+			return out[i].Name < out[j].Name
+		}
+		return out[i].Type < out[j].Type
+	})
+	return out
 }
 
 func contains(s []string, v string) bool {
