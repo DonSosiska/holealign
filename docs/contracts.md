@@ -193,3 +193,11 @@ admin:
 
 Environment variable `PANOPTES_CONFIG` points to the file; every scalar can be overridden by
 `PANOPTES_<SECTION>_<KEY>` (e.g. `PANOPTES_MATRIX_HOMESERVER`).
+
+## 7. Build constraints
+
+- SQLite drivers: the **server** uses `github.com/glebarez/go-sqlite` (Grype already links it and it registers
+  the driver name `sqlite`); importing `modernc.org/sqlite` directly in any server package panics at start-up
+  ("Register called twice"). The **agent** does not link Grype and imports `modernc.org/sqlite` for Syft's RPM
+  cataloger. Never import agent packages from the server or vice versa (except `internal/model`).
+- Grype DB v6 provides KEV and EPSS; there are no separate CISA/FIRST fetchers.
