@@ -16,9 +16,9 @@ import (
 	"github.com/anchore/syft/syft/cataloging/pkgcataloging"
 	"github.com/anchore/syft/syft/format/cyclonedxjson"
 
-	_ "modernc.org/sqlite" // registers the "sqlite" driver Syft needs for newer RPM databases
 	"github.com/anchore/syft/syft/sbom"
 	"github.com/anchore/syft/syft/source"
+	_ "modernc.org/sqlite" // registers the "sqlite" driver Syft needs for newer RPM databases
 
 	"panoptes/internal/agent/config"
 	"panoptes/internal/model"

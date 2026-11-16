@@ -171,7 +171,9 @@ func TestRunnerReenrollsOn401(t *testing.T) {
 	cfg.StateDir = t.TempDir()
 	r := New(cfg, "test", slog.New(slog.NewTextHandler(io.Discard, nil)))
 	r.collectFacts = func(context.Context, []model.FactRequest) model.Facts { return nil }
-	r.scan = func(context.Context, config.Config) (model.InventoryPayload, error) { return model.InventoryPayload{}, nil }
+	r.scan = func(context.Context, config.Config) (model.InventoryPayload, error) {
+		return model.InventoryPayload{}, nil
+	}
 	r.detector = &fakeDetector{}
 	r.client.Key = "stale"
 	r.lastInvAt = time.Now()

@@ -136,7 +136,7 @@ Custom functions:
 - `has_module(list, name)` — sugar for `name in list`.
 
 CEL optional types are enabled (`cel.OptionalTypes()`), so rules can write
-`facts["kernel.sysctl"].?["user.max_user_namespaces"].orValue("1")` for map keys that may be missing.
+`facts["kernel.sysctl"][?"user.max_user_namespaces"].orValue("1")` for map keys that may be missing.
 Expressions must return bool. Evaluation cost limit 10 000; timeout 50 ms.
 
 ### Verdict algorithm (per finding)
