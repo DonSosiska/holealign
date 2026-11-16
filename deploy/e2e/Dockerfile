@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # Build context: repository root (see docker-compose.yml).
-FROM golang:1.27.4 AS build
+FROM golang:1.27.4@sha256:fe517acaa580cc7915457080f850c37e618b3c1e750f98b58fc6429b605147a1 AS build
 ENV CGO_ENABLED=0
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -11,7 +11,7 @@ RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache
     go build -trimpath -ldflags "-X main.version=e2e" -o /out/ ./cmd/panoptes-server ./cmd/panoptes-agent
 
 # ---- panoptes-server --------------------------------------------------------
-FROM debian:bookworm-slim AS server
+FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc AS server
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /out/panoptes-server /usr/local/bin/panoptes-server
@@ -22,7 +22,7 @@ ENTRYPOINT ["/usr/local/bin/panoptes-server"]
 CMD ["serve"]
 
 # ---- host: Debian 12 as of 2024-06-01 (openssh 1:9.2p1-2+deb12u2, CVE-2024-6387) ----
-FROM debian:bookworm-20240513-slim AS host
+FROM debian:bookworm-20240513-slim@sha256:804194b909ef23fb995d9412c9378fb3505fe2427b70f3cc425339e48a828fca AS host
 RUN rm -f /etc/apt/sources.list.d/* /etc/apt/sources.list \
     && printf '%s\n' \
       'deb http://snapshot.debian.org/archive/debian/20240601T000000Z bookworm main' \

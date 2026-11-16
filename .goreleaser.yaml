@@ -13,7 +13,8 @@ builds:
       - CGO_ENABLED=0
     goos: [linux]
     goarch: [amd64, arm64]
-    flags: [-trimpath]
+    flags: [-trimpath, -buildvcs=true]
+    mod_timestamp: "{{ .CommitTimestamp }}"  # reproducible output
     ldflags: ["-s -w -X main.version={{ .Version }}"]
 
   - id: panoptes-server
@@ -23,8 +24,12 @@ builds:
       - CGO_ENABLED=0
     goos: [linux]
     goarch: [amd64, arm64]
-    flags: [-trimpath]
+    flags: [-trimpath, -buildvcs=true]
+    mod_timestamp: "{{ .CommitTimestamp }}"  # reproducible output
     ldflags: ["-s -w -X main.version={{ .Version }}"]
+
+gomod:
+  proxy: true  # build from the module proxy, with checksums checked against go.sum
 
 archives:
   - id: panoptes-agent
@@ -39,6 +44,41 @@ archives:
 
 checksum:
   name_template: checksums.txt
+
+# Keyless signing with Sigstore. The release job's id-token: write permission
+# supplies the GitHub OIDC identity; the certificate is recorded in the public
+# Rekor log. Verify with the commands in README.md ("Verifying releases").
+signs:
+  - id: checksums
+    cmd: cosign
+    artifacts: checksum
+    certificate: "${artifact}.pem"
+    signature: "${artifact}.sig"
+    args:
+      - sign-blob
+      - "--yes"
+      - "--output-certificate=${certificate}"
+      - "--output-signature=${signature}"
+      - "${artifact}"
+    output: true
+
+# Sign the multi-arch image manifests (by digest) pushed to ghcr.io.
+docker_signs:
+  - cmd: cosign
+    artifacts: manifests
+    output: true
+    args:
+      - sign
+      - "--yes"
+      - "${artifact}@${digest}"
+
+# SBOMs (SPDX JSON) for each archive, generated with syft.
+sboms:
+  - id: archives
+    artifacts: archive
+    cmd: syft
+    args: ["$artifact", "--file", "${document}", "--output", "spdx-json"]
+    documents: ["{{ .ArtifactName }}.spdx.json"]
 
 snapshot:
   version_template: "{{ incpatch .Version }}-next"
