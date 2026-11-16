@@ -2,6 +2,7 @@
 package api
 
 import (
+	"bytes"
 	"compress/gzip"
 	"context"
 	"encoding/json"
@@ -10,8 +11,10 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
+	"unicode"
 
 	"panoptes/internal/model"
 	"panoptes/internal/server/core"
@@ -23,6 +26,18 @@ const (
 	MaxInventoryBytes = 64 << 20
 	maxSmallBody      = 8 << 20 // enroll / check-in bodies (facts can be large)
 	maxTargets        = 1000
+	// MaxComponents caps the CycloneDX components of one target SBOM.
+	MaxComponents = 50000
+
+	defaultInventoryInterval = 5 * time.Minute
+	defaultCheckinInterval   = 20 * time.Second
+	maxHostname              = 253
+	maxLabels                = 32
+)
+
+var (
+	machineIDRe = regexp.MustCompile(`^[0-9a-f]{32,64}$`)
+	labelRe     = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 )
 
 // Trigger schedules a pipeline run for a host; it must not block. Implemented by pipeline.Pipeline.
@@ -37,11 +52,30 @@ type Deps struct {
 	Pipeline  Trigger
 	Logger    *slog.Logger
 	Now       func() time.Time
+
+	// Rate limits; zero selects the default, a negative value disables the limit.
+	InventoryInterval time.Duration // per host, default 5m
+	CheckinInterval   time.Duration // per host, default 20s
+	EnrollPerMinute   int           // per client IP, default 10
+	BadAuthPerMinute  int           // failed Bearer auth per client IP, default 30
+	// ClientIP overrides how the client address is derived (e.g. from X-Forwarded-For behind a
+	// trusted reverse proxy). Default: the TCP peer address.
+	ClientIP func(*http.Request) string
 }
 
 type server struct {
 	Deps
-	log *slog.Logger
+	log       *slog.Logger
+	rates     *intervalLimiter
+	enrollLim *ipLimiter
+	authLim   *ipLimiter
+}
+
+func orDefault[T int | time.Duration](v, def T) T {
+	if v == 0 {
+		return def
+	}
+	return v
 }
 
 // NewMux returns a ServeMux with the agent API registered. Web UI routes can be mounted on the
@@ -56,7 +90,15 @@ func NewMux(d Deps) *http.ServeMux {
 	if d.Evaluator == nil {
 		d.Evaluator = core.NoopEvaluator{}
 	}
-	s := &server{Deps: d, log: d.Logger}
+	d.InventoryInterval = orDefault(d.InventoryInterval, defaultInventoryInterval)
+	d.CheckinInterval = orDefault(d.CheckinInterval, defaultCheckinInterval)
+	d.EnrollPerMinute = orDefault(d.EnrollPerMinute, 10)
+	d.BadAuthPerMinute = orDefault(d.BadAuthPerMinute, 30)
+	if d.ClientIP == nil {
+		d.ClientIP = remoteIP
+	}
+	s := &server{Deps: d, log: d.Logger, rates: newIntervalLimiter(),
+		enrollLim: newIPLimiter(d.EnrollPerMinute), authLim: newIPLimiter(d.BadAuthPerMinute)}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -121,19 +163,36 @@ func (s *server) internal(w http.ResponseWriter, what string, err error) {
 	writeErr(w, http.StatusInternalServerError, "internal error")
 }
 
+// authFailed answers a failed Bearer authentication; repeated failures from one IP get 429.
+// Only failures consume the bucket, so valid agents behind a shared address are never throttled.
+func (s *server) authFailed(w http.ResponseWriter, r *http.Request, msg string) {
+	if !s.authLim.allow(s.ClientIP(r), s.Now()) {
+		tooMany(w, time.Minute, "too many failed authentication attempts")
+		return
+	}
+	writeErr(w, http.StatusUnauthorized, msg)
+}
+
+func bearer(r *http.Request) (string, bool) {
+	const prefix = "Bearer "
+	h := r.Header.Get("Authorization")
+	if len(h) <= len(prefix) || !strings.EqualFold(h[:len(prefix)], prefix) {
+		return "", false
+	}
+	return strings.TrimSpace(h[len(prefix):]), true
+}
+
 // auth authenticates the Bearer agent key and stores the host in the request context.
 func (s *server) auth(next http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		const prefix = "Bearer "
-		h := r.Header.Get("Authorization")
-		if len(h) <= len(prefix) || !strings.EqualFold(h[:len(prefix)], prefix) {
-			writeErr(w, http.StatusUnauthorized, "missing bearer token")
+		key, ok := bearer(r)
+		if !ok {
+			s.authFailed(w, r, "missing bearer token")
 			return
 		}
-		key := strings.TrimSpace(h[len(prefix):])
 		host, err := s.Store.HostByAgentKey(r.Context(), store.HashSecret(key))
 		if errors.Is(err, store.ErrNotFound) {
-			writeErr(w, http.StatusUnauthorized, "invalid agent key")
+			s.authFailed(w, r, "invalid agent key")
 			return
 		}
 		if err != nil {
@@ -144,25 +203,76 @@ func (s *server) auth(next http.HandlerFunc) http.Handler {
 	})
 }
 
+// cleanText strips control and bidi-override characters and truncates to max runes.
+func cleanText(s string, max int) string {
+	var b strings.Builder
+	n := 0
+	for _, r := range s {
+		if unicode.IsControl(r) || (r >= 0x202A && r <= 0x202E) || (r >= 0x2066 && r <= 0x2069) {
+			continue
+		}
+		if n++; n > max {
+			break
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// ValidateLabels checks label count and syntax (also used by the CLI for token labels).
+func ValidateLabels(ls []string) error { return validLabels(ls) }
+
+func validLabels(ls []string) error {
+	if len(ls) > maxLabels {
+		return fmt.Errorf("too many labels (max %d)", maxLabels)
+	}
+	for _, l := range ls {
+		if !labelRe.MatchString(l) {
+			return fmt.Errorf("invalid label %q (must match %s)", l, labelRe)
+		}
+	}
+	return nil
+}
+
 // --- handlers --------------------------------------------------------------
 
 func (s *server) handleEnroll(w http.ResponseWriter, r *http.Request) {
+	if !s.enrollLim.allow(s.ClientIP(r), s.Now()) {
+		tooMany(w, time.Minute, "too many enrollment requests")
+		return
+	}
 	var req model.EnrollRequest
 	if !decodeBody(w, r, 1<<20, &req) {
 		return
 	}
-	ok, err := s.Store.UseEnrollToken(r.Context(), store.HashSecret(req.Token))
+	// Validate everything that needs no database before touching it.
+	if req.Token == "" {
+		writeErr(w, http.StatusUnauthorized, "invalid enrollment token")
+		return
+	}
+	if !machineIDRe.MatchString(req.MachineID) {
+		writeErr(w, http.StatusBadRequest, "machine_id must match ^[0-9a-f]{32,64}$")
+		return
+	}
+	if err := validLabels(req.Labels); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	req.Hostname = cleanText(req.Hostname, maxHostname)
+	req.AgentVersion = cleanText(req.AgentVersion, 64)
+
+	tok, err := s.Store.UseEnrollTokenInfo(r.Context(), store.HashSecret(req.Token), s.Now())
+	if errors.Is(err, store.ErrNotFound) {
+		writeErr(w, http.StatusUnauthorized, "invalid enrollment token")
+		return
+	}
 	if err != nil {
 		s.internal(w, "enroll token lookup", err)
 		return
 	}
-	if req.Token == "" || !ok {
-		writeErr(w, http.StatusUnauthorized, "invalid enrollment token")
-		return
-	}
-	if strings.TrimSpace(req.MachineID) == "" {
-		writeErr(w, http.StatusBadRequest, "machine_id is required")
-		return
+	prevHash := ""
+	if k, ok := bearer(r); ok && k != "" {
+		prevHash = store.HashSecret(k)
 	}
 	key, hash, err := store.NewSecret("pa_")
 	if err != nil {
@@ -171,22 +281,46 @@ func (s *server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	}
 	host, err := s.Store.EnrollHost(r.Context(), store.EnrollParams{
 		MachineID: req.MachineID, Hostname: req.Hostname, Labels: req.Labels, AgentVersion: req.AgentVersion, KeyHash: hash,
+		PreviousKeyHash: prevHash, TokenName: tok.Name, MaxHosts: tok.MaxHosts, TokenLabels: tok.Labels,
 	})
-	if err != nil {
+	switch {
+	case errors.Is(err, store.ErrReenrollDenied):
+		s.log.Warn("re-enroll refused", "machine_id", req.MachineID, "token", tok.Name, "ip", s.ClientIP(r))
+		writeErr(w, http.StatusConflict, "host exists; previous key required (admin: panoptes-server host allow-reenroll <host>)")
+		return
+	case errors.Is(err, store.ErrTokenExhausted):
+		writeErr(w, http.StatusForbidden, "enrollment token exhausted (max_hosts reached)")
+		return
+	case err != nil:
 		s.internal(w, "enroll host", err)
 		return
 	}
-	s.log.Info("host enrolled", "host", host.ID, "hostname", host.Hostname)
+	s.log.Info("host enrolled", "host", host.ID, "hostname", host.Hostname, "token", tok.Name)
 	writeJSON(w, http.StatusOK, model.EnrollResponse{AgentID: host.ID, AgentKey: key})
 }
 
 func (s *server) handleCheckin(w http.ResponseWriter, r *http.Request) {
 	host := hostFrom(r.Context())
+	if wait := s.rates.take("c:"+host.ID, s.CheckinInterval, s.Now()); wait > 0 {
+		tooMany(w, wait, "check-in rate limit: at most one per "+s.CheckinInterval.String())
+		return
+	}
 	var req model.CheckinRequest
 	if !decodeBody(w, r, maxSmallBody, &req) {
 		return
 	}
+	if err := validLabels(req.Labels); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	req.Hostname = cleanText(req.Hostname, maxHostname)
+	req.AgentVersion = cleanText(req.AgentVersion, 64)
 	res, err := s.Store.ApplyCheckin(r.Context(), host.ID, req, s.Now())
+	var le *store.LimitError
+	if errors.As(err, &le) {
+		writeErr(w, http.StatusRequestEntityTooLarge, le.Msg)
+		return
+	}
 	if err != nil {
 		s.internal(w, "apply checkin", err)
 		return
@@ -231,6 +365,10 @@ func (c *capReader) Read(p []byte) (int, error) {
 
 func (s *server) handleInventory(w http.ResponseWriter, r *http.Request) {
 	host := hostFrom(r.Context())
+	if wait := s.rates.take("i:"+host.ID, s.InventoryInterval, s.Now()); wait > 0 {
+		tooMany(w, wait, "inventory rate limit: at most one per "+s.InventoryInterval.String())
+		return
+	}
 	body := io.Reader(http.MaxBytesReader(w, r.Body, MaxInventoryBytes)) // compressed size cap
 	switch enc := strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Encoding"))); enc {
 	case "gzip", "x-gzip":
@@ -258,11 +396,16 @@ func (s *server) handleInventory(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	if err := validateInventory(&p); err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
+	if code, err := validateInventory(&p); err != nil {
+		writeErr(w, code, err.Error())
+		return
+	}
+	if host.InventoryHash != "" && host.InventoryHash == p.Hash {
+		writeJSON(w, http.StatusAccepted, map[string]string{"status": "accepted"}) // unchanged: no re-matching
 		return
 	}
 	if err := s.Store.ReplaceInventory(r.Context(), host.ID, p); err != nil {
+		s.rates.forget("i:" + host.ID)
 		s.internal(w, "store inventory", err)
 		return
 	}
@@ -273,29 +416,93 @@ func (s *server) handleInventory(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "accepted"})
 }
 
-func validateInventory(p *model.InventoryPayload) error {
+func validateInventory(p *model.InventoryPayload) (int, error) {
+	bad := http.StatusBadRequest
 	if p.Hash == "" {
-		return errors.New("hash is required")
+		return bad, errors.New("hash is required")
 	}
 	if len(p.Targets) > maxTargets {
-		return fmt.Errorf("too many targets (max %d)", maxTargets)
+		return bad, fmt.Errorf("too many targets (max %d)", maxTargets)
 	}
 	seen := map[string]bool{}
 	for i, t := range p.Targets {
 		if t.Kind != model.TargetHost && t.Kind != model.TargetContainerImage {
-			return fmt.Errorf("target %d: unknown kind %q", i, t.Kind)
+			return bad, fmt.Errorf("target %d: unknown kind %q", i, t.Kind)
 		}
 		if t.Name == "" {
-			return fmt.Errorf("target %d: name is required", i)
+			return bad, fmt.Errorf("target %d: name is required", i)
 		}
 		if len(t.SBOM) == 0 || string(t.SBOM) == "null" {
-			return fmt.Errorf("target %d: sbom is required", i)
+			return bad, fmt.Errorf("target %d: sbom is required", i)
+		}
+		if _, err := countComponents(t.SBOM, MaxComponents); err != nil {
+			if errors.Is(err, errTooManyComponents) {
+				return http.StatusRequestEntityTooLarge, fmt.Errorf("target %d: more than %d components", i, MaxComponents)
+			}
+			return bad, fmt.Errorf("target %d: invalid sbom: %v", i, err)
 		}
 		k := string(t.Kind) + "\x00" + t.Name
 		if seen[k] {
-			return fmt.Errorf("target %d: duplicate %s %q", i, t.Kind, t.Name)
+			return bad, fmt.Errorf("target %d: duplicate %s %q", i, t.Kind, t.Name)
 		}
 		seen[k] = true
 	}
-	return nil
+	return 0, nil
+}
+
+var errTooManyComponents = errors.New("too many components")
+
+type cdxComp struct {
+	Components []cdxComp `json:"components"`
+}
+
+// countComponents streams the CycloneDX document and counts (nested) components, stopping as soon
+// as limit is exceeded, so no huge component slice is ever built.
+func countComponents(sbom []byte, limit int) (int, error) {
+	dec := json.NewDecoder(bytes.NewReader(sbom))
+	if t, err := dec.Token(); err != nil || t != json.Delim('{') {
+		return 0, errors.New("sbom must be a JSON object")
+	}
+	total := 0
+	for dec.More() {
+		kt, err := dec.Token()
+		if err != nil {
+			return 0, err
+		}
+		if kt != "components" {
+			var skip json.RawMessage
+			if err := dec.Decode(&skip); err != nil {
+				return 0, err
+			}
+			continue
+		}
+		if t, err := dec.Token(); err != nil || t != json.Delim('[') {
+			if err != nil {
+				return 0, err
+			}
+			continue // null or non-array: nothing to count
+		}
+		for dec.More() {
+			var c cdxComp
+			if err := dec.Decode(&c); err != nil {
+				return 0, err
+			}
+			total += 1 + nested(c)
+			if total > limit {
+				return total, errTooManyComponents
+			}
+		}
+		if _, err := dec.Token(); err != nil {
+			return 0, err
+		}
+	}
+	return total, nil
+}
+
+func nested(c cdxComp) int {
+	n := 0
+	for _, k := range c.Components {
+		n += 1 + nested(k)
+	}
+	return n
 }

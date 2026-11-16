@@ -179,7 +179,7 @@ func TestRenderGroupMergesFields(t *testing.T) {
 		"Fix: apt-get install --only-upgrade libssl3",
 		"Mitigation: disable heartbeat",
 		"Details: https://panoptes.example/findings/1",
-		"⚠️ rule is an unreviewed LLM draft",
+		"⚠️ unreviewed LLM draft — review the rule in the web UI before acting",
 	} {
 		if !hasLine(plain, want) {
 			t.Errorf("plain missing line %q:\n%s", want, plain)

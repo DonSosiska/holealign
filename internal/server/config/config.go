@@ -7,9 +7,12 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -133,7 +136,51 @@ func (c *Config) validate() error {
 		return errors.New("data_dir must not be empty")
 	}
 	c.PublicURL = strings.TrimRight(c.PublicURL, "/")
+	// *_env values name environment variables; restrict them so a config file cannot be used to
+	// read arbitrary variables (HOME, AWS_*, ...) or to reuse the admin password as another secret.
+	for _, e := range []struct{ key, val string }{
+		{"matrix.access_token_env", c.Matrix.AccessTokenEnv},
+		{"llm.api_key_env", c.LLM.APIKeyEnv},
+		{"admin.initial_password_env", c.Admin.InitialPasswordEnv},
+	} {
+		if e.val != "" && !envNameRe.MatchString(e.val) {
+			return fmt.Errorf("%s %q must match %s", e.key, e.val, envNameRe)
+		}
+	}
+	if adm := c.Admin.InitialPasswordEnv; adm != "" {
+		if c.Matrix.AccessTokenEnv == adm || c.LLM.APIKeyEnv == adm {
+			return fmt.Errorf("matrix.access_token_env and llm.api_key_env must not be the admin password variable %s", adm)
+		}
+	}
 	return nil
+}
+
+var envNameRe = regexp.MustCompile(`^PANOPTES_[A-Z0-9_]+$`)
+
+// Warnings returns non-fatal configuration problems to log at startup (cleartext transports).
+func (c *Config) Warnings() []string {
+	var w []string
+	check := func(key, raw string) {
+		u, err := url.Parse(raw)
+		if err != nil || u.Scheme != "http" {
+			return
+		}
+		if !isLoopbackHost(u.Hostname()) {
+			w = append(w, fmt.Sprintf("%s is plain http to a non-loopback host (%s): traffic and secrets are sent in cleartext; use https", key, u.Hostname()))
+		}
+	}
+	check("public_url", c.PublicURL)
+	check("matrix.homeserver", c.Matrix.Homeserver)
+	check("llm.base_url", c.LLM.BaseURL)
+	return w
+}
+
+func isLoopbackHost(h string) bool {
+	if h == "localhost" || strings.HasSuffix(h, ".localhost") {
+		return true
+	}
+	ip := net.ParseIP(h)
+	return ip != nil && ip.IsLoopback()
 }
 
 // DBPath is the SQLite database file.

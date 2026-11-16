@@ -67,3 +67,41 @@ func TestUnknownKeyRejected(t *testing.T) {
 		t.Fatal("expected error for unknown key")
 	}
 }
+
+func TestEnvNameValidation(t *testing.T) {
+	dir := t.TempDir()
+	write := func(body string) string {
+		p := filepath.Join(dir, "c.yaml")
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	none := func(string) (string, bool) { return "", false }
+	for _, bad := range []string{
+		"matrix:\n  access_token_env: HOME\n",
+		"llm:\n  api_key_env: panoptes_x\n",
+		"matrix:\n  access_token_env: PANOPTES_ADMIN_PASSWORD\n",
+		"admin:\n  initial_password_env: AWS_SECRET\n",
+	} {
+		if _, err := load(write(bad), none); err == nil {
+			t.Errorf("accepted %q", bad)
+		}
+	}
+	if _, err := load(write("matrix:\n  access_token_env: PANOPTES_MX_1\n"), none); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestWarnings(t *testing.T) {
+	c := Default()
+	if len(c.Warnings()) != 0 {
+		t.Fatalf("defaults warn: %v", c.Warnings())
+	}
+	c.PublicURL = "http://panoptes.example.com"
+	c.Matrix.Homeserver = "http://10.0.0.5:8008"
+	c.LLM.BaseURL = "http://127.0.0.1:11434/v1"
+	if n := len(c.Warnings()); n != 2 {
+		t.Fatalf("warnings=%v", c.Warnings())
+	}
+}

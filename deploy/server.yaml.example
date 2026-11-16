@@ -45,7 +45,10 @@ llm:
   # Maximum rule-drafting calls per day.
   daily_limit: 50
 
+# Names in *_env keys must match ^PANOPTES_[A-Z0-9_]+$ and differ from the admin password variable.
+# A WARN is logged at startup for http:// public_url / matrix.homeserver / llm.base_url on
+# non-loopback hosts.
 admin:
-  # Environment variable with the password for user "admin". Used only when no
+  # Min 12 characters; PANOPTES_ADMIN_PASSWORD_FILE (path) is also honoured. Environment variable with the password for user "admin". Used only when no
   # web user exists yet (first start).
   initial_password_env: PANOPTES_ADMIN_PASSWORD

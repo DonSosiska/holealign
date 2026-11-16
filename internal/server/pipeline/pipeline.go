@@ -3,9 +3,12 @@ package pipeline
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -14,8 +17,12 @@ import (
 
 	"panoptes/internal/model"
 	"panoptes/internal/server/core"
+	"panoptes/internal/server/notify"
 	"panoptes/internal/server/store"
 )
+
+// DefaultRunTimeout bounds one pipeline run.
+const DefaultRunTimeout = 10 * time.Minute
 
 // Matcher finds vulnerabilities in one CycloneDX SBOM. Implemented by match.Grype; faked in tests.
 // Returned findings need only the matcher-derived fields; the pipeline fills host/target/verdict.
@@ -32,7 +39,8 @@ type Options struct {
 	// conditions_unknown for this long (giving a rule drafter time to produce a verdict).
 	// 0 = immediate. Delayed events are emitted by RunNotifyPass / StartNotifyLoop.
 	UnknownGrace time.Duration
-	Concurrency  int // hosts processed in parallel (default 2; matching is CPU/memory heavy)
+	Concurrency  int           // hosts processed in parallel (default 2; matching is CPU/memory heavy)
+	RunTimeout   time.Duration // per-run limit (default DefaultRunTimeout)
 }
 
 // Pipeline recomputes findings for hosts. Trigger is non-blocking and coalesces per host.
@@ -67,6 +75,9 @@ func New(st store.Store, m Matcher, ev core.RuleEvaluator, n core.Notifier, d co
 	if opts.Concurrency <= 0 {
 		opts.Concurrency = 2
 	}
+	if opts.RunTimeout <= 0 {
+		opts.RunTimeout = DefaultRunTimeout
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Pipeline{
 		st: st, matcher: m, eval: ev, notifier: n, drafter: d, opts: opts, log: opts.Logger,
@@ -95,6 +106,14 @@ func (p *Pipeline) Trigger(hostID string) {
 	p.wg.Add(1)
 	go func() {
 		defer p.wg.Done()
+		defer func() {
+			if r := recover(); r != nil { // runLimited recovers; this guards the bookkeeping
+				p.log.Error("trigger goroutine panicked", "host", hostID, "panic", r, "stack", string(debug.Stack()))
+				p.mu.Lock()
+				delete(p.state, hostID)
+				p.mu.Unlock()
+			}
+		}()
 		for {
 			p.runLimited(hostID)
 			p.mu.Lock()
@@ -118,13 +137,83 @@ func (p *Pipeline) runLimited(hostID string) {
 	case <-p.baseCtx.Done():
 		return
 	}
-	if err := p.Run(p.baseCtx, hostID); err != nil && !errors.Is(err, context.Canceled) {
+	// A host has at most one goroutine (Trigger coalesces), so it holds at most one slot.
+	ctx, cancel := context.WithTimeout(p.baseCtx, p.opts.RunTimeout)
+	defer cancel()
+	defer func() {
+		if r := recover(); r != nil {
+			p.log.Error("pipeline run panicked; run marked failed", "host", hostID, "panic", r, "stack", string(debug.Stack()))
+		}
+	}()
+	if err := p.Run(ctx, hostID); err != nil && !errors.Is(err, context.Canceled) {
 		p.log.Error("pipeline run failed", "host", hostID, "err", err)
 	}
 }
 
+// poisonKey is the kv key flagging a target whose matching panicked.
+func poisonKey(hostID string, t model.InventoryTarget) string {
+	h := sha256.New()
+	h.Write([]byte(t.Kind))
+	h.Write([]byte{0})
+	h.Write([]byte(t.Name))
+	h.Write([]byte{0})
+	h.Write(t.SBOM)
+	return "poison." + hostID + "." + hex.EncodeToString(h.Sum(nil))[:16]
+}
+
+// matchSafe runs the matcher, converting a panic into panicked=true.
+func (p *Pipeline) matchSafe(ctx context.Context, t model.InventoryTarget, osInfo model.OSInfo) (fs []model.Finding, err error, panicked bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			p.log.Error("matcher panicked", "target", t.Name, "panic", r, "stack", string(debug.Stack()))
+			panicked = true
+		}
+	}()
+	fs, err = p.matcher.Match(ctx, t.Kind, t.SBOM, osInfo)
+	return
+}
+
+// deliver notifies and records every delivered event. With a *notify.DeliveryError only the
+// events not listed in Failed are recorded and only those are retried by a later run.
+func (p *Pipeline) deliver(ctx context.Context, events []model.Event, now time.Time) error {
+	nerr := p.notifier.Notify(ctx, events)
+	var failed map[int]bool
+	if nerr != nil {
+		var de *notify.DeliveryError
+		if !errors.As(nerr, &de) {
+			// Not recorded as sent: the events are retried on the next run.
+			return fmt.Errorf("notify: %w", nerr)
+		}
+		failed = map[int]bool{}
+		for _, i := range de.Failed {
+			failed[i] = true
+		}
+		if len(failed) == 0 {
+			p.log.Error("notification delivered with permanent errors; not retrying", "err", nerr)
+		}
+	}
+	for i, e := range events {
+		if failed[i] {
+			continue
+		}
+		if err := p.st.RecordNotification(ctx, store.FindingKey(e.Finding), store.DedupKey(e.Finding, e.Kind), e.Kind, now); err != nil {
+			return fmt.Errorf("record notification: %w", err)
+		}
+	}
+	if len(failed) > 0 {
+		return fmt.Errorf("notify: %d of %d events not delivered: %w", len(failed), len(events), nerr)
+	}
+	return nil
+}
+
 // TriggerAll schedules every known host (after a vuln DB update or rule change).
-func (p *Pipeline) TriggerAll(ctx context.Context) error {
+func (p *Pipeline) TriggerAll(ctx context.Context) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			p.log.Error("TriggerAll panicked", "panic", r, "stack", string(debug.Stack()))
+			err = fmt.Errorf("panic: %v", r)
+		}
+	}()
 	hosts, err := p.st.ListHosts(ctx)
 	if err != nil {
 		return err
@@ -133,6 +222,12 @@ func (p *Pipeline) TriggerAll(ctx context.Context) error {
 		p.Trigger(h.ID)
 	}
 	return nil
+}
+
+func (p *Pipeline) recoverLog(what string) {
+	if r := recover(); r != nil {
+		p.log.Error("panic recovered", "where", what, "panic", r, "stack", string(debug.Stack()))
+	}
 }
 
 // Wait blocks until all scheduled runs finished (tests, graceful shutdown).
@@ -171,11 +266,34 @@ func (p *Pipeline) Run(ctx context.Context, hostID string) error {
 	// 1. match every target
 	var found []model.Finding
 	seen := map[fkey]bool{}
+	// carryOver keeps the previous findings of a skipped target, so skipping never "resolves" them.
+	carryOver := func(target string) {
+		for _, f := range prev {
+			if f.Target == target && f.Verdict != model.VerdictResolved && !seen[keyOf(f)] {
+				seen[keyOf(f)] = true
+				found = append(found, f)
+			}
+		}
+	}
 	for _, t := range targets {
 		if len(t.SBOM) == 0 {
 			continue
 		}
-		fs, err := p.matcher.Match(ctx, t.Kind, t.SBOM, host.OS)
+		pk := poisonKey(hostID, t)
+		if v, err := p.st.KVGet(ctx, pk); err == nil && v != "" {
+			p.log.Debug("skipping poisoned target", "host", hostID, "target", t.Name)
+			carryOver(t.Name)
+			continue
+		}
+		fs, err, panicked := p.matchSafe(ctx, t, host.OS)
+		if panicked {
+			if err := p.st.KVSet(ctx, pk, "panic", p.opts.Now()); err != nil {
+				return fmt.Errorf("record poison flag: %w", err)
+			}
+			p.log.Error("target poisoned: matcher panicked; skipped until a new inventory arrives", "host", hostID, "kind", t.Kind, "target", t.Name)
+			carryOver(t.Name)
+			continue
+		}
 		if err != nil {
 			return fmt.Errorf("match %s %q: %w", t.Kind, t.Name, err)
 		}
@@ -231,16 +349,7 @@ func (p *Pipeline) Run(ctx context.Context, hostID string) error {
 	if len(events) == 0 {
 		return nil
 	}
-	if err := p.notifier.Notify(ctx, events); err != nil {
-		// Not recorded as sent: exploitable events are retried on the next run.
-		return fmt.Errorf("notify: %w", err)
-	}
-	for _, e := range events {
-		if err := p.st.RecordNotification(ctx, store.FindingKey(e.Finding), store.DedupKey(e.Finding, e.Kind), e.Kind, now); err != nil {
-			return fmt.Errorf("record notification: %w", err)
-		}
-	}
-	return nil
+	return p.deliver(ctx, events, now)
 }
 
 func (p *Pipeline) buildEvents(ctx context.Context, now time.Time, host model.Host, prev map[fkey]model.Finding, res store.ApplyResult, rules map[fkey]*model.Rule) ([]model.Event, error) {
@@ -420,15 +529,7 @@ func (p *Pipeline) RunNotifyPass(ctx context.Context) error {
 	if len(events) == 0 {
 		return nil
 	}
-	if err := p.notifier.Notify(ctx, events); err != nil {
-		return fmt.Errorf("notify: %w", err)
-	}
-	for _, e := range events {
-		if err := p.st.RecordNotification(ctx, store.FindingKey(e.Finding), store.DedupKey(e.Finding, e.Kind), e.Kind, now); err != nil {
-			return fmt.Errorf("record notification: %w", err)
-		}
-	}
-	return nil
+	return p.deliver(ctx, events, now)
 }
 
 // StartNotifyLoop runs RunNotifyPass every interval in a goroutine until ctx is done.
@@ -448,10 +549,15 @@ func (p *Pipeline) StartNotifyLoop(ctx context.Context, every time.Duration) {
 			case <-p.baseCtx.Done():
 				return
 			case <-t.C:
-				if err := p.RunNotifyPass(ctx); err != nil && ctx.Err() == nil {
-					p.log.Error("notify pass failed", "err", err)
-				}
+				p.safeNotifyPass(ctx)
 			}
 		}
 	}()
+}
+
+func (p *Pipeline) safeNotifyPass(ctx context.Context) {
+	defer p.recoverLog("notify loop")
+	if err := p.RunNotifyPass(ctx); err != nil && ctx.Err() == nil {
+		p.log.Error("notify pass failed", "err", err)
+	}
 }

@@ -102,3 +102,74 @@ func TestEnsureAdmin(t *testing.T) {
 		t.Fatalf("%v", err)
 	}
 }
+
+func TestEnsureAdminLengthAndFile(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("PANOPTES_CONFIG", "")
+	t.Setenv("PANOPTES_DATA_DIR", dir)
+	st, _ := store.OpenSQLite(filepath.Join(dir, "panoptes.db"))
+	defer st.Close()
+	cfg := mustLoad(t)
+
+	t.Setenv("PANOPTES_ADMIN_PASSWORD", "elevenchars")
+	if err := ensureAdmin(context.Background(), cfg, st, nopLogger()); err == nil {
+		t.Fatal("11-char password accepted")
+	}
+	pwFile := filepath.Join(dir, "pw")
+	_ = os.WriteFile(pwFile, []byte("a-long-enough-secret\n"), 0o600)
+	t.Setenv("PANOPTES_ADMIN_PASSWORD_FILE", pwFile)
+	if err := ensureAdmin(context.Background(), cfg, st, nopLogger()); err != nil {
+		t.Fatal(err)
+	}
+	u, err := st.GetUser(context.Background(), "admin")
+	if err != nil || !store.CheckPassword(u.PasswordHash, "a-long-enough-secret") {
+		t.Fatalf("file password not used: %v", err)
+	}
+}
+
+func TestTokenOptionsAndHostCommands(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("PANOPTES_CONFIG", "")
+	t.Setenv("PANOPTES_DATA_DIR", dir)
+	if code, _, _ := runCLI(t, "", "token", "create", "bad", "-labels", "BAD LABEL"); code == 0 {
+		t.Fatal("invalid label accepted")
+	}
+	code, out, _ := runCLI(t, "", "token", "create", "prod", "-max-hosts", "3", "-expires", "72h", "-labels", "prod,web")
+	if code != 0 || !strings.HasPrefix(strings.TrimSpace(out), "pt_") {
+		t.Fatalf("%d %q", code, out)
+	}
+	_, out, _ = runCLI(t, "", "token", "list")
+	if !strings.Contains(out, "0/3") || !strings.Contains(out, "prod,web") {
+		t.Fatalf("list: %q", out)
+	}
+
+	st, _ := store.OpenSQLite(filepath.Join(dir, "panoptes.db"))
+	_, hash, _ := store.NewSecret("pa_")
+	h, err := st.EnrollHost(context.Background(), store.EnrollParams{MachineID: "m1", Hostname: "web1", KeyHash: hash})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.Close()
+
+	_, out, _ = runCLI(t, "", "host", "list")
+	if !strings.Contains(out, h.ID) || !strings.Contains(out, "web1") {
+		t.Fatalf("host list: %q", out)
+	}
+	if code, _, _ := runCLI(t, "", "host", "allow-reenroll", "web1"); code != 0 {
+		t.Fatal("allow-reenroll by hostname")
+	}
+	_, out, _ = runCLI(t, "", "host", "list")
+	if !strings.Contains(out, "allowed") {
+		t.Fatalf("flag not shown: %q", out)
+	}
+	if code, _, _ := runCLI(t, "", "host", "allow-reenroll", "nope"); code == 0 {
+		t.Fatal("unknown host accepted")
+	}
+	if code, _, _ := runCLI(t, "", "host", "delete", h.ID); code != 0 {
+		t.Fatal("delete by id")
+	}
+	_, out, _ = runCLI(t, "", "host", "list")
+	if strings.Contains(out, "web1") {
+		t.Fatalf("host still listed: %q", out)
+	}
+}

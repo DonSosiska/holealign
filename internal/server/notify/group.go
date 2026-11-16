@@ -18,13 +18,14 @@ type groupKey struct {
 // group is a set of events sent as one message.
 type group struct {
 	evs []model.Event
+	idx []int // indexes of evs in the Notify input (may be nil outside Notify)
 }
 
 // groupEvents merges events by groupKey, preserving first-appearance order.
 func groupEvents(events []model.Event) []group {
 	idx := map[groupKey]int{}
 	var out []group
-	for _, ev := range events {
+	for n, ev := range events {
 		k := groupKey{kind: ev.Kind, hostID: ev.Host.ID, vulnID: ev.Finding.VulnID, targetName: ev.Finding.Target}
 		i, ok := idx[k]
 		if !ok {
@@ -33,6 +34,7 @@ func groupEvents(events []model.Event) []group {
 			out = append(out, group{})
 		}
 		out[i].evs = append(out[i].evs, ev)
+		out[i].idx = append(out[i].idx, n)
 	}
 	return out
 }

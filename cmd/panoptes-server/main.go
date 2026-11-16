@@ -1,7 +1,8 @@
 // Command panoptes-server is the Panoptes central server.
 //
 //	panoptes-server [-config file] [serve]
-//	panoptes-server [-config file] token create <name> | token list | token revoke <name>
+//	panoptes-server [-config file] token create <name> [-max-hosts N] [-expires 72h] [-labels a,b] | token list | token revoke <name>
+//	panoptes-server [-config file] host list | host allow-reenroll <id|hostname> | host delete <id|hostname>
 //	panoptes-server [-config file] user set-password <user>   (password on stdin)
 //	panoptes-server -version
 package main
@@ -18,6 +19,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"syscall"
@@ -42,6 +44,7 @@ import (
 var version = "dev"
 
 func main() {
+	restrictUmask()
 	os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 }
 
@@ -55,7 +58,11 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 
 commands:
   serve                       run the server (default)
-  token create <name>         create an enrollment token (printed once)
+  token create <name> [-max-hosts N] [-expires 72h] [-labels a,b]
+                              create an enrollment token (printed once); labels are authoritative
+  host list                   list enrolled hosts
+  host allow-reenroll <host>  allow ONE re-enrollment of a host without its old key (id or hostname)
+  host delete <host>          delete a host and its findings
   token list                  list enrollment tokens
   token revoke <name>         revoke an enrollment token
   user set-password <user>    set (or create) a web user; password is read from stdin
@@ -97,6 +104,8 @@ commands:
 		cerr = serve(cfg)
 	case "token":
 		cerr = tokenCmd(cfg, rest, stdout, stderr)
+	case "host":
+		cerr = hostCmd(cfg, rest, stdout)
 	case "user":
 		cerr = userCmd(cfg, rest, stdin, stdout, stderr)
 	default:
@@ -140,10 +149,19 @@ func (l *lateTrigger) TriggerAll() {
 		return
 	}
 	go func() {
+		defer recoverLog(l.log, "lateTrigger.TriggerAll")
 		if err := l.p.TriggerAll(context.Background()); err != nil {
 			l.log.Error("re-run pipeline", "err", err)
 		}
 	}()
+}
+
+// recoverLog is deferred at the top of background goroutines: a panic is logged with its stack
+// instead of killing the server.
+func recoverLog(log *slog.Logger, where string) {
+	if r := recover(); r != nil {
+		log.Error("panic recovered in background goroutine", "where", where, "panic", r, "stack", string(debug.Stack()))
+	}
 }
 
 // settingsRoutes reads Matrix routes edited in the web UI (setting "matrix.routes").
@@ -298,6 +316,9 @@ func (rulesService) Validate(r model.Rule) error { return rules.Validate(r) }
 func serve(cfg *config.Config) error {
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(log)
+	for _, w := range cfg.Warnings() {
+		log.Warn("insecure configuration: " + w)
+	}
 	if err := os.MkdirAll(cfg.DataDir, 0o750); err != nil {
 		return fmt.Errorf("create data_dir: %w", err)
 	}
@@ -322,7 +343,10 @@ func serve(cfg *config.Config) error {
 		pipeline.Options{PublicURL: cfg.PublicURL, Logger: log, UnknownGrace: unknownGrace(cfg)})
 	trig.p = pipe
 	for _, start := range comp.Start {
-		start(ctx)
+		func() {
+			defer recoverLog(log, "component start hook")
+			start(ctx)
+		}()
 	}
 	pipe.StartNotifyLoop(ctx, 5*time.Minute)
 
@@ -334,8 +358,10 @@ func serve(cfg *config.Config) error {
 	srv := &http.Server{
 		Addr:              cfg.Listen,
 		Handler:           api.LogRequests(log, mux),
+		MaxHeaderBytes:    64 << 10,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       5 * time.Minute, // inventory uploads up to 64 MiB
+		WriteTimeout:      2 * time.Minute,
 		IdleTimeout:       2 * time.Minute,
 	}
 
@@ -348,7 +374,7 @@ func serve(cfg *config.Config) error {
 		},
 	}
 	feedsDone := make(chan struct{})
-	go func() { defer close(feedsDone); updater.Run(ctx) }()
+	go func() { defer close(feedsDone); defer recoverLog(log, "feeds updater"); updater.Run(ctx) }()
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -380,19 +406,41 @@ func serve(cfg *config.Config) error {
 	return nil
 }
 
-// ensureAdmin creates user "admin" from the configured env var when no users exist yet.
+// minAdminPassword is the minimum length of the initial admin password.
+const minAdminPassword = 12
+
+// adminPasswordFileEnv names a file holding the initial admin password (preferred over the
+// environment variable: it does not show up in process environments or `docker inspect`).
+const adminPasswordFileEnv = "PANOPTES_ADMIN_PASSWORD_FILE"
+
+// ensureAdmin creates user "admin" from PANOPTES_ADMIN_PASSWORD_FILE or the configured env var
+// when no users exist yet.
 func ensureAdmin(ctx context.Context, cfg *config.Config, st store.Store, log *slog.Logger) error {
 	n, err := st.CountUsers(ctx)
 	if err != nil {
 		return err
 	}
-	if n > 0 || cfg.Admin.InitialPasswordEnv == "" {
+	if n > 0 {
 		return nil
 	}
-	pw := os.Getenv(cfg.Admin.InitialPasswordEnv)
+	pw := ""
+	if f := os.Getenv(adminPasswordFileEnv); f != "" {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			return fmt.Errorf("read %s: %w", adminPasswordFileEnv, err)
+		}
+		pw = strings.TrimRight(string(b), "\r\n")
+	} else if cfg.Admin.InitialPasswordEnv != "" {
+		pw = os.Getenv(cfg.Admin.InitialPasswordEnv)
+	}
 	if pw == "" {
-		log.Warn("no web users exist; set the admin password env var or run 'user set-password admin'", "env", cfg.Admin.InitialPasswordEnv)
+		if cfg.Admin.InitialPasswordEnv != "" || os.Getenv(adminPasswordFileEnv) != "" {
+			log.Warn("no web users exist; set the admin password (env var or "+adminPasswordFileEnv+") or run 'user set-password admin'", "env", cfg.Admin.InitialPasswordEnv)
+		}
 		return nil
+	}
+	if len(pw) < minAdminPassword {
+		return fmt.Errorf("initial admin password must be at least %d characters", minAdminPassword)
 	}
 	hash, err := store.HashPassword(pw)
 	if err != nil {
@@ -409,7 +457,7 @@ func ensureAdmin(ctx context.Context, cfg *config.Config, st store.Store, log *s
 
 func tokenCmd(cfg *config.Config, args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("usage: token create <name> | token list | token revoke <name>")
+		return errors.New("usage: token create <name> [-max-hosts N] [-expires 72h] [-labels a,b] | token list | token revoke <name>")
 	}
 	if err := os.MkdirAll(cfg.DataDir, 0o750); err != nil {
 		return err
@@ -422,37 +470,34 @@ func tokenCmd(cfg *config.Config, args []string, stdout, stderr io.Writer) error
 	ctx := context.Background()
 	switch args[0] {
 	case "create":
-		if len(args) != 2 || strings.TrimSpace(args[1]) == "" {
-			return errors.New("usage: token create <name>")
-		}
-		secret, hash, err := store.NewSecret("pt_")
-		if err != nil {
-			return err
-		}
-		if err := st.CreateEnrollToken(ctx, args[1], hash); err != nil {
-			if errors.Is(err, store.ErrExists) {
-				return fmt.Errorf("a token named %q already exists", args[1])
-			}
-			return err
-		}
-		fmt.Fprintln(stderr, "Enrollment token created. It is shown only once:")
-		fmt.Fprintln(stdout, secret)
+		return tokenCreate(ctx, st, args[1:], stdout, stderr)
 	case "list":
 		toks, err := st.ListEnrollTokens(ctx)
 		if err != nil {
 			return err
 		}
 		tw := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
-		fmt.Fprintln(tw, "NAME\tCREATED\tLAST USED\tSTATUS")
+		fmt.Fprintln(tw, "NAME\tCREATED\tLAST USED\tSTATUS\tHOSTS\tEXPIRES\tLABELS")
 		for _, t := range toks {
-			status, used := "active", "never"
-			if t.Revoked {
+			status, used, exp, hosts := "active", "never", "never", fmt.Sprint(t.Hosts)
+			switch {
+			case t.Revoked:
 				status = "revoked"
+			case !t.ExpiresAt.IsZero() && time.Now().After(t.ExpiresAt):
+				status = "expired"
+			case t.MaxHosts > 0 && t.Hosts >= t.MaxHosts:
+				status = "exhausted"
+			}
+			if t.MaxHosts > 0 {
+				hosts += "/" + fmt.Sprint(t.MaxHosts)
 			}
 			if !t.LastUsed.IsZero() {
 				used = t.LastUsed.Format(time.RFC3339)
 			}
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", t.Name, t.CreatedAt.Format(time.RFC3339), used, status)
+			if !t.ExpiresAt.IsZero() {
+				exp = t.ExpiresAt.Format(time.RFC3339)
+			}
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", t.Name, t.CreatedAt.Format(time.RFC3339), used, status, hosts, exp, strings.Join(t.Labels, ","))
 		}
 		return tw.Flush()
 	case "revoke":
@@ -511,6 +556,139 @@ func userCmd(cfg *config.Config, args []string, stdin io.Reader, stdout, stderr 
 		fmt.Fprintf(stdout, "user %q created\n", user)
 	default:
 		return err
+	}
+	return nil
+}
+
+func tokenCreate(ctx context.Context, st store.Store, args []string, stdout, stderr io.Writer) error {
+	const usage = "usage: token create <name> [-max-hosts N] [-expires 72h] [-labels prod,web]"
+	fs := flag.NewFlagSet("token create", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	maxHosts := fs.Int("max-hosts", 0, "maximum number of hosts that may enroll with this token (0 = unlimited)")
+	expires := fs.Duration("expires", 0, "token lifetime, e.g. 72h (0 = never expires)")
+	labels := fs.String("labels", "", "comma-separated labels; authoritative for hosts enrolled with this token")
+	name := ""
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		name, args = args[0], args[1:]
+	}
+	if err := fs.Parse(args); err != nil {
+		return errors.New(usage)
+	}
+	if name == "" && fs.NArg() == 1 {
+		name = fs.Arg(0)
+	} else if fs.NArg() != 0 {
+		return errors.New(usage)
+	}
+	if strings.TrimSpace(name) == "" {
+		return errors.New(usage)
+	}
+	if *maxHosts < 0 || *expires < 0 {
+		return errors.New("-max-hosts and -expires must not be negative")
+	}
+	var ls []string
+	for _, l := range strings.Split(*labels, ",") {
+		if l = strings.TrimSpace(l); l != "" {
+			ls = append(ls, l)
+		}
+	}
+	if err := api.ValidateLabels(ls); err != nil {
+		return err
+	}
+	o := store.EnrollTokenOpts{Name: name, MaxHosts: *maxHosts, Labels: ls}
+	if *expires > 0 {
+		o.ExpiresAt = time.Now().Add(*expires)
+	}
+	secret, hash, err := store.NewSecret("pt_")
+	if err != nil {
+		return err
+	}
+	o.Hash = hash
+	if err := st.CreateEnrollTokenOpts(ctx, o); err != nil {
+		if errors.Is(err, store.ErrExists) {
+			return fmt.Errorf("a token named %q already exists", name)
+		}
+		return err
+	}
+	fmt.Fprintln(stderr, "Enrollment token created. It is shown only once:")
+	fmt.Fprintln(stdout, secret)
+	return nil
+}
+
+func hostCmd(cfg *config.Config, args []string, stdout io.Writer) error {
+	const usage = "usage: host list | host allow-reenroll <id|hostname> | host delete <id|hostname>"
+	if len(args) == 0 {
+		return errors.New(usage)
+	}
+	if err := os.MkdirAll(cfg.DataDir, 0o750); err != nil {
+		return err
+	}
+	st, err := openStore(cfg)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	ctx := context.Background()
+	hosts, err := st.ListHostsAdmin(ctx)
+	if err != nil {
+		return err
+	}
+	find := func() (store.HostAdmin, error) {
+		if len(args) != 2 {
+			return store.HostAdmin{}, errors.New(usage)
+		}
+		var hit []store.HostAdmin
+		for _, h := range hosts {
+			if h.ID == args[1] {
+				return h, nil
+			}
+			if h.Hostname == args[1] {
+				hit = append(hit, h)
+			}
+		}
+		switch len(hit) {
+		case 0:
+			return store.HostAdmin{}, fmt.Errorf("no host %q", args[1])
+		case 1:
+			return hit[0], nil
+		}
+		return store.HostAdmin{}, fmt.Errorf("hostname %q is ambiguous (%d hosts); use the host id", args[1], len(hit))
+	}
+	switch args[0] {
+	case "list":
+		tw := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
+		fmt.Fprintln(tw, "ID\tHOSTNAME\tLABELS\tLAST CHECK-IN\tTOKEN\tREENROLL")
+		for _, h := range hosts {
+			last := "never"
+			if !h.LastCheckin.IsZero() {
+				last = h.LastCheckin.Format(time.RFC3339)
+			}
+			re := "-"
+			if h.ReenrollAllowed {
+				re = "allowed"
+			}
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", h.ID, h.Hostname, strings.Join(h.Labels, ","), last, h.TokenName, re)
+		}
+		return tw.Flush()
+	case "allow-reenroll":
+		h, err := find()
+		if err != nil {
+			return err
+		}
+		if err := st.SetReenrollAllowed(ctx, h.ID, true); err != nil {
+			return err
+		}
+		fmt.Fprintf(stdout, "host %s (%s) may re-enroll once without its previous key\n", h.ID, h.Hostname)
+	case "delete":
+		h, err := find()
+		if err != nil {
+			return err
+		}
+		if err := st.DeleteHost(ctx, h.ID); err != nil {
+			return err
+		}
+		fmt.Fprintf(stdout, "host %s (%s) deleted\n", h.ID, h.Hostname)
+	default:
+		return errors.New(usage)
 	}
 	return nil
 }

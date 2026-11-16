@@ -21,7 +21,24 @@ var (
 	ErrNotFound = errors.New("store: not found")
 	// ErrExists is returned when a unique constraint would be violated (user, token name).
 	ErrExists = errors.New("store: already exists")
+	// ErrReenrollDenied is returned by EnrollHost when the machine is already enrolled and the caller
+	// presented neither the host's current agent key nor an admin re-enroll permission.
+	ErrReenrollDenied = errors.New("store: host exists; previous key required")
+	// ErrTokenExhausted is returned by EnrollHost when the token's max_hosts is reached.
+	ErrTokenExhausted = errors.New("store: enrollment token exhausted")
 )
+
+// Facts limits enforced after merging a check-in.
+const (
+	MaxFactKeys      = 1000
+	MaxFactsBytes    = 1 << 20
+	MaxFactValueByte = 64 << 10
+)
+
+// LimitError reports a request that exceeds a size limit (HTTP 413).
+type LimitError struct{ Msg string }
+
+func (e *LimitError) Error() string { return e.Msg }
 
 // EnrollParams describes a host enrolling (or re-enrolling) with a new agent key.
 type EnrollParams struct {
@@ -30,6 +47,31 @@ type EnrollParams struct {
 	Labels       []string
 	AgentVersion string
 	KeyHash      string // SHA-256 hex of the new agent key
+
+	// PreviousKeyHash is the hash of the Bearer key presented with the request. A host that already
+	// exists is re-enrolled only if this is one of its current keys or reenroll_allowed is set.
+	PreviousKeyHash string
+	// TokenName is the enrollment token used; recorded on the host. MaxHosts (0 = unlimited) is
+	// enforced when the host is new. TokenLabels, if non-empty, replace Labels and lock them.
+	TokenName   string
+	MaxHosts    int
+	TokenLabels []string
+}
+
+// HostAdmin is the admin view of a host.
+type HostAdmin struct {
+	model.Host
+	TokenName       string
+	ReenrollAllowed bool
+}
+
+// EnrollTokenOpts are the creation options of an enrollment token.
+type EnrollTokenOpts struct {
+	Name      string
+	Hash      string
+	MaxHosts  int       // 0 = unlimited
+	ExpiresAt time.Time // zero = never
+	Labels    []string  // authoritative labels for hosts enrolled with this token
 }
 
 // CheckinResult is what ApplyCheckin learned while merging a check-in.
@@ -57,6 +99,10 @@ type EnrollTokenInfo struct {
 	CreatedAt time.Time
 	Revoked   bool
 	LastUsed  time.Time
+	MaxHosts  int
+	ExpiresAt time.Time
+	Labels    []string
+	Hosts     int // hosts enrolled with this token
 }
 
 // ApplyResult is returned by ApplyHostFindings.
@@ -91,6 +137,8 @@ type Store interface {
 	GetHost(ctx context.Context, id string) (model.Host, error)
 	ListHosts(ctx context.Context) ([]model.Host, error)
 	DeleteHost(ctx context.Context, id string) error
+	ListHostsAdmin(ctx context.Context) ([]HostAdmin, error)
+	SetReenrollAllowed(ctx context.Context, id string, allowed bool) error
 
 	// Inventory.
 	ReplaceInventory(ctx context.Context, hostID string, p model.InventoryPayload) error
@@ -98,7 +146,11 @@ type Store interface {
 
 	// Enrollment tokens (hash only).
 	CreateEnrollToken(ctx context.Context, name, tokenHash string) error
+	CreateEnrollTokenOpts(ctx context.Context, o EnrollTokenOpts) error
 	UseEnrollToken(ctx context.Context, tokenHash string) (bool, error)
+	// UseEnrollTokenInfo validates the token (exists, not revoked, not expired) without writing,
+	// then records last_used. ErrNotFound when invalid.
+	UseEnrollTokenInfo(ctx context.Context, tokenHash string, now time.Time) (EnrollTokenInfo, error)
 	ListEnrollTokens(ctx context.Context) ([]EnrollTokenInfo, error)
 	RevokeEnrollToken(ctx context.Context, name string) error
 

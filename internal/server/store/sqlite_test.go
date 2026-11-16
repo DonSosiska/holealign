@@ -79,7 +79,7 @@ func TestEnrollRotatesKeyAndReusesHost(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := s.EnrollHost(ctx, EnrollParams{MachineID: "m1", Hostname: "web1-renamed", KeyHash: h2})
+	b, err := s.EnrollHost(ctx, EnrollParams{MachineID: "m1", Hostname: "web1-renamed", KeyHash: h2, PreviousKeyHash: h1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -429,5 +429,54 @@ func TestExtendSession(t *testing.T) {
 	}
 	if err := s.ExtendSession(ctx, "nope", now.Add(time.Hour), now); !errors.Is(err, ErrNotFound) {
 		t.Fatal(err)
+	}
+}
+
+func TestUseEnrollTokenWritesOnlyForValidTokens(t *testing.T) {
+	ctx := context.Background()
+	s := open(t)
+	_, good, _ := NewSecret("pt_")
+	_, exp, _ := NewSecret("pt_")
+	_ = s.CreateEnrollToken(ctx, "good", good)
+	_ = s.CreateEnrollTokenOpts(ctx, EnrollTokenOpts{Name: "exp", Hash: exp, ExpiresAt: time.Now().Add(-time.Hour)})
+	for _, h := range []string{"unknown", exp} {
+		if ok, err := s.UseEnrollToken(ctx, h); ok || err != nil {
+			t.Fatalf("%s: %v %v", h, ok, err)
+		}
+	}
+	toks, _ := s.ListEnrollTokens(ctx)
+	for _, tk := range toks {
+		if !tk.LastUsed.IsZero() {
+			t.Fatalf("%s last_used written", tk.Name)
+		}
+	}
+	if ok, _ := s.UseEnrollToken(ctx, good); !ok {
+		t.Fatal("good token")
+	}
+	toks, _ = s.ListEnrollTokens(ctx)
+	if toks[0].Name != "good" && toks[1].Name != "good" {
+		t.Fatal("?")
+	}
+}
+
+func TestReenrollNeedsKeyOrFlag(t *testing.T) {
+	ctx := context.Background()
+	s := open(t)
+	_, h1, _ := NewSecret("pa_")
+	_, h2, _ := NewSecret("pa_")
+	_, h3, _ := NewSecret("pa_")
+	a, _ := s.EnrollHost(ctx, EnrollParams{MachineID: "m1", KeyHash: h1})
+	if _, err := s.EnrollHost(ctx, EnrollParams{MachineID: "m1", KeyHash: h2}); !errors.Is(err, ErrReenrollDenied) {
+		t.Fatalf("%v", err)
+	}
+	if _, err := s.HostByAgentKey(ctx, h1); err != nil {
+		t.Fatal("old key must survive a refused re-enroll")
+	}
+	_ = s.SetReenrollAllowed(ctx, a.ID, true)
+	if _, err := s.EnrollHost(ctx, EnrollParams{MachineID: "m1", KeyHash: h2}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.EnrollHost(ctx, EnrollParams{MachineID: "m1", KeyHash: h3}); !errors.Is(err, ErrReenrollDenied) {
+		t.Fatalf("flag not cleared: %v", err)
 	}
 }
