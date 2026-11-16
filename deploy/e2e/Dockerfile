@@ -1,0 +1,40 @@
+# syntax=docker/dockerfile:1
+# Build context: repository root (see docker-compose.yml).
+FROM golang:1.27 AS build
+ENV CGO_ENABLED=0
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
+COPY cmd ./cmd
+COPY internal ./internal
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
+    go build -trimpath -ldflags "-X main.version=e2e" -o /out/ ./cmd/panoptes-server ./cmd/panoptes-agent
+
+# ---- panoptes-server --------------------------------------------------------
+FROM debian:bookworm-slim AS server
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=build /out/panoptes-server /usr/local/bin/panoptes-server
+COPY rules /usr/share/panoptes/rules
+ENV PANOPTES_DATA_DIR=/var/lib/panoptes
+VOLUME /var/lib/panoptes
+ENTRYPOINT ["/usr/local/bin/panoptes-server"]
+CMD ["serve"]
+
+# ---- host: Debian 12 as of 2024-06-01 (openssh 1:9.2p1-2+deb12u2, CVE-2024-6387) ----
+FROM debian:bookworm-20240513-slim AS host
+RUN rm -f /etc/apt/sources.list.d/* /etc/apt/sources.list \
+    && printf '%s\n' \
+      'deb http://snapshot.debian.org/archive/debian/20240601T000000Z bookworm main' \
+      'deb http://snapshot.debian.org/archive/debian-security/20240601T000000Z bookworm-security main' \
+      > /etc/apt/sources.list \
+    && printf 'Acquire::Check-Valid-Until "false";\nAcquire::Retries "5";\nAcquire::http::Timeout "30";\n' \
+      > /etc/apt/apt.conf.d/99snapshot
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+       openssh-server=1:9.2p1-2+deb12u2 nginx ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /run/sshd
+COPY --from=build /out/panoptes-agent /usr/local/bin/panoptes-agent
+COPY deploy/e2e/host-entrypoint.sh /usr/local/bin/host-entrypoint.sh
+ENTRYPOINT ["/usr/local/bin/host-entrypoint.sh"]

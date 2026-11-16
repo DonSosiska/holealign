@@ -1,0 +1,89 @@
+# Driven by run.sh; it exports every ${VAR} used below. Start order matters
+# (homeserver -> server -> hosts) and is handled by run.sh via profiles.
+name: panoptes-e2e
+
+x-host: &host
+  build:
+    context: ../..
+    dockerfile: deploy/e2e/Dockerfile
+    target: host
+  image: panoptes-e2e-host
+  depends_on: []
+  environment: &host-env
+    PANOPTES_SERVER_URL: http://panoptes-server:8080
+    PANOPTES_ENROLL_TOKEN: ${E2E_ENROLL_TOKEN:-unset}
+
+services:
+  matrix:
+    # Continuwuity (conduwuit successor): single static binary, no external DB.
+    image: ${MATRIX_IMAGE:-ghcr.io/continuwuity/continuwuity:latest}
+    environment:
+      CONDUWUIT_SERVER_NAME: panoptes.test
+      CONDUWUIT_ADDRESS: 0.0.0.0
+      CONDUWUIT_PORT: "8008"
+      CONDUWUIT_DATABASE_PATH: /var/lib/conduwuit
+      CONDUWUIT_ALLOW_REGISTRATION: "true"
+      CONDUWUIT_REGISTRATION_TOKEN: ${E2E_REG_TOKEN:-e2e-reg-token}
+      CONDUWUIT_ALLOW_FEDERATION: "false"
+      CONDUWUIT_ALLOW_ANNOUNCEMENTS_CHECK: "false"
+      CONDUWUIT_LOG: warn
+    ports:
+      - "127.0.0.1:${E2E_MATRIX_PORT:-18008}:8008"
+    tmpfs:
+      - /var/lib/conduwuit
+
+  panoptes-server:
+    build:
+      context: ../..
+      dockerfile: deploy/e2e/Dockerfile
+      target: server
+    image: panoptes-e2e-server
+    profiles: ["server"]
+    environment:
+      PANOPTES_CONFIG: /etc/panoptes/server.yaml
+      PANOPTES_PUBLIC_URL: http://localhost:${E2E_SERVER_PORT:-18080}
+      PANOPTES_FEEDS_UPDATE: ${E2E_FEEDS_UPDATE:-true}
+      PANOPTES_MATRIX_HOMESERVER: http://matrix:8008
+      PANOPTES_MATRIX_ACCESS_TOKEN_ENV: E2E_MATRIX_BOT_TOKEN
+      PANOPTES_MATRIX_DEFAULT_ROOMS: ${E2E_ROOM_DEFAULT:-}
+      E2E_MATRIX_BOT_TOKEN: ${E2E_BOT_TOKEN:-}
+      PANOPTES_ADMIN_PASSWORD: ${PANOPTES_ADMIN_PASSWORD:-}
+    volumes:
+      - ${E2E_TMP:-/tmp}/server.yaml:/etc/panoptes/server.yaml:ro
+      - ${E2E_GRYPE_MOUNT:-e2e-grype-db}:/var/lib/panoptes/grype-db
+      - e2e-data:/var/lib/panoptes
+    ports:
+      - "127.0.0.1:${E2E_SERVER_PORT:-18080}:8080"
+    depends_on: [matrix]
+
+  web-default:
+    <<: *host
+    profiles: ["hosts"]
+    hostname: web-default
+    environment:
+      <<: *host-env
+      HOST_LABELS: "prod,web"
+      HOST_MACHINE_ID: "0000000000000000000000000000e201"
+
+  web-lgt0:
+    <<: *host
+    profiles: ["hosts"]
+    hostname: web-lgt0
+    environment:
+      <<: *host-env
+      HOST_LABELS: "prod,web"
+      HOST_MACHINE_ID: "0000000000000000000000000000e202"
+      SSHD_EXTRA: "LoginGraceTime 0"
+
+  staging-1:
+    <<: *host
+    profiles: ["hosts"]
+    hostname: staging-1
+    environment:
+      <<: *host-env
+      HOST_LABELS: "staging"
+      HOST_MACHINE_ID: "0000000000000000000000000000e203"
+
+volumes:
+  e2e-grype-db:
+  e2e-data:
