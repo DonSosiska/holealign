@@ -5,6 +5,19 @@
 # Redirects are never followed. TLS 1.2 or newer is required.
 server_url: https://panoptes.example.com
 
+# Server identity (optional, recommended for private CAs and self-hosted servers).
+# ca_file: PEM bundle. When set, ONLY these roots are trusted; system roots are not used.
+# server_cert_sha256: hex SHA-256 fingerprints of the server leaf certificate's
+# SubjectPublicKeyInfo. When set the handshake must present a leaf with one of these
+# hashes IN ADDITION to normal chain validation (list the next key too before rotating).
+# Get the value with `panoptes-agent -print-server-pin` (validates the chain first; compare
+# it out of band), or: openssl x509 -pubkey -noout -in server.pem | openssl pkey -pubin -outform DER | sha256sum
+# ca_file: /etc/panoptes/ca.pem
+# server_cert_sha256: ["0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"]
+# Optional mTLS client certificate (PEM paths):
+# client_cert: /etc/panoptes/client.pem
+# client_key: /etc/panoptes/client.key
+
 # Permit an http:// server_url (testing only; the agent key travels unencrypted, a WARN is logged).
 allow_insecure_http: false
 

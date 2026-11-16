@@ -16,6 +16,7 @@ import (
 	"panoptes/internal/agent/facts"
 	"panoptes/internal/agent/inventory"
 	"panoptes/internal/agent/runner"
+	"panoptes/internal/agent/transport"
 )
 
 // version is set with -ldflags "-X main.version=...".
@@ -29,6 +30,7 @@ func run() int {
 		once       = flag.Bool("once", false, "do one check-in and inventory upload, then exit")
 		printInv   = flag.Bool("print-inventory", false, "scan and print the inventory payload as JSON, no server needed")
 		printFacts = flag.Bool("print-facts", false, "collect and print facts as JSON, no server needed")
+		printPin   = flag.Bool("print-server-pin", false, "connect to server_url and print the leaf certificate's SPKI SHA-256 (chain is validated normally; not trust-on-first-use)")
 		showVer    = flag.Bool("version", false, "print version and exit")
 		logLevel   = flag.String("log-level", "info", "log level: debug, info, warn, error")
 	)
@@ -70,8 +72,16 @@ func run() int {
 		return printJSON(payload)
 	}
 
+	if *printPin {
+		return printServerPin(ctx, cfg)
+	}
+
 	log.Info("panoptes-agent starting", "version", version, "server", cfg.ServerURL)
-	r := runner.New(cfg, version, log)
+	r, err := runner.New(cfg, version, log)
+	if err != nil {
+		log.Error("setup", "err", err)
+		return 1
+	}
 	if *once {
 		err = r.RunOnce(ctx)
 	} else {
@@ -82,6 +92,23 @@ func run() int {
 		return 1
 	}
 	log.Info("agent stopped")
+	return 0
+}
+
+// printServerPin prints the SPKI SHA-256 of the server's leaf certificate. The chain is
+// validated with the configured trust roots first, so this is a convenience for
+// copying the value into server_cert_sha256, not trust-on-first-use.
+func printServerPin(ctx context.Context, cfg config.Config) int {
+	pin, err := transport.FetchServerPin(ctx, cfg.ServerURL, transport.TLSOptions{
+		CAFile: cfg.CAFile, ClientCert: cfg.ClientCert, ClientKey: cfg.ClientKey,
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "print-server-pin:", err)
+		return 1
+	}
+	fmt.Fprintln(os.Stderr, "note: the certificate chain was validated normally before this pin was read;")
+	fmt.Fprintln(os.Stderr, "      compare the value out of band before adding it to server_cert_sha256.")
+	fmt.Println(pin)
 	return 0
 }
 

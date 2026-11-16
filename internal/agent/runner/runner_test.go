@@ -86,7 +86,7 @@ func TestRunnerFlow(t *testing.T) {
 	cfg.AllowInsecureHTTP = true
 	cfg.EnrollToken = "tok"
 	cfg.StateDir = t.TempDir()
-	r := New(cfg, "test", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	r := mustNew(t, cfg)
 	n := 0
 	r.collectFacts = func(context.Context, []model.FactRequest) model.Facts {
 		n++
@@ -171,7 +171,7 @@ func TestRunnerReenrollsOn401(t *testing.T) {
 	cfg.AllowInsecureHTTP = true
 	cfg.EnrollToken = "tok"
 	cfg.StateDir = t.TempDir()
-	r := New(cfg, "test", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	r := mustNew(t, cfg)
 	r.collectFacts = func(context.Context, []model.FactRequest) model.Facts { return nil }
 	r.scan = func(context.Context, config.Config) (model.InventoryPayload, error) {
 		return model.InventoryPayload{}, nil
@@ -185,4 +185,13 @@ func TestRunnerReenrollsOn401(t *testing.T) {
 	if enrolls != 1 || r.client.Key != "new" {
 		t.Fatalf("enrolls=%d key=%s", enrolls, r.client.Key)
 	}
+}
+
+func mustNew(t *testing.T, cfg config.Config) *Runner {
+	t.Helper()
+	r, err := New(cfg, "test", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r
 }

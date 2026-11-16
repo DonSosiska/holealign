@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -28,6 +29,42 @@ var ErrUnauthorized = errors.New("transport: unauthorized (401)")
 // ErrEnrollConflict is returned when enrollment answers 409: the host already
 // exists and the previous agent key is required (or an operator must allow re-enroll).
 var ErrEnrollConflict = errors.New("transport: enroll conflict (409): host exists; previous key required")
+
+// Bounds for the server's Retry-After on 429.
+const (
+	minRetryAfter     = 5 * time.Second
+	maxRetryAfter     = 15 * time.Minute
+	defaultRetryAfter = 30 * time.Second
+)
+
+// RateLimitedError is returned on HTTP 429. It is not retried by the transport backoff loop;
+// the caller decides when to try again.
+type RateLimitedError struct {
+	RetryAfter time.Duration // clamped to [5 s, 15 min]
+}
+
+func (e *RateLimitedError) Error() string {
+	return fmt.Sprintf("transport: rate limited by server (429), retry in %s", e.RetryAfter.Round(time.Second))
+}
+
+// parseRetryAfter reads delta-seconds or an HTTP date and clamps the result.
+func parseRetryAfter(h string, now time.Time) time.Duration {
+	d := defaultRetryAfter
+	h = strings.TrimSpace(h)
+	if secs, err := strconv.ParseInt(h, 10, 64); err == nil {
+		switch {
+		case secs < 0:
+			d = minRetryAfter
+		case secs > int64(maxRetryAfter/time.Second):
+			d = maxRetryAfter
+		default:
+			d = time.Duration(secs) * time.Second
+		}
+	} else if t, err := http.ParseTime(h); err == nil {
+		d = t.Sub(now)
+	}
+	return min(max(d, minRetryAfter), maxRetryAfter)
+}
 
 // Credentials are the per-agent credentials returned by enrollment.
 type Credentials struct {
@@ -209,6 +246,8 @@ func (c *Client) once(ctx context.Context, path string, body []byte, gz bool, ti
 	switch {
 	case resp.StatusCode == http.StatusUnauthorized:
 		return ErrUnauthorized, false
+	case resp.StatusCode == http.StatusTooManyRequests:
+		return &RateLimitedError{RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After"), time.Now())}, false
 	case resp.StatusCode == http.StatusConflict && path == "/api/v1/enroll":
 		return ErrEnrollConflict, false
 	case resp.StatusCode >= 500:

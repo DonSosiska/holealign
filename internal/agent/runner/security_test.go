@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -87,7 +86,7 @@ func newTestRunner(t *testing.T, url string) *Runner {
 	cfg.AllowInsecureHTTP = true
 	cfg.EnrollToken = "tok"
 	cfg.StateDir = t.TempDir()
-	r := New(cfg, "test", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	r := mustNew(t, cfg)
 	r.collectFacts = func(context.Context, []model.FactRequest) model.Facts { return nil }
 	r.detector = &fakeDetector{}
 	return r
@@ -204,4 +203,98 @@ func TestEnrollConflictLoggedAndRetriedHourly(t *testing.T) {
 
 func saveOld(dir string) error {
 	return transport.SaveCredentials(dir, transport.Credentials{AgentID: "a", AgentKey: "old-key"})
+}
+
+func TestRateLimitedInventoryStaysPending(t *testing.T) {
+	var uploads, limited int
+	var hashes []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		switch req.URL.Path {
+		case "/api/v1/checkin":
+			json.NewEncoder(w).Encode(model.CheckinResponse{})
+		default:
+			if limited == 0 {
+				limited++
+				w.Header().Set("Retry-After", "600")
+				w.WriteHeader(http.StatusTooManyRequests)
+				return
+			}
+			uploads++
+			w.WriteHeader(202)
+		}
+	}))
+	defer srv.Close()
+	r := newTestRunner(t, srv.URL)
+	r.client.Key = "k"
+	scans := 0
+	r.scan = func(context.Context, config.Config) (model.InventoryPayload, error) {
+		scans++
+		hashes = append(hashes, "h1")
+		return model.InventoryPayload{Hash: "h1"}, nil
+	}
+	var logs strings.Builder
+	r.log = slog.New(slog.NewTextHandler(&logs, nil))
+	delay := r.cycle(context.Background(), false)
+	if delay != 600*time.Second {
+		t.Errorf("delay = %v, want max(normal, Retry-After) = 600s", delay)
+	}
+	if !strings.Contains(logs.String(), "rate limited by server") || strings.Contains(logs.String(), "level=ERROR") {
+		t.Errorf("log: %s", logs.String())
+	}
+	if r.scanFailures != 0 || !r.scanRetryAt.IsZero() || r.lastScanErr != "" {
+		t.Error("429 must not count as a scan failure")
+	}
+	if r.pendingInv == nil {
+		t.Fatal("inventory must stay pending")
+	}
+	r.cycle(context.Background(), false)
+	if scans != 1 || uploads != 1 || r.pendingInv != nil || r.invHash != "h1" {
+		t.Errorf("scans=%d uploads=%d pending=%v hash=%q (same payload must be re-sent without rescanning)", scans, uploads, r.pendingInv, r.invHash)
+	}
+}
+
+func TestOnceRateLimited(t *testing.T) {
+	for _, tc := range []struct {
+		retryAfter string
+		wantWait   bool
+		wantErr    bool
+	}{{"30", true, false}, {"600", false, true}} {
+		limited := false
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			switch req.URL.Path {
+			case "/api/v1/checkin":
+				if !limited {
+					limited = true
+					w.Header().Set("Retry-After", tc.retryAfter)
+					w.WriteHeader(http.StatusTooManyRequests)
+					return
+				}
+				json.NewEncoder(w).Encode(model.CheckinResponse{})
+			default:
+				w.WriteHeader(202)
+			}
+		}))
+		r := newTestRunner(t, srv.URL)
+		r.creds = transport.Credentials{AgentID: "a", AgentKey: "k"}
+		r.client.Key = "k"
+		r.scan = func(context.Context, config.Config) (model.InventoryPayload, error) {
+			return model.InventoryPayload{Hash: "h"}, nil
+		}
+		var waited time.Duration
+		r.sleep = func(_ context.Context, d time.Duration) bool { waited = d; return true }
+		err := r.RunOnce(context.Background())
+		srv.Close()
+		if (err != nil) != tc.wantErr {
+			t.Errorf("retry-after %s: err = %v", tc.retryAfter, err)
+		}
+		if tc.wantWait && waited != 30*time.Second {
+			t.Errorf("waited %v", waited)
+		}
+		if tc.wantErr {
+			var rl *transport.RateLimitedError
+			if !errors.As(err, &rl) || !strings.Contains(err.Error(), "rate limited") || waited != 0 {
+				t.Errorf("err = %v waited = %v", err, waited)
+			}
+		}
+	}
 }

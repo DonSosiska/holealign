@@ -80,6 +80,8 @@ type Runner struct {
 	wantFull     bool
 	factRequests []model.FactRequest
 	invHash      string
+	sleep        func(context.Context, time.Duration) bool // test hook for -once waits
+	pendingInv   *model.InventoryPayload                   // scanned but not yet accepted (rate limited)
 	lastInvAt    time.Time
 
 	lastWantInv time.Time // last time a server WantInventory request was honoured
@@ -90,14 +92,25 @@ type Runner struct {
 }
 
 // New creates a runner.
-func New(cfg config.Config, version string, log *slog.Logger) *Runner {
+func New(cfg config.Config, version string, log *slog.Logger) (*Runner, error) {
 	if log == nil {
 		log = slog.Default()
 	}
-	client := transport.New(cfg.ServerURL, "")
+	client, err := transport.NewWithTLS(cfg.ServerURL, "", transport.TLSOptions{
+		CAFile:     cfg.CAFile,
+		PinsSHA256: cfg.ServerCertSHA256,
+		ClientCert: cfg.ClientCert,
+		ClientKey:  cfg.ClientKey,
+	})
+	if err != nil {
+		return nil, err
+	}
 	client.AllowInsecureHTTP = cfg.AllowInsecureHTTP
 	if cfg.AllowInsecureHTTP && strings.HasPrefix(cfg.ServerURL, "http://") {
 		log.Warn("allow_insecure_http is set: traffic including the agent key is NOT encrypted")
+	}
+	if cfg.CAFile != "" || len(cfg.ServerCertSHA256) > 0 {
+		log.Info("server identity checks enabled", "ca_file", cfg.CAFile != "", "pins", len(cfg.ServerCertSHA256), "mtls", cfg.ClientCert != "")
 	}
 	return &Runner{
 		cfg:          cfg,
@@ -107,7 +120,7 @@ func New(cfg config.Config, version string, log *slog.Logger) *Runner {
 		collectFacts: facts.Collect,
 		scan:         inventory.Scan,
 		detector:     inventory.NewChangeDetector(cfg),
-	}
+	}, nil
 }
 
 // Run loops until ctx is cancelled.
@@ -117,10 +130,16 @@ func (r *Runner) Run(ctx context.Context) error {
 		if err == nil {
 			break
 		}
-		if !errors.Is(err, transport.ErrEnrollConflict) {
+		wait := unauthorizedRetry
+		var rl *transport.RateLimitedError
+		switch {
+		case errors.As(err, &rl):
+			r.log.Info("rate limited by server, retrying", "retry_in", rl.RetryAfter.String())
+			wait = rl.RetryAfter
+		case !errors.Is(err, transport.ErrEnrollConflict):
 			return err
 		}
-		if !sleepCtx(ctx, unauthorizedRetry) {
+		if !sleepCtx(ctx, wait) {
 			return nil
 		}
 	}
@@ -140,9 +159,37 @@ func (r *Runner) Run(ctx context.Context) error {
 }
 
 // RunOnce enrolls if needed, performs one check-in and uploads the inventory, then returns.
+//
+// When the server answers 429 with a Retry-After of at most 60 s the call waits and
+// retries once; a longer wait fails with a clear message.
 func (r *Runner) RunOnce(ctx context.Context) error {
-	if err := r.ensureEnrolled(ctx); err != nil {
-		return err
+	err := r.runOnce(ctx)
+	var rl *transport.RateLimitedError
+	if errors.As(err, &rl) && rl.RetryAfter <= onceMaxWait {
+		r.log.Info("rate limited by server, waiting before one retry", "retry_in", rl.RetryAfter.String())
+		sleep := r.sleep
+		if sleep == nil {
+			sleep = sleepCtx
+		}
+		if !sleep(ctx, rl.RetryAfter) {
+			return ctx.Err()
+		}
+		err = r.runOnce(ctx)
+	}
+	if errors.As(err, &rl) {
+		return fmt.Errorf("rate limited by the server; retry in %s: %w", rl.RetryAfter.Round(time.Second), err)
+	}
+	return err
+}
+
+// onceMaxWait is the longest Retry-After that -once waits out.
+const onceMaxWait = 60 * time.Second
+
+func (r *Runner) runOnce(ctx context.Context) error {
+	if r.creds.AgentKey == "" {
+		if err := r.ensureEnrolled(ctx); err != nil {
+			return err
+		}
 	}
 	_, err := r.checkinAndUpload(ctx, true)
 	return err
@@ -157,6 +204,12 @@ func (r *Runner) cycle(ctx context.Context, forceInventory bool) time.Duration {
 		}
 		if errors.Is(err, transport.ErrEnrollConflict) {
 			return unauthorizedRetry
+		}
+		var rl *transport.RateLimitedError
+		if errors.As(err, &rl) {
+			// not a failure: nothing backs off, a pending inventory is re-sent next cycle
+			r.log.Info("rate limited by server, retrying", "retry_in", rl.RetryAfter.String())
+			return max(delay, rl.RetryAfter)
 		}
 		if errors.Is(err, transport.ErrUnauthorized) {
 			r.log.Error("unauthorized and cannot re-enroll; retrying later", "retry_in", unauthorizedRetry)
@@ -270,6 +323,9 @@ func (r *Runner) checkinAndUpload(ctx context.Context, forceInventory bool) (tim
 
 	changed := r.detector.Changed(ctx)
 	due := r.lastInvAt.IsZero() || time.Since(r.lastInvAt) >= r.cfg.InventoryInterval
+	if r.pendingInv != nil {
+		return next, r.sendInventory(ctx, r.pendingInv, time.Now())
+	}
 	if !forceInventory && time.Now().Before(r.scanRetryAt) {
 		return next, nil // backing off after repeated scan failures
 	}
@@ -325,9 +381,20 @@ func (r *Runner) uploadInventory(ctx context.Context, reason string) error {
 		return fmt.Errorf("inventory scan: %w", err)
 	}
 	r.scanFailures, r.scanRetryAt, r.lastScanErr = 0, time.Time{}, ""
-	if err := r.client.UploadInventory(ctx, payload); err != nil {
+	return r.sendInventory(ctx, &payload, start)
+}
+
+func (r *Runner) sendInventory(ctx context.Context, payload *model.InventoryPayload, start time.Time) error {
+	if err := r.client.UploadInventory(ctx, *payload); err != nil {
+		var rl *transport.RateLimitedError
+		if errors.As(err, &rl) {
+			r.pendingInv = payload // same payload (hash) is uploaded on the next cycle
+		} else {
+			r.pendingInv = nil
+		}
 		return fmt.Errorf("inventory upload: %w", err)
 	}
+	r.pendingInv = nil
 	r.invHash = payload.Hash
 	r.lastInvAt = time.Now()
 	r.detector.Reset(ctx)

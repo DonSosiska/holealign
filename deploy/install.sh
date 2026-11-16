@@ -12,11 +12,18 @@
 #                     on first install.
 #   --allow-insecure-http  accept an http:// --server (testing only).
 #   --labels a,b      comma-separated labels (optional).
+#   --ca-file PATH    PEM bundle of the CA(s) that sign the server certificate. It is copied to
+#                     /etc/panoptes/ca.pem and, when set, ONLY these roots are trusted.
+#   --server-pin HEX  pin the server: hex SHA-256 of the server certificate's SubjectPublicKeyInfo
+#                     (see `panoptes-agent -print-server-pin`). Repeatable.
+#   --skip-signature-check  install without verifying the release signature (not recommended).
+#                     Without this flag the install aborts if cosign is not installed.
 #   --version VER     release to install, e.g. 1.2.3 or v1.2.3 (default: latest).
 #   --binary PATH     install this local panoptes-agent binary instead of downloading (air-gapped).
 #   --force           overwrite an existing /etc/panoptes/agent.yaml.
 #                     With --uninstall, also remove the config and state.
-#   --uninstall       stop the service and remove the unit and binary.
+#   --uninstall       stop the service and remove the unit and binary (/usr/bin and the old
+#                     /usr/local/bin location).
 #   -h, --help        show this help.
 #
 # Environment:
@@ -24,8 +31,13 @@
 #   PANOPTES_ENROLL_TOKEN  enrollment token (alternative to --token-file).
 #
 # The token is written to the config file only and is never printed.
-# The systemd unit below mirrors deploy/systemd/panoptes-agent.service, except that
-# the binary lives in /usr/local/bin. Keep the two in sync.
+# The systemd unit below is identical to deploy/systemd/panoptes-agent.service (a test
+# compares them). Keep the two in sync.
+#
+# Release verification: checksums.txt is verified with cosign (keyless Sigstore signature
+# made by this repository's release workflow) before any checksum is trusted. Without
+# cosign, install the .deb/.rpm (verify them as described in the README) or pass
+# --skip-signature-check.
 
 set -eu
 
@@ -36,11 +48,16 @@ TOKEN="${PANOPTES_ENROLL_TOKEN:-}"
 TOKEN_FILE=""
 ALLOW_HTTP=0
 LABELS=""
+CA_FILE=""
+PINS=""
+SKIP_SIG=0
 BINARY_SRC=""
 FORCE=0
 UNINSTALL=0
 
-BIN_PATH="/usr/local/bin/panoptes-agent"
+BIN_PATH="/usr/bin/panoptes-agent"
+OLD_BIN_PATH="/usr/local/bin/panoptes-agent" # group-writable on some distros; removed on install/uninstall
+CA_DEST="/etc/panoptes/ca.pem"
 CONF_DIR="/etc/panoptes"
 CONF_FILE="/etc/panoptes/agent.yaml"
 UNIT_NAME="panoptes-agent"
@@ -57,7 +74,7 @@ log() {
 }
 
 usage() {
-    sed -n '2,24p' "$0" 2>/dev/null | sed 's/^# \{0,1\}//' || true
+    sed -n '2,40p' "$0" 2>/dev/null | sed 's/^# \{0,1\}//' || true
 }
 
 # --- argument parsing -------------------------------------------------------
@@ -79,6 +96,14 @@ while [ $# -gt 0 ]; do
         --labels)
             [ $# -ge 2 ] || die "--labels needs a value"
             LABELS="$2"; shift 2 ;;
+        --ca-file)
+            [ $# -ge 2 ] || die "--ca-file needs a path"
+            CA_FILE="$2"; shift 2 ;;
+        --server-pin)
+            [ $# -ge 2 ] || die "--server-pin needs a value"
+            PINS="$PINS $2"; shift 2 ;;
+        --skip-signature-check)
+            SKIP_SIG=1; shift ;;
         --version)
             [ $# -ge 2 ] || die "--version needs a value"
             VERSION="$2"; shift 2 ;;
@@ -107,11 +132,11 @@ command -v systemctl >/dev/null 2>&1 || die "systemd (systemctl) is required"
 if [ "$UNINSTALL" -eq 1 ]; then
     log "stopping and disabling $UNIT_NAME"
     systemctl disable --now "$UNIT_NAME" >/dev/null 2>&1 || true
-    rm -f "$UNIT_PATH" "$BIN_PATH"
+    rm -f "$UNIT_PATH" "$BIN_PATH" "$OLD_BIN_PATH"
     systemctl daemon-reload || true
     if [ "$FORCE" -eq 1 ]; then
         log "removing $CONF_FILE and $STATE_DIR"
-        rm -f "$CONF_FILE"
+        rm -f "$CONF_FILE" "$CA_DEST"
         rm -rf "${STATE_DIR:?}"
         rmdir "$CONF_DIR" 2>/dev/null || true
     else
@@ -157,6 +182,17 @@ if [ "$WRITE_CONFIG" -eq 1 ]; then
     case "$TOKEN" in
         *[!A-Za-z0-9_-]*) die "--token has an invalid format" ;;
     esac
+    if [ -n "$CA_FILE" ]; then
+        [ -f "$CA_FILE" ] || die "--ca-file: file not found: $CA_FILE"
+        grep -q -- '-----BEGIN CERTIFICATE-----' "$CA_FILE" || die "--ca-file: no PEM certificate found in $CA_FILE"
+    fi
+    for pin in $PINS; do
+        pin_clean="$(printf '%s' "$pin" | tr -d ':' | tr 'A-F' 'a-f')"
+        case "$pin_clean" in
+            *[!0-9a-f]*) die "--server-pin must be hexadecimal (SHA-256 of the SPKI): $pin" ;;
+        esac
+        [ "${#pin_clean}" -eq 64 ] || die "--server-pin must be 64 hex characters (SHA-256): $pin"
+    done
     if [ -n "$LABELS" ]; then
         case "$LABELS" in
             *[!A-Za-z0-9._,-]*) die "--labels may contain only letters, digits, '.', '_', '-' and ','" ;;
@@ -226,6 +262,27 @@ ensure_prerequisites() {
 
 ensure_prerequisites
 
+# verify_signature checks the keyless Sigstore signature of checksums.txt: it must come from
+# this repository's release workflow on a v* tag. Aborts on failure.
+verify_signature() {
+    if [ "$SKIP_SIG" -eq 1 ]; then
+        printf 'warning: --skip-signature-check: the release signature is NOT verified; only the sha256 from the same download origin is checked\n' >&2
+        return 0
+    fi
+    if ! command -v cosign >/dev/null 2>&1; then
+        die "cosign is not installed, so the release signature cannot be verified.
+  Install cosign (https://docs.sigstore.dev/cosign/system_config/installation/) and run this again,
+  install the signed .deb/.rpm package instead (see README, \"Verifying releases\"),
+  or pass --skip-signature-check to accept the unverified download (not recommended)."
+    fi
+    log "verifying the release signature with cosign"
+    cosign verify-blob --certificate "$TMP/checksums.txt.pem" --signature "$TMP/checksums.txt.sig" \
+        --certificate-identity-regexp "^https://github.com/${REPO}/\.github/workflows/release\.yml@refs/tags/v" \
+        --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+        "$TMP/checksums.txt" || die "release signature verification FAILED; refusing to install"
+    log "release signature verified"
+}
+
 # --- get the binary ---------------------------------------------------------
 
 TMP="$(mktemp -d)"
@@ -234,7 +291,7 @@ trap 'rm -rf "${TMP:?}"' EXIT INT TERM
 if [ -n "$BINARY_SRC" ]; then
     [ -f "$BINARY_SRC" ] || die "--binary: file not found: $BINARY_SRC"
     log "installing local binary"
-    install -m 0755 "$BINARY_SRC" "$BIN_PATH"
+    install -o root -g root -m 0755 "$BINARY_SRC" "$BIN_PATH"
 else
     if [ "$VERSION" = "latest" ]; then
         log "resolving latest release of $REPO"
@@ -258,6 +315,12 @@ else
     log "downloading panoptes-agent $TAG ($ARCH)"
     curl --proto '=https' --tlsv1.2 -fsSL -o "$TMP/$ASSET" "$BASE/$ASSET" || die "download failed: $ASSET"
     curl --proto '=https' --tlsv1.2 -fsSL -o "$TMP/checksums.txt" "$BASE/checksums.txt" || die "download failed: checksums.txt"
+    if [ "$SKIP_SIG" -eq 0 ]; then
+        curl --proto '=https' --tlsv1.2 -fsSL -o "$TMP/checksums.txt.sig" "$BASE/checksums.txt.sig" || die "download failed: checksums.txt.sig"
+        curl --proto '=https' --tlsv1.2 -fsSL -o "$TMP/checksums.txt.pem" "$BASE/checksums.txt.pem" || die "download failed: checksums.txt.pem"
+    fi
+
+    verify_signature
 
     expected="$(awk -v f="$ASSET" '$2 == f {print $1; exit}' "$TMP/checksums.txt")"
     [ -n "$expected" ] || die "no checksum listed for $ASSET"
@@ -266,8 +329,10 @@ else
     log "sha256 verified"
 
     tar -xzf "$TMP/$ASSET" -C "$TMP" panoptes-agent
-    install -m 0755 "$TMP/panoptes-agent" "$BIN_PATH"
+    install -o root -g root -m 0755 "$TMP/panoptes-agent" "$BIN_PATH"
 fi
+# an older install put the binary in /usr/local/bin; do not leave a stale copy behind
+rm -f "$OLD_BIN_PATH"
 
 "$BIN_PATH" -version >/dev/null || die "installed binary does not run: $BIN_PATH"
 log "installed $("$BIN_PATH" -version) to $BIN_PATH"
@@ -300,6 +365,18 @@ EOF
     if [ "$ALLOW_HTTP" -eq 1 ]; then
         printf 'allow_insecure_http: true\n' >> "$tmp_conf"
     fi
+    if [ -n "$CA_FILE" ]; then
+        install -o root -g root -m 0644 "$CA_FILE" "$CA_DEST"
+        printf 'ca_file: %s\n' "$CA_DEST" >> "$tmp_conf"
+    fi
+    if [ -n "$PINS" ]; then
+        yaml_pins=""
+        for pin in $PINS; do
+            pin_clean="$(printf '%s' "$pin" | tr -d ':' | tr 'A-F' 'a-f')"
+            yaml_pins="${yaml_pins:+$yaml_pins, }\"$pin_clean\""
+        done
+        printf 'server_cert_sha256: [%s]\n' "$yaml_pins" >> "$tmp_conf"
+    fi
     chmod 0600 "$tmp_conf"
     mv -f "$tmp_conf" "$CONF_FILE"
     umask "$old_umask"
@@ -322,7 +399,7 @@ After=network-online.target docker.service
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/panoptes-agent -config /etc/panoptes/agent.yaml
+ExecStart=/usr/bin/panoptes-agent -config /etc/panoptes/agent.yaml
 Restart=always
 RestartSec=10
 

@@ -60,9 +60,17 @@ You need Docker with Compose, and a Linux host with systemd for the agent.
      sudo sh -s -- --server https://panoptes.example.com --token pt_xxx --labels prod,web
    ```
 
-   The script verifies the release checksum, writes `/etc/panoptes/agent.yaml`
-   (mode 0600), and starts the `panoptes-agent` service. Logs:
-   `journalctl -u panoptes-agent -f`. For air-gapped hosts, use `--binary PATH`.
+   The script verifies the keyless cosign signature of `checksums.txt` and then the
+   archive checksum (it aborts when `cosign` is missing unless you pass
+   `--skip-signature-check`; or install the signed `.deb`/`.rpm` instead), installs the
+   binary to `/usr/bin/panoptes-agent`, writes `/etc/panoptes/agent.yaml` (mode 0600),
+   and starts the `panoptes-agent` service. Logs: `journalctl -u panoptes-agent -f`.
+   For air-gapped hosts, use `--binary PATH`.
+
+   To trust only your own CA and/or pin the server key, add `--ca-file PATH` and
+   `--server-pin HEX` (repeatable; get the value with `panoptes-agent -print-server-pin`,
+   which validates the chain first, so compare it out of band). See
+   `deploy/agent.yaml.example` (`ca_file`, `server_cert_sha256`, `client_cert`/`client_key` for mTLS).
 
 4. **Open the web UI** at `http://localhost:8080` (or your public URL) and log in as
    `admin`. The host appears after its first check-in, and findings follow after the
