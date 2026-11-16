@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"syscall"
 	"text/tabwriter"
@@ -28,6 +29,7 @@ import (
 	"panoptes/internal/server/config"
 	"panoptes/internal/server/core"
 	"panoptes/internal/server/feeds"
+	"panoptes/internal/server/llm"
 	"panoptes/internal/server/match"
 	"panoptes/internal/server/notify"
 	"panoptes/internal/server/pipeline"
@@ -122,6 +124,8 @@ type components struct {
 	Drafter   core.RuleDrafter
 	// Mount lets other packages (web UI) register routes on the shared mux.
 	Mount []func(mux *http.ServeMux)
+	// Start runs background workers (LLM drafter) once the server context exists.
+	Start []func(ctx context.Context)
 }
 
 // lateTrigger lets components built before the pipeline (web UI, LLM drafter)
@@ -207,6 +211,41 @@ func wire(cfg *config.Config, st store.Store, log *slog.Logger, trig *lateTrigge
 			log.Info("matrix notifier enabled", "homeserver", cfg.Matrix.Homeserver)
 		}
 	}
+	// LLM rule drafter (optional): drafts rules for High/Critical/KEV findings without one.
+	prov, err := llm.NewProvider(cfg.LLM)
+	switch {
+	case err != nil:
+		log.Error("LLM drafter disabled", "err", err)
+	case prov != nil:
+		d := llm.NewDrafter(llm.Deps{
+			Store: st, Provider: prov, Validator: rulesService{engine},
+			FactCatalog: factCatalog(), DailyLimit: cfg.LLM.DailyLimit, Logger: log,
+			OnRuleAdded: func(ctx context.Context, r model.Rule) {
+				if err := engine.Reload(ctx); err != nil {
+					log.Warn("reload rules after LLM draft", "err", err)
+				}
+				log.Info("LLM drafted rule", "rule", r.ID)
+				trig.TriggerAll()
+			},
+			Siblings: func(ctx context.Context, vulnID, source string) []model.Finding {
+				all, _, err := st.ListFindings(ctx, store.FindingFilter{VulnID: vulnID, Limit: 1000})
+				if err != nil {
+					return nil
+				}
+				var out []model.Finding
+				for _, f := range all {
+					if llm.SourceOf(f) == source {
+						out = append(out, f)
+					}
+				}
+				return out
+			},
+		})
+		comp.Drafter = d
+		comp.Start = append(comp.Start, d.Start)
+		log.Info("LLM drafter enabled", "provider", prov.Name(), "daily_limit", cfg.LLM.DailyLimit)
+	}
+
 	// Web UI on the same mux as the agent API.
 	ui, err := web.New(web.Deps{
 		Store: st, Rules: rulesService{engine}, Pipeline: trig, Config: cfg, Logger: log,
@@ -217,6 +256,36 @@ func wire(cfg *config.Config, st store.Store, log *slog.Logger, trig *lateTrigge
 		comp.Mount = append(comp.Mount, ui.Mount)
 	}
 	return comp
+}
+
+// factCatalog describes the fact catalog to the LLM (see docs/contracts.md §3).
+func factCatalog() []llm.FactSpec {
+	names := rules.CatalogFacts()
+	sort.Strings(names)
+	out := make([]llm.FactSpec, 0, len(names))
+	for _, n := range names {
+		t, _ := rules.FactTypeOf(n)
+		out = append(out, llm.FactSpec{Name: n, Type: fmt.Sprint(t), Description: factDescriptions[n]})
+	}
+	return out
+}
+
+var factDescriptions = map[string]string{
+	"os.libc":           "glibc or musl",
+	"kernel.modules":    "names of loaded kernel modules (/proc/modules)",
+	"kernel.sysctl":     "selected sysctl values, keys like user.max_user_namespaces",
+	"services.active":   "running systemd service unit names without .service",
+	"sockets.listening": "listening sockets: proto, addr, port, process",
+	"sockets.ports":     "distinct listening ports",
+	"sshd.config":       "effective sshd config from 'sshd -T', lowercase keys",
+	"nginx.modules":     "nginx -V configure modules, e.g. http_v2_module",
+	"nginx.directives":  "nginx -T: directive name -> all values",
+	"nginx.http2":       "nginx accepts HTTP/2",
+	"apache.modules":    "apachectl -M module names, e.g. proxy_module",
+	"apache.http2":      "mod_http2 loaded and h2/h2c enabled in Protocols",
+	"php.sapi":          "installed PHP SAPIs: cli, fpm, apache2handler",
+	"php.ini":           "selected php.ini values (allow_url_include, disable_functions, ...)",
+	"docker.containers": "running containers: name, image, image_id, ports, privileged",
 }
 
 // rulesService adapts the rule engine to the web UI (validation is a package func).
@@ -252,6 +321,9 @@ func serve(cfg *config.Config) error {
 	pipe := pipeline.New(st, grypeDB, comp.Evaluator, comp.Notifier, comp.Drafter,
 		pipeline.Options{PublicURL: cfg.PublicURL, Logger: log, UnknownGrace: unknownGrace(cfg)})
 	trig.p = pipe
+	for _, start := range comp.Start {
+		start(ctx)
+	}
 	pipe.StartNotifyLoop(ctx, 5*time.Minute)
 
 	mux := api.NewMux(api.Deps{Store: st, Evaluator: comp.Evaluator, Pipeline: pipe, Logger: log})

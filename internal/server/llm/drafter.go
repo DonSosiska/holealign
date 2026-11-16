@@ -70,11 +70,13 @@ func NewDrafter(d Deps) *Drafter {
 	return &Drafter{d: d, queue: make(chan model.Finding, queueSize), inflight: map[string]bool{}}
 }
 
-func keyOf(f model.Finding) string { return f.VulnID + "|" + sourceOf(f) }
+func keyOf(f model.Finding) string { return f.VulnID + "|" + SourceOf(f) }
 
 // sourceOf returns the source package of a finding: the "upstream" qualifier of its PURL
 // (without any @version), falling back to the package name.
-func sourceOf(f model.Finding) string {
+// SourceOf returns the source (upstream) package of a finding: the PURL "upstream"
+// qualifier without version, or the package name.
+func SourceOf(f model.Finding) string {
 	if i := strings.IndexByte(f.PURL, '?'); i >= 0 {
 		if q, err := url.ParseQuery(f.PURL[i+1:]); err == nil {
 			up := q.Get("upstream")
@@ -187,7 +189,7 @@ func RuleID(vulnID, pkg string) string {
 func (d *Drafter) handle(ctx context.Context, f model.Finding) {
 	log := d.d.Logger.With("vuln", f.VulnID, "package", f.PackageName)
 	key := keyOf(f)
-	id := RuleID(f.VulnID, sourceOf(f))
+	id := RuleID(f.VulnID, SourceOf(f))
 	now := d.d.Now()
 
 	if _, err := d.d.Store.GetRule(ctx, id); err == nil {
@@ -220,7 +222,7 @@ func (d *Drafter) handle(ctx context.Context, f model.Finding) {
 		log.Debug("llm: advisory unavailable, drafting from finding data", "err", err)
 		advisory = ""
 	}
-	source := sourceOf(f)
+	source := SourceOf(f)
 	all := []model.Finding{f}
 	if d.d.Siblings != nil {
 		all = append(all, d.d.Siblings(ctx, f.VulnID, source)...)

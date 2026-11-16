@@ -23,7 +23,7 @@ func TestSourceOf(t *testing.T) {
 		{"", "nginx-common", "nginx-common"},
 	}
 	for _, c := range cases {
-		if got := sourceOf(model.Finding{PackageName: c.pkg, PURL: c.purl}); got != c.want {
+		if got := SourceOf(model.Finding{PackageName: c.pkg, PURL: c.purl}); got != c.want {
 			t.Fatalf("%q: got %q want %q", c.purl, got, c.want)
 		}
 	}
