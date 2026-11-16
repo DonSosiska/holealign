@@ -1,0 +1,32 @@
+nginx: the configuration file /etc/nginx/nginx.conf syntax is ok
+nginx: configuration file /etc/nginx/nginx.conf test is successful
+# configuration file /etc/nginx/nginx.conf:
+user www-data;
+worker_processes auto;
+pid /run/nginx.pid;
+
+events {
+    worker_connections 768;
+}
+
+http {
+    sendfile on;
+    server_tokens off;
+    include /etc/nginx/mime.types;
+    # http2 off;
+    http2 on;
+    access_log /var/log/nginx/access.log;
+    include /etc/nginx/conf.d/*.conf;
+    include /etc/nginx/sites-enabled/*;
+}
+# configuration file /etc/nginx/sites-enabled/default:
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name _;
+    root /var/www/html;
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        add_header X-Note "ok; not a directive";
+    }
+}

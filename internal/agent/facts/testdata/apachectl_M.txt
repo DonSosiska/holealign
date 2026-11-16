@@ -1,0 +1,13 @@
+Loaded Modules:
+ core_module (static)
+ so_module (static)
+ http_module (static)
+ mpm_event_module (shared)
+ authn_file_module (shared)
+ authz_core_module (shared)
+ alias_module (shared)
+ proxy_module (shared)
+ proxy_http_module (shared)
+ http2_module (shared)
+ ssl_module (shared)
+ php_module (shared)

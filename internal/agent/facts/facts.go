@@ -3,15 +3,109 @@ package facts
 
 import (
 	"context"
+	"fmt"
+	"io/fs"
+	"log"
+	"os"
+	"runtime"
+	"sync"
 
 	"panoptes/internal/model"
 )
+
+// Env bundles the external dependencies of the collectors so tests can replace them.
+type Env struct {
+	Runner       CommandRunner
+	FS           fs.FS  // rooted at "/", paths without leading slash ("etc/os-release")
+	DockerSocket string // unix socket of the Docker Engine API
+}
+
+// collector is one built-in collector; it returns the facts it could determine.
+type collector struct {
+	name string
+	fn   func(ctx context.Context, env *Env) model.Facts
+}
+
+var builtinCollectors = []collector{
+	{"os", collectOS},
+	{"kernel", collectKernel},
+	{"services", collectServices},
+	{"sockets", collectSockets},
+	{"sshd", collectSSHD},
+	{"nginx", collectNginx},
+	{"apache", collectApache},
+	{"php", collectPHP},
+	{"openssl", collectOpenSSL},
+	{"docker", collectDocker},
+	{"runc", collectRunc},
+	{"sudo", collectSudo},
+}
+
+func defaultEnv() *Env {
+	return &Env{
+		Runner:       execRunner{},
+		FS:           os.DirFS("/"),
+		DockerSocket: "/var/run/docker.sock",
+	}
+}
 
 // Collect runs all built-in collectors plus the parametrised requests and returns
 // the merged fact map. It never returns an error: failing collectors simply omit
 // their facts (absent = unknown). Safe to call concurrently.
 //
-// STUB from wave 0 — the real implementation replaces this body; the signature is a contract.
+// On platforms other than Linux no facts are collected.
 func Collect(ctx context.Context, reqs []model.FactRequest) model.Facts {
-	return model.Facts{}
+	if runtime.GOOS != "linux" {
+		return model.Facts{}
+	}
+	return collect(ctx, defaultEnv(), reqs)
+}
+
+func collect(ctx context.Context, env *Env, reqs []model.FactRequest) model.Facts {
+	results := make([]model.Facts, len(builtinCollectors))
+	var wg sync.WaitGroup
+	for i, c := range builtinCollectors {
+		wg.Add(1)
+		go func(i int, c collector) {
+			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("facts: collector %s panicked: %v", c.name, r)
+					results[i] = nil
+				}
+			}()
+			results[i] = c.fn(ctx, env)
+		}(i, c)
+	}
+	wg.Wait()
+
+	out := model.Facts{}
+	for _, r := range results {
+		for k, v := range r {
+			out[k] = v
+		}
+	}
+
+	for name, v := range runFileMatchRequests(ctx, env, reqs) {
+		out[name] = v
+	}
+	return out
+}
+
+// runFileMatchRequests evaluates the parametrised requests, isolating panics per request.
+func runFileMatchRequests(ctx context.Context, env *Env, reqs []model.FactRequest) map[string]any {
+	out := map[string]any{}
+	for _, req := range selectFileMatchRequests(reqs) {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("facts: file.match %q panicked: %v", req.Name, fmt.Sprint(r))
+				}
+			}()
+			if lines, ok := evalFileMatch(ctx, env, req); ok {
+				out[req.Name] = lines
+			}
+		}()
+	}
+	return out
 }

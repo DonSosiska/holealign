@@ -1,0 +1,22 @@
+port 22
+addressfamily any
+listenaddress 0.0.0.0:22
+listenaddress [::]:22
+usepam yes
+logingracetime 120
+x11forwarding no
+permitrootlogin without-password
+strictmodes yes
+maxauthtries 6
+maxsessions 10
+passwordauthentication no
+permitemptypasswords no
+pubkeyauthentication yes
+challengeresponseauthentication no
+kbdinteractiveauthentication no
+allowtcpforwarding yes
+gatewayports no
+ciphers chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes128-gcm@openssh.com
+hostkeyalgorithms ssh-ed25519-cert-v01@openssh.com,ssh-ed25519
+loglevel INFO
+subsystem sftp /usr/lib/openssh/sftp-server

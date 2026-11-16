@@ -1,0 +1,12 @@
+phpinfo()
+PHP Version => 8.2.7
+
+Directive => Local Value => Master Value
+allow_url_fopen => On => On
+allow_url_include => Off => Off
+cgi.fix_pathinfo => 1 => 1
+disable_functions => no value => no value
+expose_php => On => On
+max_execution_time => 30 => 30
+open_basedir => /var/www/html:/tmp => /var/www/html:/tmp
+Server API => Command Line Interface => Command Line Interface
