@@ -3,6 +3,8 @@ package runner
 import (
 	"bufio"
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"runtime"
 	"strings"
@@ -52,8 +54,18 @@ func CollectOSInfo() model.OSInfo {
 	return info
 }
 
-// MachineID returns /etc/machine-id, falling back to the dbus id, then the hostname.
-func MachineID() string {
+// hashMachineID returns the hex SHA-256 of "panoptes-machine-id:"+raw, so the
+// raw (application-specific-secret-ish) machine id never leaves the host.
+func hashMachineID(raw string) string {
+	sum := sha256.Sum256([]byte("panoptes-machine-id:" + raw))
+	return hex.EncodeToString(sum[:])
+}
+
+// MachineID returns the hashed /etc/machine-id (falling back to the dbus id,
+// then the hostname).
+func MachineID() string { return hashMachineID(rawMachineID()) }
+
+func rawMachineID() string {
 	for _, p := range []string{"/etc/machine-id", "/var/lib/dbus/machine-id"} {
 		if data, err := os.ReadFile(p); err == nil {
 			if id := strings.TrimSpace(string(data)); id != "" {

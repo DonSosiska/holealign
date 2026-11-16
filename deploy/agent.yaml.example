@@ -1,8 +1,12 @@
 # Panoptes agent configuration, installed as /etc/panoptes/agent.yaml (mode 0600).
 # Values shown are the defaults unless marked required.
 
-# Base URL of panoptes-server (required). Must be http:// or https:// with a host.
+# Base URL of panoptes-server (required). Must be https:// with a host and no user:password@.
+# Redirects are never followed. TLS 1.2 or newer is required.
 server_url: https://panoptes.example.com
+
+# Permit an http:// server_url (testing only; the agent key travels unencrypted, a WARN is logged).
+allow_insecure_http: false
 
 # Enrollment token from `panoptes-server token create <name>`. Only needed until the
 # agent has enrolled. The agent has no environment override for it, so it lives in
@@ -28,4 +32,9 @@ docker_socket: /var/run/docker.sock
 scan_language_packages: true
 
 # Paths skipped by the filesystem scan.
-exclude_paths: [/proc, /sys, /dev, /run, /var/lib/docker, /var/lib/containerd, /snap]
+exclude_paths: [/proc, /sys, /dev, /run, /var/lib/docker, /var/lib/containerd, /snap,
+                /mnt, /media, /var/lib/containers, /var/lib/kubelet, /var/lib/lxc, /var/lib/lxd, /home/*/.cache]
+
+# Per-scan time limits (a timeout or crash is reported as the agent.inventory_error fact).
+host_scan_timeout: 10m
+image_scan_timeout: 5m

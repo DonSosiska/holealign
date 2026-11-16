@@ -83,6 +83,7 @@ func TestRunnerFlow(t *testing.T) {
 
 	cfg := config.Default()
 	cfg.ServerURL = srv.URL
+	cfg.AllowInsecureHTTP = true
 	cfg.EnrollToken = "tok"
 	cfg.StateDir = t.TempDir()
 	r := New(cfg, "test", slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -167,6 +168,7 @@ func TestRunnerReenrollsOn401(t *testing.T) {
 	defer srv.Close()
 	cfg := config.Default()
 	cfg.ServerURL = srv.URL
+	cfg.AllowInsecureHTTP = true
 	cfg.EnrollToken = "tok"
 	cfg.StateDir = t.TempDir()
 	r := New(cfg, "test", slog.New(slog.NewTextHandler(io.Discard, nil)))

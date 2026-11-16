@@ -80,10 +80,18 @@ func phpSAPIs(fsys fs.FS) []string {
 	return found
 }
 
+// phpConfigRoots are the ini trees php reads (extension= loads shared objects).
+var phpConfigRoots = []string{"/etc/php/*/cli", "/etc/php.ini", "/etc/php.d", "/usr/local/etc/php"}
+
 func collectPHP(ctx context.Context, env *Env) model.Facts {
 	f := model.Facts{}
 
-	out, err := env.run(ctx, "php", "-v")
+	phpOK := env.treeOK("php", phpConfigRoots...)
+	phpArgs := []string{"-v"}
+	if !phpOK {
+		phpArgs = []string{"-n", "-v"} // -n: no ini files, no extensions loaded
+	}
+	out, err := env.run(ctx, "php", phpArgs...)
 	if isMissing(err) {
 		f["php.installed"] = false
 		return f
@@ -103,6 +111,9 @@ func collectPHP(ctx context.Context, env *Env) model.Facts {
 	sort.Strings(sapi)
 	f["php.sapi"] = sapi
 
+	if !phpOK {
+		return f
+	}
 	if iniOut, err := env.run(ctx, "php", "-i"); err == nil {
 		f["php.ini"] = parsePHPIni(iniOut)
 	}

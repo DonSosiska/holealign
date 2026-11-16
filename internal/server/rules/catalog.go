@@ -56,6 +56,9 @@ var factCatalog = map[string]FactType{
 	"docker.containers": TObjectList,
 	"runc.version":      TString,
 	"sudo.version":      TString,
+
+	"agent.inventory_error": TString,     // last inventory scan error, truncated to 200 chars
+	"agent.skipped":         TStringList, // collectors skipped because a config tree was not root-owned/writable
 }
 
 // FactTypeOf returns the catalog type of a fact name. Names of the form

@@ -18,6 +18,7 @@ import (
 )
 
 func fast(c *Client) *Client {
+	c.AllowInsecureHTTP = true
 	c.sleep = func(ctx context.Context, d time.Duration) error { return nil }
 	return c
 }

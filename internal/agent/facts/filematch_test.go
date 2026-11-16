@@ -51,16 +51,16 @@ func (m linkMapFS) ReadLink(name string) (string, error) {
 
 func fileMatchFS() linkMapFS {
 	return linkMapFS{fstest.MapFS{
-		"etc/nginx/conf.d/app.conf": {Data: []byte("server {\n  proxy_pass http://127.0.0.1:8080;\n  password = hunter2\n}\n")},
+		"etc/nginx/conf.d/app.conf": {Data: []byte("server {\n  proxy_pass http://127.0.0.1:8080;\n  password = hunter2\n}\n"), Mode: 0o644},
 		"etc/evil":                  {Data: []byte("/root/.ssh/id_rsa"), Mode: fs.ModeSymlink},
 		"etc/ok-link":               {Data: []byte("nginx/conf.d/app.conf"), Mode: fs.ModeSymlink},
 		"etc/abs-ok":                {Data: []byte("/etc/nginx/conf.d/app.conf"), Mode: fs.ModeSymlink},
 		"etc/dangling":              {Data: []byte("/etc/does-not-exist"), Mode: fs.ModeSymlink},
-		"root/.ssh/id_rsa":          {Data: []byte("PRIVATE KEY MATERIAL")},
-		"opt/app/conf/app.yml":      {Data: []byte("name: demo\n")},
-		"opt/app/data/x.yml":        {Data: []byte("name: data\n")},
-		"usr/local/etc/a.conf":      {Data: []byte("listen 8443\n")},
-		"home/u/.bashrc":            {Data: []byte("alias x=y\n")},
+		"root/.ssh/id_rsa":          {Data: []byte("PRIVATE KEY MATERIAL"), Mode: 0o644},
+		"opt/app/conf/app.yml":      {Data: []byte("name: demo\n"), Mode: 0o644},
+		"opt/app/data/x.yml":        {Data: []byte("name: data\n"), Mode: 0o644},
+		"usr/local/etc/a.conf":      {Data: []byte("listen 8443\n"), Mode: 0o644},
+		"home/u/.bashrc":            {Data: []byte("alias x=y\n"), Mode: 0o644},
 	}}
 }
 
@@ -149,7 +149,7 @@ func TestResolveSymlinks(t *testing.T) {
 func TestEvalFileMatchLimits(t *testing.T) {
 	many := fstest.MapFS{}
 	for i := 0; i < 60; i++ {
-		many[fmt.Sprintf("etc/many/f%02d.conf", i)] = &fstest.MapFile{Data: []byte("hit\n")}
+		many[fmt.Sprintf("etc/many/f%02d.conf", i)] = &fstest.MapFile{Data: []byte("hit\n"), Mode: 0o644}
 	}
 	env := &Env{FS: linkMapFS{many}}
 	got, ok := evalFileMatch(t.Context(), env, model.FactRequest{Collector: "file.match", Name: "file.match:n",
@@ -160,7 +160,7 @@ func TestEvalFileMatchLimits(t *testing.T) {
 
 	lines := fstest.MapFS{}
 	for i := 0; i < 50; i++ {
-		lines[fmt.Sprintf("etc/lines/f%02d.conf", i)] = &fstest.MapFile{Data: []byte(strings.Repeat("hit\n", 5))}
+		lines[fmt.Sprintf("etc/lines/f%02d.conf", i)] = &fstest.MapFile{Data: []byte(strings.Repeat("hit\n", 5)), Mode: 0o644}
 	}
 	env = &Env{FS: linkMapFS{lines}}
 	got, ok = evalFileMatch(t.Context(), env, model.FactRequest{Collector: "file.match", Name: "file.match:n",
@@ -170,7 +170,7 @@ func TestEvalFileMatchLimits(t *testing.T) {
 	}
 
 	big := fstest.MapFS{
-		"etc/big.conf": {Data: []byte(strings.Repeat("a", fmMaxFileBytes) + "\nhit-late\n")},
+		"etc/big.conf": {Data: []byte(strings.Repeat("a", fmMaxFileBytes) + "\nhit-late\n"), Mode: 0o644},
 	}
 	env = &Env{FS: linkMapFS{big}}
 	got, ok = evalFileMatch(t.Context(), env, model.FactRequest{Collector: "file.match", Name: "file.match:n",
@@ -199,10 +199,10 @@ func TestMaskSecrets(t *testing.T) {
 func TestSelectFileMatchRequests(t *testing.T) {
 	var reqs []model.FactRequest
 	reqs = append(reqs, model.FactRequest{Name: "file.match:bad", Collector: "shell"})
-	reqs = append(reqs, model.FactRequest{Name: "file.match:dup", Collector: "file.match"})
-	reqs = append(reqs, model.FactRequest{Name: "file.match:dup", Collector: "file.match"})
-	for i := 0; i < 150; i++ {
-		reqs = append(reqs, model.FactRequest{Name: fmt.Sprintf("file.match:r%d", i), Collector: "file.match"})
+	reqs = append(reqs, model.FactRequest{Name: "file.match:dup", Collector: "file.match", Params: map[string]string{"path": "/etc/d", "pattern": "x"}})
+	reqs = append(reqs, model.FactRequest{Name: "file.match:dup", Collector: "file.match", Params: map[string]string{"path": "/etc/d", "pattern": "x"}})
+	for i := 0; i < 50; i++ {
+		reqs = append(reqs, model.FactRequest{Name: fmt.Sprintf("file.match:r%d", i), Collector: "file.match", Params: map[string]string{"path": fmt.Sprintf("/etc/r%d", i), "pattern": "x"}})
 	}
 	got := selectFileMatchRequests(reqs)
 	if len(got) != fmMaxRequests {

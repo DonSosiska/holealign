@@ -32,7 +32,8 @@ Agents retry 5xx, 429 (honouring `Retry-After`) and network errors with exponent
 ## 2. Agent configuration (`/etc/panoptes/agent.yaml`)
 
 ```yaml
-server_url: https://panoptes.example.com
+server_url: https://panoptes.example.com   # https required; no userinfo; redirects are never followed
+allow_insecure_http: false      # true permits an http:// server_url (WARN logged; testing only)
 enroll_token: "pt_..."          # used only until enrolled
 labels: [prod, web, team-a]
 state_dir: /var/lib/panoptes-agent  # agent_id + agent_key stored here (0600)
@@ -40,8 +41,20 @@ checkin_interval: 5m
 inventory_interval: 6h          # safety-net full rescan; changes trigger earlier
 docker_socket: /var/run/docker.sock  # images are scanned if the socket exists
 scan_language_packages: true
-exclude_paths: [/proc, /sys, /dev, /run, /var/lib/docker, /var/lib/containerd, /snap]
+exclude_paths: [/proc, /sys, /dev, /run, /var/lib/docker, /var/lib/containerd, /snap,
+                /mnt, /media, /var/lib/containers, /var/lib/kubelet, /var/lib/lxc, /var/lib/lxd, /home/*/.cache]
+host_scan_timeout: 10m          # per scan; a panic or timeout is an error, not a crash
+image_scan_timeout: 5m
 ```
+
+Agent hardening rules (not trusting the server): `next_checkin_seconds` is clamped to 60 s – 1 h;
+`want_inventory` is honoured at most once per 10 min; after a failed scan the next attempt is delayed
+(check-in interval doubled per consecutive failure, max 6 h) and the error is reported as
+`agent.inventory_error`. On enrollment the agent sends a stored previous `agent_key` as
+`Authorization: Bearer`; on `409 Conflict` it logs an ERROR (operator: `panoptes-server host allow-reenroll
+<hostname>`) and retries hourly. `machine_id` is `hex(sha256("panoptes-machine-id:" + /etc/machine-id))`.
+Helper binaries are looked up in `/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/sbin:/usr/local/bin` and only run
+when file and directory are root-owned and not group/world-writable.
 
 Inventory is rescanned when any of these change (mtime): `/var/lib/dpkg/status`,
 `/var/lib/rpm/` (or `/usr/lib/sysimage/rpm/`), `/lib/apk/db/installed`, or the set of Docker image IDs.
@@ -70,7 +83,7 @@ sets `<x>.installed = false` and omits the other `<x>.*` facts.
 | `sshd.config` | map<string,string> | `sshd -T` (keys lowercased, first value) |
 | `nginx.installed`, `nginx.version` | bool, string | `nginx -v` |
 | `nginx.modules` | list<string> | `nginx -V` configure args (`--with-*` names, e.g. `http_v2_module`) |
-| `nginx.directives` | map<string,list<string>> | `nginx -T`, directive name → all values seen (comments stripped) |
+| `nginx.directives` | map<string,list<string>> | `nginx -T`, directive name → all values seen (comments stripped; secret-looking values masked as `***`, values capped at 256 bytes) |
 | `nginx.http2` | bool | `http2 on` directive or `listen ... http2` |
 | `apache.installed`, `apache.version` | bool, string | `apachectl -v` / `httpd -v` |
 | `apache.modules` | list<string> | `apachectl -M` (e.g. `proxy_module`) |
@@ -83,6 +96,8 @@ sets `<x>.installed = false` and omits the other `<x>.*` facts.
 | `docker.containers` | list<map{name,image,image_id,ports(list<string>),privileged(bool)}> | Docker API `/containers/json` + inspect |
 | `runc.version` | string | `runc --version` |
 | `sudo.version` | string | `sudo -V` |
+| `agent.inventory_error` | string | last inventory scan error (truncated to 200 chars); absent when the last scan succeeded |
+| `agent.skipped` | list<string> | tools not run because their config tree is not trustworthy, e.g. `nginx: /etc/nginx/conf.d writable by gid 33`. Before `nginx -V/-T`, `php -i` and `sshd -T` the agent verifies that `/etc/nginx` (+ `/usr/local/etc/nginx`, `/usr/local/nginx/conf`), `/etc/php/*/cli` (+ `/etc/php.ini`, `/etc/php.d`, `/usr/local/etc/php`) and `/etc/ssh/sshd_config{,.d}` and their parents are root-owned and not group/world-writable (≤ 2000 entries walked); otherwise the command is skipped and its facts omitted |
 | `file.match:<id>` | list<string> | **parametrised**, see below |
 
 Command execution rules for collectors: fixed argv (no shell), 10 s timeout, stdout capped at 4 MiB,
@@ -92,13 +107,26 @@ Command execution rules for collectors: fixed argv (no shell), 10 s timeout, std
 
 `FactRequest{Name:"file.match:<id>", Collector:"file.match", Params:{path, pattern}}`
 
-- `path` is a glob; after `filepath.Clean` and symlink resolution it must be under an allowed
-  root: `/etc/`, `/opt/*/conf/`, `/opt/*/etc/`, `/usr/local/etc/`. Otherwise the request is ignored (logged).
-- `pattern` is RE2 (Go `regexp`), max 512 chars. Max 50 files, 1 MiB per file, 200 matched lines total.
-- Value: matched lines, trimmed, prefixed with `<file>:`.
-- Secret masking: in returned lines, values after keys matching
-  `(?i)(pass(word)?|secret|token|key|credential|auth)\s*[:=]` are replaced with `***`.
-- Max 100 active parametrised requests; extra ones are ignored.
+- `path` is a glob (bounded walk, at most 50 matches); after `filepath.Clean` and symlink resolution it must be
+  under an allowed root: `/etc/`, `/opt/*/conf/`, `/opt/*/etc/`, `/usr/local/etc/`. Otherwise the request is
+  ignored (logged).
+- Hard denylist on the resolved physical (and logical) path, any component, case-insensitive: `shadow*`,
+  `gshadow*`, `passwd-`, `sudoers*`, `ssh/ssh_host_*`, `ssl/private`, `letsencrypt`, `pki`, `panoptes`,
+  `krb5.keytab`, `*.key`, `*.pem`, `*.p12`, `*.pfx`, `*.jks`, `*.keystore`, `.htpasswd`, `*secret*`,
+  `*credential*`, `*token*`, `NetworkManager`, `wireguard`, `openvpn`, `ppp`, `security`, `polkit-1`,
+  `ipsec*`, `strongswan*`, `cloud`, `mysql/debian.cnf`, `*.env`. The server enforces the same list.
+- Only regular, world-readable (`mode & 0o004`) files are read; files are opened with
+  `O_NOFOLLOW|O_NONBLOCK|O_CLOEXEC` (Linux: `openat2` `RESOLVE_NO_SYMLINKS|RESOLVE_BENEATH`, fallback to an
+  `openat` component walk), the mode is checked on the open fd. Files with a NUL byte or `-----BEGIN ` in the
+  first 64 KiB are skipped; crypt-hash lines (`^[^:]+:\$id\$`) are dropped.
+- `pattern` is RE2 (Go `regexp`), max 512 chars. Per file max 1 MiB.
+- Value: matched lines, trimmed, prefixed with `<file>:`; each line truncated to 512 bytes.
+- Secret masking: values after keys matching
+  `(?i)(["']?)(pass(wd|word|phrase)?|pwd|psk|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|credential|auth(orization)?|requirepass|masterauth)\1\s*[:=\s]\s*\S.*`
+  are replaced with `***` (the key is kept; a bare `pass` needs `:`/`=`); URL userinfo becomes `://***@`;
+  tokens of 32+ chars from `[A-Za-z0-9+/=_-]` mixing letters and digits/cases become `***`.
+- Budgets: per check-in at most 20 requests (deduplicated by name and by (path, pattern)), 2 MiB read in total,
+  500 lines in total (200 per request), 5 s wall time. Requests beyond a budget yield no fact.
 
 ## 4. Rules
 

@@ -4,10 +4,14 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
+	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -25,7 +29,7 @@ type CommandRunner interface {
 const (
 	commandTimeout = 10 * time.Second
 	maxCommandOut  = 4 << 20 // 4 MiB
-	fixedPath      = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+	fixedPath      = "/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/sbin:/usr/local/bin"
 )
 
 var errOutputTooLarge = errors.New("facts: command output exceeds 4 MiB")
@@ -37,7 +41,11 @@ func (execRunner) Run(ctx context.Context, name string, args ...string) ([]byte,
 	ctx, cancel := context.WithTimeout(ctx, commandTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, resolveBinary(name), args...)
+	bin := resolveBinary(name)
+	if bin == "" {
+		return nil, fmt.Errorf("%w: %s", exec.ErrNotFound, name)
+	}
+	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Env = []string{"LC_ALL=C", "PATH=" + fixedPath}
 	cmd.WaitDelay = time.Second
 
@@ -53,20 +61,45 @@ func (execRunner) Run(ctx context.Context, name string, args ...string) ([]byte,
 	return w.buf.Bytes(), err
 }
 
-// resolveBinary looks the name up in a fixed set of directories so that a
-// caller's PATH cannot redirect a hard-coded command. Unknown names are passed
-// through and resolved by os/exec (which then reports exec.ErrNotFound).
+// resolveBinary looks the name up in a fixed set of directories (system
+// directories before /usr/local) so that a caller's PATH cannot redirect a
+// hard-coded command. A candidate is only used when, after symlink resolution,
+// the file and its directory are root-owned and not group/world-writable;
+// others are skipped (logged once). When nothing qualifies it returns "" (the caller reports exec.ErrNotFound);
+// the agent's own PATH is never consulted.
 func resolveBinary(name string) string {
 	if strings.Contains(name, "/") {
 		return name
 	}
-	for _, dir := range strings.Split(fixedPath, ":") {
-		p := dir + "/" + name
-		if fi, err := os.Stat(p); err == nil && fi.Mode().IsRegular() && fi.Mode()&0o111 != 0 {
-			return p
-		}
+	return resolveBinaryIn(name, strings.Split(fixedPath, ":"), binaryTrust, warnSkippedOnce)
+}
+
+var skippedBinaries sync.Map
+
+func warnSkippedOnce(path string, err error) {
+	if _, dup := skippedBinaries.LoadOrStore(path, true); !dup {
+		log.Printf("facts: not executing %s: %v", path, err)
 	}
-	return name
+}
+
+func resolveBinaryIn(name string, dirs []string, trust func(resolved string) error, warn func(path string, err error)) string {
+	for _, dir := range dirs {
+		p := dir + "/" + name
+		resolved, err := filepath.EvalSymlinks(p)
+		if err != nil {
+			continue
+		}
+		fi, err := os.Stat(resolved)
+		if err != nil || !fi.Mode().IsRegular() || fi.Mode()&0o111 == 0 {
+			continue
+		}
+		if err := trust(resolved); err != nil {
+			warn(p, err)
+			continue
+		}
+		return resolved
+	}
+	return ""
 }
 
 // capWriter keeps at most max bytes and silently discards the rest, so the

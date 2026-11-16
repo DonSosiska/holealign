@@ -2,6 +2,7 @@ package facts
 
 import (
 	"context"
+	"errors"
 	"regexp"
 	"strings"
 
@@ -37,10 +38,27 @@ func parseOpenSSHVersion(out []byte) string {
 	return ""
 }
 
+// errSkipped keeps a "binary missing" error and turns every other outcome into
+// a generic one, so a skipped command never yields facts.
+func errSkipped(err error) error {
+	if isMissing(err) {
+		return err
+	}
+	return errors.New("skipped")
+}
+
 func collectSSHD(ctx context.Context, env *Env) model.Facts {
 	f := model.Facts{}
 
-	out, err := env.run(ctx, "sshd", "-T")
+	var out []byte
+	var err error
+	if env.treeOK("sshd", "/etc/ssh/sshd_config", "/etc/ssh/sshd_config.d") {
+		out, err = env.run(ctx, "sshd", "-T")
+	} else {
+		// -V does not read the configuration; it only tells whether sshd exists
+		_, err = env.run(ctx, "sshd", "-V")
+		out, err = nil, errSkipped(err)
+	}
 	if isMissing(err) {
 		f["sshd.installed"] = false
 		return f

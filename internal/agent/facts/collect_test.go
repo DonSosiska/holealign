@@ -181,7 +181,7 @@ func TestCollectFileMatchRequests(t *testing.T) {
 	env := &Env{
 		Runner: fakeRunner{},
 		FS: linkMapFS{fstest.MapFS{
-			"etc/nginx/conf.d/app.conf": {Data: []byte("password = hunter2\n")},
+			"etc/nginx/conf.d/app.conf": {Data: []byte("password = hunter2\n"), Mode: 0o644},
 		}},
 	}
 	reqs := []model.FactRequest{
