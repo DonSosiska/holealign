@@ -1,0 +1,14 @@
+{{define "title"}}Log in{{end}}
+{{define "content"}}
+<section class="login">
+<h1>Panoptes</h1>
+<p class="muted">Sign in to continue.</p>
+{{if .Error}}<div class="flash err" role="alert">{{.Error}}</div>{{end}}
+<form method="post" action="/login" class="stack">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <label>Username <input name="username" value="{{.Username}}" autocomplete="username" required autofocus></label>
+  <label>Password <input type="password" name="password" autocomplete="current-password" required></label>
+  <button type="submit" class="primary">Log in</button>
+</form>
+</section>
+{{end}}

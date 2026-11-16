@@ -1,0 +1,65 @@
+{{define "title"}}{{.F.VulnID}} on {{.F.PackageName}}{{end}}
+{{define "content"}}
+<p class="crumbs"><a href="/findings">Findings</a> /</p>
+<h1>{{.F.VulnID}} {{template "badge" .F.Verdict}}{{if .F.KEV}} <span class="badge kev">KEV</span>{{end}}</h1>
+
+<div class="panel">
+<h2>Verdict</h2>
+<p>{{if .F.VerdictReason}}{{.F.VerdictReason}}{{else}}<span class="muted">no reason recorded</span>{{end}}</p>
+{{if .Rule}}
+  <p class="muted">Decided by rule <a href="/rules/{{.Rule.ID}}">{{.Rule.ID}}</a>
+  <span class="badge {{rclass .Rule.Status}}">{{rstatus .Rule.Status}}</span></p>
+{{else if .F.RuleID}}<p class="muted">Rule {{.F.RuleID}} (not loaded)</p>
+{{else}}<p class="muted">No rule covers this vulnerability yet.</p>{{end}}
+</div>
+
+<div class="two-col">
+<section>
+<h2>Vulnerability</h2>
+<dl class="kv">
+  <dt>ID</dt><dd><a href="/vulns/{{.F.VulnID}}">{{.F.VulnID}}</a> (all hosts)</dd>
+  <dt>Aliases</dt><dd>{{range .F.Aliases}}<a href="/vulns/{{.}}">{{.}}</a> {{else}}<span class="muted">none</span>{{end}}</dd>
+  <dt>Severity</dt><dd>{{.F.Severity}}</dd>
+  <dt>CVSS</dt><dd>{{score .F.CVSS}}</dd>
+  <dt>EPSS</dt><dd>{{pct .F.EPSS}}</dd>
+  <dt>KEV</dt><dd>{{if .F.KEV}}yes (actively exploited){{else}}no{{end}}</dd>
+  <dt>References</dt><dd>
+    {{if isCVE .F.VulnID}}<a href="{{nvd .F.VulnID}}" rel="noopener noreferrer" target="_blank">NVD</a> &middot; {{end}}<a href="{{osv .F.VulnID}}" rel="noopener noreferrer" target="_blank">OSV</a>
+  </dd>
+</dl>
+</section>
+<section>
+<h2>Package</h2>
+<dl class="kv">
+  <dt>Host</dt><dd>{{if .Host}}<a href="/hosts/{{.Host.ID}}">{{.Host.Hostname}}</a>{{else}}<a href="/hosts/{{.F.HostID}}">{{.F.HostID}}</a>{{end}}</dd>
+  <dt>Target</dt><dd class="mono">{{.F.Target}} <span class="muted">({{.F.TargetKind}})</span></dd>
+  <dt>Package</dt><dd class="mono">{{.F.PackageName}} {{.F.PackageVer}}</dd>
+  <dt>Type</dt><dd>{{.F.PackageType}}</dd>
+  <dt>PURL</dt><dd class="mono small wrap">{{.F.PURL}}</dd>
+  <dt>Fixed in</dt><dd>{{if .F.FixedVersions}}<span class="mono">{{join .F.FixedVersions ", "}}</span>{{else}}<span class="muted">-</span>{{end}} <span class="muted">({{.F.FixState}})</span></dd>
+  <dt>First seen</dt><dd>{{ts .F.FirstSeen}}</dd>
+  <dt>Last seen</dt><dd>{{ts .F.LastSeen}}</dd>
+</dl>
+</section>
+</div>
+
+{{with fixcmd .F}}
+<h2>Fix command</h2>
+<div class="copyrow"><pre class="code" id="fixcmd">{{.}}</pre><button type="button" class="btn" data-copy="fixcmd">Copy</button></div>
+{{end}}
+
+{{with .Rule}}
+<h2>Rule</h2>
+<div class="panel">
+  <h3>{{.Title}}</h3>
+  {{if .Explanation}}<p>{{.Explanation}}</p>{{end}}
+  {{if .ExploitableIf}}<h4>Exploitable if</h4><pre class="code">{{.ExploitableIf}}</pre>{{end}}
+  {{if .NotAffectedIf}}<h4>Not affected if</h4><pre class="code">{{.NotAffectedIf}}</pre>{{end}}
+  {{if .Facts}}<p><strong>Facts read:</strong> {{range .Facts}}<code>{{.}}</code> {{end}}</p>{{end}}
+  {{if .Fix.Upgrade}}<p><strong>Upgrade:</strong> {{.Fix.Upgrade}}</p>{{end}}
+  {{if .Fix.Mitigation}}<p><strong>Mitigation:</strong> {{.Fix.Mitigation}}</p>{{end}}
+  {{if .References}}<p><strong>References:</strong> {{range .References}}<a href="{{.}}" rel="noopener noreferrer" target="_blank">{{.}}</a> {{end}}</p>{{end}}
+  <p><a href="/rules/{{.ID}}">Open rule</a></p>
+</div>
+{{end}}
+{{end}}

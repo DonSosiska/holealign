@@ -1,0 +1,8 @@
+{{define "title"}}{{.Code}} {{.Status}}{{end}}
+{{define "content"}}
+<section class="narrow">
+<h1>{{.Code}} {{.Status}}</h1>
+<p>{{.Message}}</p>
+<p><a href="/">Back to the dashboard</a></p>
+</section>
+{{end}}

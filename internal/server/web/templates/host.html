@@ -1,0 +1,33 @@
+{{define "title"}}{{.Host.Hostname}}{{end}}
+{{define "content"}}
+<p class="crumbs"><a href="/hosts">Hosts</a> /</p>
+<h1>{{.Host.Hostname}}</h1>
+<dl class="kv">
+  <dt>Host ID</dt><dd class="mono small">{{.Host.ID}}</dd>
+  <dt>Labels</dt><dd>{{range .Host.Labels}}<span class="label">{{.}}</span> {{else}}<span class="muted">none</span>{{end}}</dd>
+  <dt>OS</dt><dd>{{.Host.OS.PrettyName}} <span class="muted">({{.Host.OS.ID}} {{.Host.OS.VersionID}}, {{.Host.OS.Arch}})</span></dd>
+  <dt>Kernel</dt><dd class="mono">{{.Host.OS.Kernel}}</dd>
+  <dt>Agent</dt><dd class="mono">{{.Host.AgentVersion}}</dd>
+  <dt>Last check-in</dt><dd>{{age .Host.LastCheckin}} <span class="muted">({{ts .Host.LastCheckin}})</span>{{if .Stale}} <span class="badge v-unknown">stale</span>{{end}}</dd>
+</dl>
+
+<h2>Findings</h2>
+{{template "findingsTable" (tbl .Findings nil false)}}
+{{if .Hidden}}<p class="muted"><a href="/hosts/{{.Host.ID}}?all=1">Show {{.Hidden}} resolved</a></p>{{end}}
+{{if .All}}<p class="muted"><a href="/hosts/{{.Host.ID}}">Hide resolved</a></p>{{end}}
+
+<h2>Targets</h2>
+{{if .Targets}}
+<div class="table-wrap"><table>
+<thead><tr><th>Kind</th><th>Name</th><th>Image ID</th><th>Containers</th></tr></thead>
+<tbody>{{range .Targets}}
+<tr><td>{{.Kind}}</td><td class="mono">{{.Name}}</td><td class="mono small">{{.ImageID}}</td><td>{{join .Containers ", "}}</td></tr>
+{{end}}</tbody></table></div>
+{{else}}<p class="empty">No inventory uploaded yet.</p>{{end}}
+
+<h2>Facts</h2>
+<details>
+<summary>{{len .Host.Facts}} facts collected</summary>
+<pre class="code">{{json .Host.Facts}}</pre>
+</details>
+{{end}}

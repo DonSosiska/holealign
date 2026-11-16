@@ -1,0 +1,36 @@
+{{define "title"}}Dashboard{{end}}
+{{define "content"}}
+<h1>Dashboard</h1>
+<div class="cards">
+{{range .Counts}}
+  <a class="card {{vclass .Verdict}}" href="/findings?verdict={{.Verdict}}">
+    <div class="big">{{.N}}</div>
+    <div>{{vlabel .Verdict}}</div>
+  </a>
+{{end}}
+  <a class="card v-neutral" href="/hosts"><div class="big">{{.HostCount}}</div><div>hosts</div></a>
+</div>
+
+<h2>Top exploitable findings</h2>
+{{template "findingsTable" (tbl .Top .HostNames true)}}
+
+<div class="two-col">
+<section>
+<h2>Hosts not checked in &gt; 30 min</h2>
+{{if .Stale}}
+<div class="table-wrap"><table>
+<thead><tr><th>Host</th><th>Last check-in</th></tr></thead>
+<tbody>{{range .Stale}}<tr><td><a href="/hosts/{{.ID}}">{{.Hostname}}</a></td><td>{{age .LastCheckin}}</td></tr>{{end}}</tbody>
+</table></div>
+{{else}}<p class="empty">All hosts are reporting.</p>{{end}}
+</section>
+<section>
+<h2>Vulnerability feed</h2>
+<dl class="kv">
+  <dt>Last checked</dt><dd>{{if .FeedChecked}}{{.FeedChecked}}{{else}}<span class="muted">never</span>{{end}}</dd>
+  <dt>Last updated</dt><dd>{{if .FeedUpdated}}{{.FeedUpdated}}{{else}}<span class="muted">never</span>{{end}}</dd>
+  <dt>Last error</dt><dd>{{if .FeedError}}<span class="err-text">{{.FeedError}}</span>{{else}}<span class="muted">none</span>{{end}}</dd>
+</dl>
+</section>
+</div>
+{{end}}

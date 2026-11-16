@@ -1,0 +1,78 @@
+{{define "title"}}Settings{{end}}
+{{define "content"}}
+<h1>Settings</h1>
+
+<section class="panel" id="matrix">
+<h2>Matrix routes</h2>
+<p class="muted">Findings from hosts carrying a label are sent to the listed rooms. Homeserver:
+{{if .MatrixConfig}}configured{{else}}<strong>not configured</strong> (set <code>matrix.homeserver</code> in server.yaml){{end}}.</p>
+{{if .MatrixError}}<div class="flash err" role="alert">{{.MatrixError}}</div>{{end}}
+<form method="post" action="/settings/matrix" class="stack">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <label>Routes, one per line: <code>label = !room:server, !other:server</code>
+  <textarea name="routes" rows="6" spellcheck="false" class="code-edit">{{.RoutesText}}</textarea></label>
+  <div><button type="submit" class="primary">Save routes</button></div>
+</form>
+<h3>From server.yaml (read-only)</h3>
+<dl class="kv">
+  <dt>Default rooms</dt><dd>{{range .CfgRooms}}<span class="mono small">{{.}}</span> {{else}}<span class="muted">none</span>{{end}}</dd>
+  {{range .CfgRoutes}}<dt>{{.Label}}</dt><dd>{{range .Rooms}}<span class="mono small">{{.}}</span> {{end}}</dd>{{end}}
+</dl>
+</section>
+
+<section class="panel" id="tokens">
+<h2>Enrollment tokens</h2>
+{{if .NewToken}}
+<div class="flash ok" role="status">
+  <p><strong>Token "{{.NewTokenName}}" created.</strong> Copy it now; it will not be shown again.</p>
+  <div class="copyrow"><pre class="code" id="newtoken">{{.NewToken}}</pre><button type="button" class="btn" data-copy="newtoken">Copy token</button></div>
+  <p>Add to <code>/etc/panoptes/agent.yaml</code> on the host:</p>
+  <div class="copyrow"><pre class="code" id="snippet">{{.Snippet}}</pre><button type="button" class="btn" data-copy="snippet">Copy snippet</button></div>
+  <p class="muted">Then install and start the agent: <code>systemctl enable --now panoptes-agent</code>.</p>
+</div>
+{{end}}
+{{if .TokenError}}<div class="flash err" role="alert">{{.TokenError}}</div>{{end}}
+{{if .Tokens}}
+<div class="table-wrap"><table>
+<thead><tr><th>Name</th><th>Created</th><th>Last used</th><th>Status</th><th></th></tr></thead>
+<tbody>{{range .Tokens}}
+<tr><td>{{.Name}}</td><td>{{ts .CreatedAt}}</td><td>{{if .LastUsed.IsZero}}<span class="muted">never</span>{{else}}{{age .LastUsed}}{{end}}</td>
+<td>{{if .Revoked}}<span class="badge v-neutral">revoked</span>{{else}}<span class="badge v-resolved">active</span>{{end}}</td>
+<td>{{if not .Revoked}}<form method="post" action="/settings/tokens/{{.Name}}/revoke" data-confirm="Revoke this token?"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button type="submit" class="danger small">Revoke</button></form>{{end}}</td></tr>
+{{end}}</tbody></table></div>
+{{else}}<p class="empty">No tokens yet.</p>{{end}}
+<form method="post" action="/settings/tokens" class="inline">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <label>New token name <input name="name" value="{{.TokenName}}" placeholder="prod-fleet" required></label>
+  <button type="submit" class="primary">Create token</button>
+</form>
+</section>
+
+<section class="panel" id="users">
+<h2>Users</h2>
+{{if .UserError}}<div class="flash err" role="alert">{{.UserError}}</div>{{end}}
+<div class="table-wrap"><table>
+<thead><tr><th>Username</th><th>Created</th><th>Change password</th><th></th></tr></thead>
+<tbody>{{range .Users}}
+<tr><td>{{.Username}}{{if eq .Username $.Me}} <span class="muted">(you)</span>{{end}}</td><td>{{ts .CreatedAt}}</td>
+<td><form method="post" action="/settings/users/{{.Username}}/password" class="inline"><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="password" name="password" minlength="8" placeholder="new password" autocomplete="new-password" required><button type="submit" class="btn small">Change</button></form></td>
+<td>{{if ne .Username $.Me}}<form method="post" action="/settings/users/{{.Username}}/delete" data-confirm="Delete this user?"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button type="submit" class="danger small">Delete</button></form>{{end}}</td></tr>
+{{end}}</tbody></table></div>
+<form method="post" action="/settings/users" class="inline">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <label>Username <input name="username" value="{{.UserName}}" autocomplete="off" required></label>
+  <label>Password <input type="password" name="password" minlength="8" autocomplete="new-password" required></label>
+  <button type="submit" class="primary">Add user</button>
+</form>
+</section>
+
+<section class="panel" id="llm">
+<h2>LLM rule drafting</h2>
+<p class="muted">Read-only; configured in server.yaml. The API key is never shown.</p>
+<dl class="kv">
+  <dt>Provider</dt><dd>{{.LLM.Provider}}</dd>
+  <dt>Model</dt><dd class="mono">{{.LLM.Model}}</dd>
+  <dt>Daily limit</dt><dd>{{.LLM.DailyLimit}} drafts</dd>
+</dl>
+</section>
+{{end}}
