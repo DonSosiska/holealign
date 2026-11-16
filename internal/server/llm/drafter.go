@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"path"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -35,8 +37,10 @@ type Deps struct {
 	DailyLimit  int // default 50
 	OnRuleAdded func(ctx context.Context, r model.Rule)
 	Advisory    AdvisorySource // default: OSV
-	Logger      *slog.Logger
-	Now         func() time.Time
+	// Siblings returns the findings of a vulnerability that share a source package (optional).
+	Siblings func(ctx context.Context, vulnID, source string) []model.Finding
+	Logger   *slog.Logger
+	Now      func() time.Time
 }
 
 // Drafter implements core.RuleDrafter.
@@ -66,7 +70,70 @@ func NewDrafter(d Deps) *Drafter {
 	return &Drafter{d: d, queue: make(chan model.Finding, queueSize), inflight: map[string]bool{}}
 }
 
-func keyOf(f model.Finding) string { return f.VulnID + "|" + f.PackageName }
+func keyOf(f model.Finding) string { return f.VulnID + "|" + sourceOf(f) }
+
+// sourceOf returns the source package of a finding: the "upstream" qualifier of its PURL
+// (without any @version), falling back to the package name.
+func sourceOf(f model.Finding) string {
+	if i := strings.IndexByte(f.PURL, '?'); i >= 0 {
+		if q, err := url.ParseQuery(f.PURL[i+1:]); err == nil {
+			up := q.Get("upstream")
+			if j := strings.IndexByte(up, '@'); j >= 0 {
+				up = up[:j]
+			}
+			if up != "" {
+				return up
+			}
+		}
+	}
+	return f.PackageName
+}
+
+func selectorMatches(sels []model.PackageSelector, name, typ string) bool {
+	for _, p := range sels {
+		if ok, _ := path.Match(p.Name, name); ok && (p.Type == "" || p.Type == typ) {
+			return true
+		}
+	}
+	return false
+}
+
+// covered reports whether any stored rule already covers the finding's vuln and package.
+func (d *Drafter) covered(ctx context.Context, f model.Finding) (bool, error) {
+	rules, err := d.d.Store.ListRules(ctx)
+	if err != nil {
+		return false, err
+	}
+	ids := append([]string{f.VulnID}, f.Aliases...)
+	for _, r := range rules {
+		for _, id := range ids {
+			if contains(r.Vulns, id) && selectorMatches(r.Packages, f.PackageName, f.PackageType) {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+// siblingPackages returns the distinct (name, type) pairs of the findings, sorted.
+func siblingPackages(fs []model.Finding) []model.PackageSelector {
+	seen := map[model.PackageSelector]bool{}
+	var out []model.PackageSelector
+	for _, f := range fs {
+		s := model.PackageSelector{Name: f.PackageName, Type: f.PackageType}
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Name != out[j].Name {
+			return out[i].Name < out[j].Name
+		}
+		return out[i].Type < out[j].Type
+	})
+	return out
+}
 
 // Start launches the single worker; it stops when ctx is done.
 func (d *Drafter) Start(ctx context.Context) {
@@ -120,13 +187,19 @@ func RuleID(vulnID, pkg string) string {
 func (d *Drafter) handle(ctx context.Context, f model.Finding) {
 	log := d.d.Logger.With("vuln", f.VulnID, "package", f.PackageName)
 	key := keyOf(f)
-	id := RuleID(f.VulnID, f.PackageName)
+	id := RuleID(f.VulnID, sourceOf(f))
 	now := d.d.Now()
 
 	if _, err := d.d.Store.GetRule(ctx, id); err == nil {
 		return // exists (including rejected)
 	} else if !errors.Is(err, store.ErrNotFound) {
 		log.Warn("llm: rule lookup failed", "err", err)
+		return
+	}
+	if cov, err := d.covered(ctx, f); err != nil {
+		log.Warn("llm: rule listing failed", "err", err)
+		return
+	} else if cov {
 		return
 	}
 	if v, err := d.d.Store.KVGet(ctx, kvFailedPfx+key); err == nil {
@@ -147,8 +220,14 @@ func (d *Drafter) handle(ctx context.Context, f model.Finding) {
 		log.Debug("llm: advisory unavailable, drafting from finding data", "err", err)
 		advisory = ""
 	}
+	source := sourceOf(f)
+	all := []model.Finding{f}
+	if d.d.Siblings != nil {
+		all = append(all, d.d.Siblings(ctx, f.VulnID, source)...)
+	}
+	siblings := siblingPackages(all)
 	system := buildSystemPrompt(d.d.FactCatalog)
-	user := buildUserPrompt(f, distro, advisory)
+	user := buildUserPrompt(f, source, siblings, distro, advisory)
 
 	var lastReply string
 	var lastErr error
@@ -171,7 +250,7 @@ func (d *Drafter) handle(ctx context.Context, f model.Finding) {
 			}
 			return
 		}
-		rule, err := d.parse(reply, f, id)
+		rule, err := d.parse(reply, f, siblings, id)
 		if err == nil {
 			err = d.d.Validator.Validate(rule)
 		}
@@ -223,7 +302,7 @@ func (d *Drafter) takeCall(ctx context.Context, now time.Time, log *slog.Logger)
 	return true
 }
 
-func (d *Drafter) parse(reply string, f model.Finding, id string) (model.Rule, error) {
+func (d *Drafter) parse(reply string, f model.Finding, siblings []model.PackageSelector, id string) (model.Rule, error) {
 	var r model.Rule
 	obj, err := extractJSON(reply)
 	if err != nil {
@@ -242,14 +321,10 @@ func (d *Drafter) parse(reply string, f model.Finding, id string) (model.Rule, e
 	if !contains(r.Vulns, f.VulnID) {
 		r.Vulns = append(r.Vulns, f.VulnID)
 	}
-	covered := false
-	for _, p := range r.Packages {
-		if ok, _ := path.Match(p.Name, f.PackageName); ok && (p.Type == "" || p.Type == f.PackageType) {
-			covered = true
+	for _, sel := range append([]model.PackageSelector{{Name: f.PackageName, Type: f.PackageType}}, siblings...) {
+		if !selectorMatches(r.Packages, sel.Name, sel.Type) {
+			r.Packages = append(r.Packages, sel)
 		}
-	}
-	if !covered {
-		r.Packages = append(r.Packages, model.PackageSelector{Name: f.PackageName, Type: f.PackageType})
 	}
 	for i := range r.FactRequests {
 		if r.FactRequests[i].Collector == "" {

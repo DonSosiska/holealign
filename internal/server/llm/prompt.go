@@ -57,6 +57,7 @@ So list in "facts" exactly the facts that must be known to decide; do not list f
 - Be conservative. Every condition must be grounded in the advisory text. Never invent exploitation requirements. When unsure whether a condition is required, do not make it a requirement.
 - If exploitability does not depend on host configuration (e.g. any install of an affected version is exploitable, or the advisory names no preconditions), return "exploitable_if": "true", "facts": [] and explain why in "explanation".
 - Reachability facts (a service running, a port listening, a module loaded, a feature enabled) are good conditions when the advisory states the vulnerable code path needs them.
+- One rule covers all binary packages built from the same source package. When the user message lists them, put ALL of them in "packages". Many of them often do not contain the vulnerable code (for example a client package when only the server is affected, or a -common/-doc package). Use pkg["name"] in the expression to tell them apart, e.g. pkg["name"].startsWith("openssh-server") && ..., so the others evaluate to "affected but not exploitable". Only do this when the advisory identifies the vulnerable component; otherwise treat all packages alike.
 - Version checks are already done by the vulnerability matcher; do not repeat the affected version range unless the advisory has a configuration-dependent version rule.
 - "fix.upgrade" is generic upgrade advice; "fix.mitigation" must be concrete and supported by the advisory, otherwise leave it empty.
 - "references": URLs taken from the advisory only.
@@ -141,7 +142,7 @@ func sanitizeAdvisory(s string) string {
 	return s
 }
 
-func buildUserPrompt(f model.Finding, distro, advisory string) string {
+func buildUserPrompt(f model.Finding, source string, siblings []model.PackageSelector, distro, advisory string) string {
 	var b strings.Builder
 	b.WriteString("Write the rule for this finding.\n\nFinding:\n")
 	fmt.Fprintf(&b, "- vulnerability: %s\n", f.VulnID)
@@ -149,6 +150,15 @@ func buildUserPrompt(f model.Finding, distro, advisory string) string {
 		fmt.Fprintf(&b, "- aliases: %s\n", strings.Join(f.Aliases, ", "))
 	}
 	fmt.Fprintf(&b, "- package name: %s\n- package version: %s\n- package type: %s\n", f.PackageName, f.PackageVer, f.PackageType)
+	if source != "" && source != f.PackageName {
+		fmt.Fprintf(&b, "- source package: %s\n", source)
+	}
+	if len(siblings) > 1 {
+		b.WriteString("- all binary packages affected by this vulnerability on monitored hosts (same source package):\n")
+		for _, s := range siblings {
+			fmt.Fprintf(&b, "    * %s (%s)\n", s.Name, s.Type)
+		}
+	}
 	if f.PURL != "" {
 		fmt.Fprintf(&b, "- purl: %s\n", f.PURL)
 	}
