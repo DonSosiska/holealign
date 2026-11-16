@@ -99,8 +99,10 @@ func TestCVE20246387(t *testing.T) {
 	want(t, ev, model.VerdictConditionsUnknown, "sshd.config")
 	// key missing from config -> default 120
 	want(t, eval(t, e, "CVE-2024-6387", "openssh-server", "deb", mk("glibc", map[string]any{"sshd.config": map[string]any{}})), model.VerdictExploitable, "<unset>")
-	// different package: no rule
-	ev = eval(t, e, "CVE-2024-6387", "openssh-client", "deb", mk("glibc", cfg("120")))
+	// sibling package from the same source: rule applies, but the flaw is only in sshd
+	want(t, eval(t, e, "CVE-2024-6387", "openssh-client", "deb", mk("glibc", cfg("120"))), model.VerdictNotExploitable)
+	// unrelated package: no rule
+	ev = eval(t, e, "CVE-2024-6387", "libssl3", "deb", mk("glibc", cfg("120")))
 	want(t, ev, model.VerdictConditionsUnknown, "no rule")
 	if ev.Rule != nil {
 		t.Error("Rule must be nil without a match")
