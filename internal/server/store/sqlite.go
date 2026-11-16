@@ -50,6 +50,7 @@ func OpenSQLite(path string) (*SQLite, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
+	_ = os.Chmod(path, 0o600)
 	return s, nil
 }
 
@@ -195,24 +196,48 @@ func (s *SQLite) EnrollHost(ctx context.Context, p EnrollParams) (model.Host, er
 	var out model.Host
 	err := s.tx(ctx, func(tx *sql.Tx) error {
 		now := ts(time.Now())
-		labels := p.Labels
+		labels, locked := p.Labels, 0
+		if len(p.TokenLabels) > 0 {
+			labels, locked = p.TokenLabels, 1
+		}
 		if labels == nil {
 			labels = []string{}
 		}
 		var id string
-		err := tx.QueryRowContext(ctx, `SELECT id FROM hosts WHERE machine_id=?`, p.MachineID).Scan(&id)
+		var allowed int
+		err := tx.QueryRowContext(ctx, `SELECT id, reenroll_allowed FROM hosts WHERE machine_id=?`, p.MachineID).Scan(&id, &allowed)
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
+			if p.MaxHosts > 0 && p.TokenName != "" {
+				var n int
+				if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM hosts WHERE token_name=?`, p.TokenName).Scan(&n); err != nil {
+					return err
+				}
+				if n >= p.MaxHosts {
+					return ErrTokenExhausted
+				}
+			}
 			id = newID("h_")
-			if _, err := tx.ExecContext(ctx, `INSERT INTO hosts(id,machine_id,hostname,labels,agent_version,created_at) VALUES(?,?,?,?,?,?)`,
-				id, p.MachineID, p.Hostname, jsonStr(labels), p.AgentVersion, now); err != nil {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO hosts(id,machine_id,hostname,labels,agent_version,created_at,token_name,labels_locked) VALUES(?,?,?,?,?,?,?,?)`,
+				id, p.MachineID, p.Hostname, jsonStr(labels), p.AgentVersion, now, p.TokenName, locked); err != nil {
 				return err
 			}
 		case err != nil:
 			return err
 		default:
-			if _, err := tx.ExecContext(ctx, `UPDATE hosts SET hostname=?, labels=?, agent_version=? WHERE id=?`,
-				p.Hostname, jsonStr(labels), p.AgentVersion, id); err != nil {
+			ok := allowed != 0
+			if !ok && p.PreviousKeyHash != "" {
+				var n int
+				if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM agent_keys WHERE host_id=? AND key_hash=?`, id, p.PreviousKeyHash).Scan(&n); err != nil {
+					return err
+				}
+				ok = n > 0
+			}
+			if !ok {
+				return ErrReenrollDenied
+			}
+			if _, err := tx.ExecContext(ctx, `UPDATE hosts SET hostname=?, labels=?, agent_version=?, reenroll_allowed=0, token_name=?, labels_locked=? WHERE id=?`,
+				p.Hostname, jsonStr(labels), p.AgentVersion, p.TokenName, locked, id); err != nil {
 				return err
 			}
 			// rotate: old keys stop working
@@ -228,6 +253,39 @@ func (s *SQLite) EnrollHost(ctx context.Context, p EnrollParams) (model.Host, er
 		return err
 	})
 	return out, err
+}
+
+func (s *SQLite) ListHostsAdmin(ctx context.Context) ([]HostAdmin, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+hostCols+`, token_name, reenroll_allowed FROM hosts ORDER BY hostname, id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []HostAdmin
+	for rows.Next() {
+		var h model.Host
+		var labels, osj, facts, tn string
+		var last int64
+		var ra int
+		if err := rows.Scan(&h.ID, &h.MachineID, &h.Hostname, &labels, &osj, &facts, &h.AgentVersion, &h.InventoryHash, &last, &tn, &ra); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal([]byte(labels), &h.Labels)
+		h.LastCheckin = fromTS(last)
+		out = append(out, HostAdmin{Host: h, TokenName: tn, ReenrollAllowed: ra != 0})
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLite) SetReenrollAllowed(ctx context.Context, id string, allowed bool) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE hosts SET reenroll_allowed=? WHERE id=?`, b2i(allowed), id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func (s *SQLite) HostByAgentKey(ctx context.Context, keyHash string) (model.Host, error) {
@@ -279,10 +337,17 @@ func (s *SQLite) ApplyCheckin(ctx context.Context, hostID string, req model.Chec
 		if err != nil {
 			return err
 		}
+		if err := checkFactLimits(facts, len(newFacts)); err != nil {
+			return err
+		}
 		res.FactsChanged = string(oldFacts) != string(newFacts)
 
+		var locked int
+		if err := tx.QueryRowContext(ctx, `SELECT labels_locked FROM hosts WHERE id=?`, hostID).Scan(&locked); err != nil {
+			return err
+		}
 		labels := req.Labels
-		if labels == nil {
+		if labels == nil || locked != 0 { // token labels are authoritative
 			labels = h.Labels
 		}
 		hostname := req.Hostname
@@ -306,6 +371,21 @@ func (s *SQLite) ApplyCheckin(ctx context.Context, hostID string, req model.Chec
 		return err
 	})
 	return res, err
+}
+
+func checkFactLimits(facts model.Facts, total int) error {
+	if len(facts) > MaxFactKeys {
+		return &LimitError{fmt.Sprintf("too many facts (max %d keys)", MaxFactKeys)}
+	}
+	if total > MaxFactsBytes {
+		return &LimitError{fmt.Sprintf("facts too large (max %d bytes)", MaxFactsBytes)}
+	}
+	for k, v := range facts {
+		if b, err := json.Marshal(v); err == nil && len(b) > MaxFactValueByte {
+			return &LimitError{fmt.Sprintf("fact %q too large (max %d bytes)", k, MaxFactValueByte)}
+		}
+	}
+	return nil
 }
 
 func (s *SQLite) GetHost(ctx context.Context, id string) (model.Host, error) {
@@ -355,6 +435,10 @@ func (s *SQLite) ReplaceInventory(ctx context.Context, hostID string, p model.In
 		if _, err := tx.ExecContext(ctx, `DELETE FROM targets WHERE host_id=?`, hostID); err != nil {
 			return err
 		}
+		// a new inventory lifts the poison flags of matcher panics (pipeline)
+		if _, err := tx.ExecContext(ctx, `DELETE FROM kv WHERE key LIKE ?`, "poison."+hostID+".%"); err != nil {
+			return err
+		}
 		for _, t := range p.Targets {
 			containers := t.Containers
 			if containers == nil {
@@ -395,24 +479,60 @@ func (s *SQLite) ListTargets(ctx context.Context, hostID string) ([]model.Invent
 // --- enrollment tokens -----------------------------------------------------
 
 func (s *SQLite) CreateEnrollToken(ctx context.Context, name, tokenHash string) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO enroll_tokens(token_hash,name,created_at) VALUES(?,?,?)`, tokenHash, name, ts(time.Now()))
+	return s.CreateEnrollTokenOpts(ctx, EnrollTokenOpts{Name: name, Hash: tokenHash})
+}
+
+func (s *SQLite) CreateEnrollTokenOpts(ctx context.Context, o EnrollTokenOpts) error {
+	labels := o.Labels
+	if labels == nil {
+		labels = []string{}
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO enroll_tokens(token_hash,name,created_at,max_hosts,expires_at,labels) VALUES(?,?,?,?,?,?)`,
+		o.Hash, o.Name, ts(time.Now()), o.MaxHosts, ts(o.ExpiresAt), jsonStr(labels))
 	if isUnique(err) {
 		return ErrExists
 	}
 	return err
 }
 
+// UseEnrollToken reports whether the token is valid (known, not revoked, not expired, not
+// exhausted) and records last_used for valid tokens only.
 func (s *SQLite) UseEnrollToken(ctx context.Context, tokenHash string) (bool, error) {
-	res, err := s.db.ExecContext(ctx, `UPDATE enroll_tokens SET last_used=? WHERE token_hash=? AND revoked=0`, ts(time.Now()), tokenHash)
+	info, err := s.UseEnrollTokenInfo(ctx, tokenHash, time.Now())
+	if errors.Is(err, ErrNotFound) {
+		return false, nil
+	}
 	if err != nil {
 		return false, err
 	}
-	n, _ := res.RowsAffected()
-	return n > 0, nil
+	return info.MaxHosts <= 0 || info.Hosts < info.MaxHosts, nil
+}
+
+func (s *SQLite) UseEnrollTokenInfo(ctx context.Context, tokenHash string, now time.Time) (EnrollTokenInfo, error) {
+	var i EnrollTokenInfo
+	var c, lu, exp int64
+	var rev int
+	var labels string
+	err := s.db.QueryRowContext(ctx, `SELECT name,created_at,revoked,last_used,max_hosts,expires_at,labels,
+		(SELECT COUNT(*) FROM hosts WHERE token_name=enroll_tokens.name) FROM enroll_tokens WHERE token_hash=?`, tokenHash).
+		Scan(&i.Name, &c, &rev, &lu, &i.MaxHosts, &exp, &labels, &i.Hosts)
+	if err != nil {
+		return i, notFound(err)
+	}
+	i.CreatedAt, i.Revoked, i.LastUsed, i.ExpiresAt = fromTS(c), rev != 0, fromTS(lu), fromTS(exp)
+	_ = json.Unmarshal([]byte(labels), &i.Labels)
+	if i.Revoked || (!i.ExpiresAt.IsZero() && !now.Before(i.ExpiresAt)) {
+		return EnrollTokenInfo{}, ErrNotFound
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE enroll_tokens SET last_used=? WHERE token_hash=?`, ts(now), tokenHash); err != nil {
+		return i, err
+	}
+	return i, nil
 }
 
 func (s *SQLite) ListEnrollTokens(ctx context.Context) ([]EnrollTokenInfo, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT name,created_at,revoked,last_used FROM enroll_tokens ORDER BY created_at, name`)
+	rows, err := s.db.QueryContext(ctx, `SELECT name,created_at,revoked,last_used,max_hosts,expires_at,labels,
+		(SELECT COUNT(*) FROM hosts WHERE token_name=enroll_tokens.name) FROM enroll_tokens ORDER BY created_at, name`)
 	if err != nil {
 		return nil, err
 	}
@@ -420,12 +540,14 @@ func (s *SQLite) ListEnrollTokens(ctx context.Context) ([]EnrollTokenInfo, error
 	var out []EnrollTokenInfo
 	for rows.Next() {
 		var i EnrollTokenInfo
-		var c, lu int64
+		var c, lu, exp int64
 		var rev int
-		if err := rows.Scan(&i.Name, &c, &rev, &lu); err != nil {
+		var labels string
+		if err := rows.Scan(&i.Name, &c, &rev, &lu, &i.MaxHosts, &exp, &labels, &i.Hosts); err != nil {
 			return nil, err
 		}
-		i.CreatedAt, i.Revoked, i.LastUsed = fromTS(c), rev != 0, fromTS(lu)
+		i.CreatedAt, i.Revoked, i.LastUsed, i.ExpiresAt = fromTS(c), rev != 0, fromTS(lu), fromTS(exp)
+		_ = json.Unmarshal([]byte(labels), &i.Labels)
 		out = append(out, i)
 	}
 	return out, rows.Err()

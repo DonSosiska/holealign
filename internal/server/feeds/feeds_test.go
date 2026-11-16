@@ -106,3 +106,26 @@ func TestOfflineKeepsRunning(t *testing.T) {
 		t.Fatal("checked_at must not be set on failure")
 	}
 }
+
+type panicDB struct{ fakeDB }
+
+func (p *panicDB) Reload(_ context.Context, update bool) (bool, error) {
+	if update {
+		panic("boom")
+	}
+	return false, nil
+}
+
+func TestUpdaterSurvivesPanic(t *testing.T) {
+	st := newStore(t)
+	u := &Updater{DB: &panicDB{}, Store: st, Interval: 10 * time.Millisecond, Update: true}
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	done := make(chan struct{})
+	go func() { u.Run(ctx); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("updater did not stop")
+	}
+}

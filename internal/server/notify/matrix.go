@@ -104,8 +104,29 @@ func NewMatrix(cfg Config, routes RouteSource, httpClient *http.Client) (*Matrix
 	}, nil
 }
 
-// Notify routes each event to its rooms and sends it. Failures are collected per room;
-// delivery to other rooms continues. The returned error joins all failures.
+// DeliveryError is returned by Notify when delivery was incomplete or had permanent errors.
+// Failed holds the indexes (into the events passed to Notify) of events that must be retried;
+// every other event was either delivered or hit a permanent error (HTTP 4xx other than 429) that
+// retrying cannot fix, which is logged at ERROR and reported in Err but is not retried.
+type DeliveryError struct {
+	Failed []int
+	Err    error
+}
+
+func (e *DeliveryError) Error() string {
+	return fmt.Sprintf("matrix delivery: %d event(s) to retry: %v", len(e.Failed), e.Err)
+}
+
+func (e *DeliveryError) Unwrap() error { return e.Err }
+
+// permanentError marks a failure that retrying cannot fix.
+type permanentError struct{ err error }
+
+func (e *permanentError) Error() string { return e.err.Error() }
+func (e *permanentError) Unwrap() error { return e.err }
+
+// Notify routes each event to its rooms and sends it. A failing group or room never stops the
+// rest. The returned error, if any, is a *DeliveryError.
 func (m *Matrix) Notify(ctx context.Context, events []model.Event) error {
 	if len(events) == 0 {
 		return nil
@@ -136,16 +157,38 @@ func (m *Matrix) Notify(ctx context.Context, events []model.Event) error {
 		}
 	}
 
-	for _, room := range order {
+	failed := map[int]bool{}
+	for ri, room := range order {
 		if err := ctx.Err(); err != nil {
 			errs = append(errs, err)
+			for _, r := range order[ri:] {
+				for _, g := range byRoom[r] {
+					for _, i := range g.idx {
+						failed[i] = true
+					}
+				}
+			}
 			break
 		}
-		if err := m.sendRoom(ctx, room, byRoom[room]); err != nil {
+		bad, err := m.sendRoom(ctx, room, byRoom[room])
+		for _, g := range bad {
+			for _, i := range g.idx {
+				failed[i] = true
+			}
+		}
+		if err != nil {
 			errs = append(errs, fmt.Errorf("room %s: %w", room, err))
 		}
 	}
-	return errors.Join(errs...)
+	if len(errs) == 0 {
+		return nil
+	}
+	de := &DeliveryError{Err: errors.Join(errs...)}
+	for i := range failed {
+		de.Failed = append(de.Failed, i)
+	}
+	slices.Sort(de.Failed)
+	return de
 }
 
 // effectiveRoutes merges config routes and DB routes by label, rooms deduplicated.
@@ -182,23 +225,35 @@ func (m *Matrix) roomsFor(ev model.Event, routes map[string][]string) []string {
 	return out
 }
 
-func (m *Matrix) sendRoom(ctx context.Context, room string, groups []group) error {
+// sendRoom sends the groups of one room and continues past failures. It returns the groups that
+// must be retried (retryable failures) and the joined errors of all failures. Permanent errors
+// are logged at ERROR and returned in err but their groups are not in the retry list.
+func (m *Matrix) sendRoom(ctx context.Context, room string, groups []group) (retry []group, err error) {
+	var errs []error
+	record := func(g []group, e error) {
+		if e == nil {
+			return
+		}
+		errs = append(errs, e)
+		var pe *permanentError
+		if errors.As(e, &pe) {
+			slog.Error("matrix: permanent delivery error, event will not be retried", "room", room, "err", e)
+			return
+		}
+		retry = append(retry, g...)
+	}
 	if len(groups) <= burstThreshold {
 		for _, g := range groups {
-			if err := m.sendGroup(ctx, room, g); err != nil {
-				return err
-			}
+			record([]group{g}, m.sendGroup(ctx, room, g))
 		}
-		return nil
+		return retry, errors.Join(errs...)
 	}
 
 	// Burst: send the most important groups individually, then one summary of the rest.
 	sorted := slices.Clone(groups)
 	slices.SortStableFunc(sorted, compareGroups)
 	for _, g := range sorted[:burstKeep] {
-		if err := m.sendGroup(ctx, room, g); err != nil {
-			return err
-		}
+		record([]group{g}, m.sendGroup(ctx, room, g))
 	}
 	link := ""
 	for _, g := range sorted {
@@ -206,7 +261,8 @@ func (m *Matrix) sendRoom(ctx context.Context, room string, groups []group) erro
 			break
 		}
 	}
-	return m.send(ctx, room, renderSummary(sorted[burstKeep:], link))
+	record(sorted[burstKeep:], m.send(ctx, room, renderSummary(sorted[burstKeep:], link)))
+	return retry, errors.Join(errs...)
 }
 
 func (m *Matrix) sendGroup(ctx context.Context, room string, g group) error {
@@ -291,7 +347,7 @@ func (m *Matrix) attempt(ctx context.Context, endpoint string, body []byte) (wai
 	case code >= 500:
 		return 0, true, fmt.Errorf("server error %d", code)
 	default:
-		return 0, false, fmt.Errorf("matrix responded %d: %s", code, snippet(data))
+		return 0, false, &permanentError{fmt.Errorf("matrix responded %d: %s", code, snippet(data))}
 	}
 }
 

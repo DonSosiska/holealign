@@ -5,6 +5,7 @@ package feeds
 import (
 	"context"
 	"log/slog"
+	"runtime/debug"
 	"time"
 
 	"panoptes/internal/server/store"
@@ -53,17 +54,19 @@ func (u *Updater) Run(ctx context.Context) {
 	}
 
 	// Serve from the on-disk DB immediately so matching works while a download is running.
-	if changed, err := u.DB.Reload(ctx, false); err != nil {
-		u.Log.Warn("no local grype db yet", "err", err)
-	} else if changed && u.OnUpdated != nil {
-		u.OnUpdated(ctx)
-	}
+	u.guard("initial load", func() {
+		if changed, err := u.DB.Reload(ctx, false); err != nil {
+			u.Log.Warn("no local grype db yet", "err", err)
+		} else if changed && u.OnUpdated != nil {
+			u.OnUpdated(ctx)
+		}
+	})
 	if !u.Update {
 		u.Log.Info("feed updates disabled (feeds.update=false)")
 		return
 	}
 	for {
-		u.once(ctx)
+		u.guard("update", func() { u.once(ctx) })
 		wait := u.Interval
 		if !u.DB.Ready() && u.RetryInterval < wait {
 			wait = u.RetryInterval
@@ -101,4 +104,17 @@ func (u *Updater) kv(ctx context.Context, k, v string) {
 	if err := u.Store.KVSet(ctx, k, v, u.Now()); err != nil {
 		u.Log.Warn("write feed timestamp", "key", k, "err", err)
 	}
+}
+
+// guard runs f and logs (with stack) instead of crashing the process when it panics.
+func (u *Updater) guard(what string, f func()) {
+	defer func() {
+		if r := recover(); r != nil {
+			u.Log.Error("feeds updater panicked; continuing", "where", what, "panic", r, "stack", string(debug.Stack()))
+			if u.Store != nil {
+				u.kv(context.Background(), KVLastError, "panic: "+what)
+			}
+		}
+	}()
+	f()
 }

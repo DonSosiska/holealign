@@ -11,13 +11,21 @@ Server stores only a SHA-256 hash of agent keys and enrollment tokens.
 
 | Method & path | Body → Response | Notes |
 |---|---|---|
-| `POST /api/v1/enroll` | `EnrollRequest` → `EnrollResponse` | 401 on bad token. Re-enrolling with the same `machine_id` reuses the host record and rotates the key. |
-| `POST /api/v1/checkin` | `CheckinRequest` → `CheckinResponse` | Every 5 min (default). Updates labels, OS, facts, `last_checkin`. |
-| `POST /api/v1/inventory` | `InventoryPayload` (gzip, `Content-Encoding: gzip`) → `202` | Max body 64 MiB decompressed. Server replaces all targets of the host and re-runs matching asynchronously. |
+| `POST /api/v1/enroll` | `EnrollRequest` → `EnrollResponse` | `machine_id` must match `^[0-9a-f]{32,64}$` (agents send a sha256 hex) else 400; labels ≤ 32 entries matching `^[a-z0-9][a-z0-9._-]{0,63}$` else 400; hostname truncated to 253 chars, control chars stripped. 401 on unknown/revoked/expired token; 403 when the token's `max_hosts` is reached. **409** `{"error":"host exists; previous key required (admin: panoptes-server host allow-reenroll <host>)"}` when the `machine_id` is already enrolled and the request carries neither `Authorization: Bearer <current agent key of that host>` nor an admin `allow-reenroll` flag (cleared on use). A permitted re-enroll reuses the host record and rotates the key. 429 beyond 10 requests/min per client IP. |
+| `POST /api/v1/checkin` | `CheckinRequest` → `CheckinResponse` | Every 5 min (default); at most 1 per 20 s per host (else 429 + `Retry-After`). Updates labels, OS, facts, `last_checkin`. Labels sent here are ignored for hosts enrolled with a token that has labels. Facts after merge: ≤ 1000 keys, ≤ 1 MiB JSON, each value ≤ 64 KiB, else 413. |
+| `POST /api/v1/inventory` | `InventoryPayload` (gzip, `Content-Encoding: gzip`) → `202` | Max body 64 MiB decompressed (413); ≤ 50 000 CycloneDX components per target SBOM (413). At most 1 per 5 min per host (429 + `Retry-After`; the agent retries later). An inventory whose `hash` equals the stored one is answered `202` without re-matching. Otherwise the server replaces all targets of the host and re-runs matching asynchronously. |
 | `GET /healthz` | → `200 ok` | No auth. |
 
+Any request failing Bearer authentication counts against a per-client-IP limit (30/min, then 429); valid agents are never throttled by it.
+
+Enrollment tokens (`panoptes-server token create <name> [-max-hosts N] [-expires 72h] [-labels prod,web]`):
+optional `max_hosts` (hosts that may enroll), `expires_at`, and `labels`. Token labels are **authoritative**:
+hosts enrolled with such a token get exactly these labels (the token name is stored on the host) and
+check-in labels are ignored, so alert routing cannot be steered by self-asserted labels.
+Admin CLI: `host list`, `host allow-reenroll <id|hostname>` (one re-enroll without the old key), `host delete <id|hostname>`.
+
 Error responses: `{"error": "<message>"}` with a 4xx/5xx status.
-Agents retry 5xx and network errors with exponential backoff (max 5 min); 401 → re-enroll if an enroll token is still configured, else log and keep retrying hourly.
+Agents retry 5xx, 429 (honouring `Retry-After`) and network errors with exponential backoff (max 5 min); 401 → re-enroll (sending the old key as Bearer) if an enroll token is still configured, else log and keep retrying hourly; 409 → log and wait for an admin `host allow-reenroll`.
 
 `CheckinResponse.WantInventory` is true when the server has no inventory whose hash equals `CheckinRequest.InventoryHash`.
 
@@ -173,6 +181,13 @@ rule changes, the server (re)computes findings for affected hosts:
      Not re-sent when only the reason changes.
    - `EventResolved` — previously notified finding became `resolved`, `affected_not_exploitable` or `not_affected`.
    Dedup key `(host_id, target, package_name, vuln_id, kind)`; never send the same key twice in a row.
+   Delivery is per event: `Notifier.Notify` may return a `*notify.DeliveryError{Failed []int}` (indexes into the
+   events passed in); the pipeline records every other event as delivered and retries only the failed ones.
+   A permanent 4xx from Matrix (other than 429) is logged at ERROR and recorded as delivered (not retried forever).
+   Message text: every untrusted field is cut to 300 characters with control characters removed, the body is
+   capped at 8 KiB; for draft (unreviewed LLM) rules only a warning and the server-generated fix command are shown.
+   Each pipeline run has a 10 min timeout; a panic in any background goroutine is logged and recovered, and a
+   target whose matching panicked is flagged (`kv poison.<host>.<target-hash>`) and skipped until a new inventory arrives.
 
 ## 6. Server configuration (`/etc/panoptes/server.yaml`, all keys optional)
 
@@ -198,6 +213,12 @@ llm:
 admin:
   initial_password_env: PANOPTES_ADMIN_PASSWORD  # creates user "admin" on first start
 ```
+
+Validation: `*_env` names must match `^PANOPTES_[A-Z0-9_]+$` and must not equal the admin password variable.
+The initial admin password needs ≥ 12 characters and may come from the file named by
+`PANOPTES_ADMIN_PASSWORD_FILE`. Startup logs a WARN when `public_url`, `matrix.homeserver` or `llm.base_url`
+use `http://` for a non-loopback host, and when the Grype DB is older than 5 days. The server runs with
+`umask 077` and a 0600 database file; HTTP limits: header ≤ 64 KiB, read timeout 5 min, write timeout 2 min.
 
 Environment variable `PANOPTES_CONFIG` points to the file; every scalar can be overridden by
 `PANOPTES_<SECTION>_<KEY>` (e.g. `PANOPTES_MATRIX_HOMESERVER`).

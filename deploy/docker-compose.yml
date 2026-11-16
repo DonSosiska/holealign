@@ -15,14 +15,31 @@ services:
       dockerfile: deploy/Dockerfile.server.build
     image: panoptes-server:local
     restart: unless-stopped
+    # Published on loopback only. To expose it, put a TLS reverse proxy (Caddy, nginx, Traefik)
+    # in front and point it at 127.0.0.1:8080, or change this to "8080:8080" if you accept
+    # plain HTTP on all interfaces (agent keys and the web login then travel unencrypted).
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - "no-new-privileges:true"
+    mem_limit: 4g
+    pids_limit: 512
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
     volumes:
       # SQLite database and Grype DB cache.
       - panoptes-data:/var/lib/panoptes
     environment:
       # Secrets come from deploy/.env. Empty values are ignored by the server.
-      PANOPTES_ADMIN_PASSWORD: ${PANOPTES_ADMIN_PASSWORD:-}   # min 8 chars, first start only
+      PANOPTES_ADMIN_PASSWORD: ${PANOPTES_ADMIN_PASSWORD:-}   # min 12 chars, first start only (or PANOPTES_ADMIN_PASSWORD_FILE)
       PANOPTES_MATRIX_TOKEN: ${PANOPTES_MATRIX_TOKEN:-}       # Matrix bot access token
       PANOPTES_LLM_API_KEY: ${PANOPTES_LLM_API_KEY:-}         # LLM provider key, if any
       # Non-secret overrides (optional).

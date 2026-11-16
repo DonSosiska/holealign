@@ -40,6 +40,15 @@ MemoryDenyWriteExecute=yes
 SystemCallArchitectures=native
 CapabilityBoundingSet=
 AmbientCapabilities=
+ProtectProc=invisible
+ProcSubset=pid
+PrivateUsers=yes
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+
+# Resource limits.
+MemoryMax=4G
+TasksMax=512
 
 [Install]
 WantedBy=multi-user.target

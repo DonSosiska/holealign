@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -39,7 +41,19 @@ type env struct {
 	token string
 }
 
+func mid(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])
+}
+
+// setup disables the rate limits; tests of the limits use setupWith.
 func setup(t *testing.T) *env {
+	return setupWith(t, func(d *Deps) {
+		d.InventoryInterval, d.CheckinInterval, d.EnrollPerMinute, d.BadAuthPerMinute = -1, -1, -1, -1
+	})
+}
+
+func setupWith(t *testing.T, mod func(*Deps)) *env {
 	t.Helper()
 	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "p.db"))
 	if err != nil {
@@ -51,7 +65,11 @@ func setup(t *testing.T) *env {
 		t.Fatal(err)
 	}
 	trig := &recTrigger{}
-	srv := httptest.NewServer(NewMux(Deps{Store: st, Evaluator: reqEval{}, Pipeline: trig}))
+	d := Deps{Store: st, Evaluator: reqEval{}, Pipeline: trig}
+	if mod != nil {
+		mod(&d)
+	}
+	srv := httptest.NewServer(NewMux(d))
 	t.Cleanup(srv.Close)
 	return &env{srv: srv, st: st, trig: trig, token: tok}
 }
@@ -84,8 +102,12 @@ func (e *env) do(t *testing.T, method, path, key string, body any, hdr map[strin
 }
 
 func (e *env) enroll(t *testing.T, machine string) model.EnrollResponse {
+	return e.enrollWith(t, machine, "")
+}
+
+func (e *env) enrollWith(t *testing.T, machine, prevKey string) model.EnrollResponse {
 	t.Helper()
-	resp, body := e.do(t, "POST", "/api/v1/enroll", "", model.EnrollRequest{Token: e.token, Hostname: "web1", MachineID: machine, Labels: []string{"prod"}}, nil)
+	resp, body := e.do(t, "POST", "/api/v1/enroll", prevKey, model.EnrollRequest{Token: e.token, Hostname: "web1", MachineID: mid(machine), Labels: []string{"prod"}}, nil)
 	if resp.StatusCode != 200 {
 		t.Fatalf("enroll: %d %s", resp.StatusCode, body)
 	}
@@ -199,7 +221,7 @@ func TestWantFullFactsOnFirstDiff(t *testing.T) {
 func TestReenrollReusesHostAndRotatesKey(t *testing.T) {
 	e := setup(t)
 	a := e.enroll(t, "same-machine")
-	b := e.enroll(t, "same-machine")
+	b := e.enrollWith(t, "same-machine", a.AgentKey)
 	if a.AgentID != b.AgentID || a.AgentKey == b.AgentKey {
 		t.Fatalf("%+v %+v", a, b)
 	}
@@ -213,11 +235,11 @@ func TestReenrollReusesHostAndRotatesKey(t *testing.T) {
 
 func TestAuthFailures(t *testing.T) {
 	e := setup(t)
-	resp, body := e.do(t, "POST", "/api/v1/enroll", "", model.EnrollRequest{Token: "pt_wrong", MachineID: "m"}, nil)
+	resp, body := e.do(t, "POST", "/api/v1/enroll", "", model.EnrollRequest{Token: "pt_wrong", MachineID: mid("m")}, nil)
 	if resp.StatusCode != 401 || !strings.Contains(string(body), `"error"`) {
 		t.Fatalf("bad token: %d %s", resp.StatusCode, body)
 	}
-	if resp, _ = e.do(t, "POST", "/api/v1/enroll", "", model.EnrollRequest{MachineID: "m"}, nil); resp.StatusCode != 401 {
+	if resp, _ = e.do(t, "POST", "/api/v1/enroll", "", model.EnrollRequest{MachineID: mid("m")}, nil); resp.StatusCode != 401 {
 		t.Fatalf("empty token: %d", resp.StatusCode)
 	}
 	if resp, _ = e.do(t, "POST", "/api/v1/enroll", "", model.EnrollRequest{Token: e.token}, nil); resp.StatusCode != 400 {
@@ -235,7 +257,7 @@ func TestAuthFailures(t *testing.T) {
 	if err := e.st.RevokeEnrollToken(context.Background(), "test"); err != nil {
 		t.Fatal(err)
 	}
-	if resp, _ = e.do(t, "POST", "/api/v1/enroll", "", model.EnrollRequest{Token: e.token, MachineID: "m"}, nil); resp.StatusCode != 401 {
+	if resp, _ = e.do(t, "POST", "/api/v1/enroll", "", model.EnrollRequest{Token: e.token, MachineID: mid("m")}, nil); resp.StatusCode != 401 {
 		t.Fatalf("revoked token: %d", resp.StatusCode)
 	}
 	// wrong method

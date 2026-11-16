@@ -50,10 +50,49 @@ type Grype struct {
 	dbRoot string
 	log    *slog.Logger
 
-	mu       sync.RWMutex
-	provider vulnerability.Provider
-	status   DBStatus
+	mu     sync.Mutex
+	cur    *provRef
+	status DBStatus
 }
+
+// provRef is a reference-counted provider: Reload retires the old one, which is closed once the
+// last in-flight Match using it finished (Match does not hold g.mu while matching).
+type provRef struct {
+	p       vulnerability.Provider
+	refs    int
+	retired bool
+}
+
+func (g *Grype) acquire() *provRef {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.cur != nil {
+		g.cur.refs++
+	}
+	return g.cur
+}
+
+func (g *Grype) release(r *provRef) {
+	g.mu.Lock()
+	r.refs--
+	closeNow := r.retired && r.refs == 0
+	g.mu.Unlock()
+	if closeNow {
+		_ = r.p.Close()
+	}
+}
+
+// retireLocked marks r retired and reports whether it can be closed right away.
+func retireLocked(r *provRef) bool {
+	if r == nil {
+		return false
+	}
+	r.retired = true
+	return r.refs == 0
+}
+
+// dbMaxAge is the age after which a loaded DB triggers a warning.
+const dbMaxAge = 5 * 24 * time.Hour
 
 // NewGrype creates a matcher whose DB lives under dbRoot (e.g. data_dir/grype-db).
 // Call Reload before Match.
@@ -66,15 +105,15 @@ func NewGrype(dbRoot string, log *slog.Logger) *Grype {
 
 // Ready reports whether a DB is loaded.
 func (g *Grype) Ready() bool {
-	g.mu.RLock()
-	defer g.mu.RUnlock()
-	return g.provider != nil
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.cur != nil
 }
 
 // Status returns information about the loaded DB.
 func (g *Grype) Status() DBStatus {
-	g.mu.RLock()
-	defer g.mu.RUnlock()
+	g.mu.Lock()
+	defer g.mu.Unlock()
 	return g.status
 }
 
@@ -117,12 +156,17 @@ func (g *Grype) Reload(ctx context.Context, update bool) (changed bool, err erro
 	st := DBStatus{Path: r.st.Path, SchemaVersion: r.st.SchemaVersion, Built: r.st.Built}
 
 	g.mu.Lock()
-	old := g.provider
+	old := g.cur
 	changed = old == nil || !g.status.Built.Equal(st.Built)
-	g.provider, g.status = r.p, st
+	g.cur, g.status = &provRef{p: r.p}, st
+	closeOld := retireLocked(old)
 	g.mu.Unlock()
-	if old != nil {
-		_ = old.Close()
+	if closeOld {
+		_ = old.p.Close()
+	}
+	if !st.Built.IsZero() && time.Since(st.Built) > dbMaxAge {
+		g.log.Warn("grype db is stale; vulnerability data may be outdated", "built", st.Built,
+			"age_days", int(time.Since(st.Built).Hours()/24))
 	}
 	g.log.Info("grype db loaded", "built", st.Built, "schema", st.SchemaVersion, "changed", changed)
 	return changed, nil
@@ -131,13 +175,14 @@ func (g *Grype) Reload(ctx context.Context, update bool) (changed bool, err erro
 // Close releases the DB.
 func (g *Grype) Close() error {
 	g.mu.Lock()
-	defer g.mu.Unlock()
-	if g.provider == nil {
-		return nil
+	old := g.cur
+	g.cur = nil
+	closeNow := retireLocked(old)
+	g.mu.Unlock()
+	if closeNow {
+		return old.p.Close()
 	}
-	err := g.provider.Close()
-	g.provider = nil
-	return err
+	return nil
 }
 
 func matcherConfig() matcher.Config {
@@ -154,11 +199,12 @@ func matcherConfig() matcher.Config {
 // the check-in is used as a distro hint; image SBOMs carry their own distro.
 // Returned findings have only matcher-derived fields set (no HostID/Target/Verdict).
 func (g *Grype) Match(ctx context.Context, kind model.TargetKind, sbom []byte, osInfo model.OSInfo) ([]model.Finding, error) {
-	g.mu.RLock()
-	defer g.mu.RUnlock()
-	if g.provider == nil {
+	ref := g.acquire()
+	if ref == nil {
 		return nil, ErrNoDB
 	}
+	defer g.release(ref)
+	provider := ref.p
 	cfg := pkg.ProviderConfig{}
 	if kind == model.TargetHost && osInfo.ID != "" {
 		cfg.Distro.Override = distro.NewFromNameVersion(osInfo.ID, osInfo.VersionID)
@@ -168,7 +214,7 @@ func (g *Grype) Match(ctx context.Context, kind model.TargetKind, sbom []byte, o
 		return nil, fmt.Errorf("decode sbom: %w", err)
 	}
 	vm := &grype.VulnerabilityMatcher{
-		VulnerabilityProvider: g.provider,
+		VulnerabilityProvider: provider,
 		Matchers:              matcher.NewDefaultMatchers(matcherConfig()),
 		NormalizeByCVE:        true,
 	}
@@ -183,7 +229,7 @@ func (g *Grype) Match(ctx context.Context, kind model.TargetKind, sbom []byte, o
 	nvd := map[string]*vulnerability.Metadata{}
 	for _, m := range matches.Sorted() {
 		var md *vulnerability.Metadata
-		md, err = g.provider.VulnerabilityMetadata(vulnerability.Reference{ID: m.Vulnerability.ID, Namespace: m.Vulnerability.Namespace})
+		md, err = provider.VulnerabilityMetadata(vulnerability.Reference{ID: m.Vulnerability.ID, Namespace: m.Vulnerability.Namespace})
 		if err != nil || md == nil {
 			md = m.Vulnerability.Metadata
 		}
@@ -192,7 +238,7 @@ func (g *Grype) Match(ctx context.Context, kind model.TargetKind, sbom []byte, o
 		if cve := cveOf(m.Vulnerability); cve != "" {
 			nm, ok := nvd[cve]
 			if !ok {
-				nm, _ = g.provider.VulnerabilityMetadata(vulnerability.Reference{ID: cve, Namespace: "nvd:cpe"})
+				nm, _ = provider.VulnerabilityMetadata(vulnerability.Reference{ID: cve, Namespace: "nvd:cpe"})
 				nvd[cve] = nm
 			}
 			mergeMetadata(&f, nm)

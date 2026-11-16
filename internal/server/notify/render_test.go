@@ -152,7 +152,7 @@ func TestRenderDraftWarning(t *testing.T) {
 	ev := fullExploitable()
 	ev.Finding.RuleStatus = model.RuleDraft
 	plain, h := renderEvent(ev)
-	if !hasLine(plain, "⚠️ rule is an unreviewed LLM draft") {
+	if !hasLine(plain, "⚠️ unreviewed LLM draft — review the rule in the web UI before acting") {
 		t.Errorf("draft warning missing from plain body:\n%s", plain)
 	}
 	if !strings.Contains(h, "unreviewed LLM draft") {
