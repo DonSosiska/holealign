@@ -119,6 +119,21 @@ func TestHappyPath(t *testing.T) {
 	if !strings.Contains(sys, "os.libc (string): glibc or musl") || !strings.Contains(sys, `[?"logingracetime"]`) {
 		t.Fatal("system prompt lacks catalog or optional-index guidance")
 	}
+	for _, bad := range []string{`return "exploitable_if": "true"`, "does not depend on host configuration"} {
+		if strings.Contains(sys, bad) {
+			t.Fatalf("system prompt still contains old guidance %q", bad)
+		}
+	}
+	for _, need := range []string{"attack vector", "reachab", `"exploitable_if": "false"`, "services.active", "sockets.ports", "NO host evidence", "will NOT produce an \"exploitable\" verdict"} {
+		if !strings.Contains(sys, need) {
+			t.Fatalf("system prompt lacks %q", need)
+		}
+	}
+	for _, need := range []string{"severity: High", "CVSS score:", "EPSS", "known exploited (CISA KEV): false", "fixed versions: 1.1"} {
+		if !strings.Contains(user, need) {
+			t.Fatalf("user prompt lacks %q: %s", need, user)
+		}
+	}
 	open := strings.Index(user, advisoryOpen)
 	cl := strings.LastIndex(user, advisoryClose)
 	if open < 0 || cl < open || !strings.Contains(user[open:cl], "Summary: bad.") || !strings.Contains(user, "CVE-2030-0001") || !strings.Contains(user, "GHSA-xxxx") {
