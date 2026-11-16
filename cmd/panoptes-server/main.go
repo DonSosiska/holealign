@@ -23,6 +23,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"panoptes/internal/model"
 	"panoptes/internal/server/api"
 	"panoptes/internal/server/config"
 	"panoptes/internal/server/core"
@@ -32,6 +33,7 @@ import (
 	"panoptes/internal/server/pipeline"
 	"panoptes/internal/server/rules"
 	"panoptes/internal/server/store"
+	"panoptes/internal/server/web"
 )
 
 // version is set at build time: -ldflags "-X main.version=1.2.3".
@@ -205,8 +207,22 @@ func wire(cfg *config.Config, st store.Store, log *slog.Logger, trig *lateTrigge
 			log.Info("matrix notifier enabled", "homeserver", cfg.Matrix.Homeserver)
 		}
 	}
+	// Web UI on the same mux as the agent API.
+	ui, err := web.New(web.Deps{
+		Store: st, Rules: rulesService{engine}, Pipeline: trig, Config: cfg, Logger: log,
+	})
+	if err != nil {
+		log.Error("web UI disabled", "err", err)
+	} else {
+		comp.Mount = append(comp.Mount, ui.Mount)
+	}
 	return comp
 }
+
+// rulesService adapts the rule engine to the web UI (validation is a package func).
+type rulesService struct{ *rules.Engine }
+
+func (rulesService) Validate(r model.Rule) error { return rules.Validate(r) }
 
 // --- serve ------------------------------------------------------------------
 
