@@ -51,8 +51,12 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request, sess *s
 	}
 	var stale []model.Host
 	now := s.now()
+	limit := staleAfter
+	if a := s.cfg.Alerts.AgentSilentAfter; a > 0 {
+		limit = a
+	}
 	for _, h := range hosts {
-		if h.LastCheckin.IsZero() || now.Sub(h.LastCheckin) > staleAfter {
+		if h.LastCheckin.IsZero() || now.Sub(h.LastCheckin) > limit {
 			stale = append(stale, h)
 		}
 	}
@@ -63,7 +67,14 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request, sess *s
 		}
 		return v
 	}
+	var pipeErrs []string
+	for _, l := range strings.Split(kv("health.pipeline_errors"), "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			pipeErrs = append(pipeErrs, l)
+		}
+	}
 	s.render(w, r, sess, http.StatusOK, "dashboard", map[string]any{
+		"FeedStale": kv("health.feed_stale"), "PipelineErrors": pipeErrs,
 		"Counts": counts, "Top": top, "HostNames": names, "Stale": stale, "HostCount": len(hosts),
 		"FeedChecked": kv("feeds.grype.checked_at"), "FeedUpdated": kv("feeds.grype.updated_at"), "FeedError": kv("feeds.grype.last_error"),
 	})

@@ -25,10 +25,22 @@ const DefaultPath = "/etc/panoptes/server.yaml"
 
 // Config is the whole server configuration. Every key is optional.
 type Config struct {
-	Listen    string `yaml:"listen"`
-	PublicURL string `yaml:"public_url"`
-	DataDir   string `yaml:"data_dir"`
-	RulesDir  string `yaml:"rules_dir"`
+	Listen string `yaml:"listen"` // agent API (/api/v1/*, /healthz)
+	// AdminListen serves the web UI. Empty or equal to Listen: one shared listener (legacy).
+	AdminListen string `yaml:"admin_listen"`
+	PublicURL   string `yaml:"public_url"` // base URL of the admin web UI
+	DataDir     string `yaml:"data_dir"`
+	RulesDir    string `yaml:"rules_dir"`
+
+	// Native TLS (optional): both of a pair must be set.
+	TLSCert      string `yaml:"tls_cert"`
+	TLSKey       string `yaml:"tls_key"`
+	AdminTLSCert string `yaml:"admin_tls_cert"`
+	AdminTLSKey  string `yaml:"admin_tls_key"`
+	// TrustedProxies are CIDRs (or single IPs) of reverse proxies whose X-Forwarded-For is trusted.
+	TrustedProxies []string `yaml:"trusted_proxies"`
+
+	Alerts Alerts `yaml:"alerts"`
 
 	Feeds  Feeds  `yaml:"feeds"`
 	Matrix Matrix `yaml:"matrix"`
@@ -40,6 +52,14 @@ type Config struct {
 type Feeds struct {
 	Interval time.Duration `yaml:"interval"` // refresh period, default 6h
 	Update   bool          `yaml:"update"`   // false disables all network updates (tests, air-gapped)
+}
+
+// Alerts configures silence/health alerts.
+type Alerts struct {
+	AgentSilentAfter time.Duration `yaml:"agent_silent_after"` // 0 disables agent_silent/agent_back
+	FeedStaleAfter   time.Duration `yaml:"feed_stale_after"`   // 0 disables feed_stale/feed_ok
+	// OpsRooms receive server-level events; empty falls back to matrix.default_rooms.
+	OpsRooms []string `yaml:"ops_rooms"`
 }
 
 // Matrix configures the Matrix notifier (used by another package).
@@ -73,12 +93,14 @@ type Admin struct {
 // Default returns the configuration used when nothing is configured.
 func Default() Config {
 	return Config{
-		Listen:    ":8080",
-		PublicURL: "http://localhost:8080",
-		DataDir:   "/var/lib/panoptes",
-		RulesDir:  "/usr/share/panoptes/rules",
-		Feeds:     Feeds{Interval: 6 * time.Hour, Update: true},
-		Matrix:    Matrix{AccessTokenEnv: "PANOPTES_MATRIX_TOKEN"},
+		Listen:      ":8080",
+		AdminListen: "127.0.0.1:8081",
+		PublicURL:   "http://localhost:8081",
+		DataDir:     "/var/lib/panoptes",
+		RulesDir:    "/usr/share/panoptes/rules",
+		Alerts:      Alerts{AgentSilentAfter: 30 * time.Minute, FeedStaleAfter: 48 * time.Hour},
+		Feeds:       Feeds{Interval: 6 * time.Hour, Update: true},
+		Matrix:      Matrix{AccessTokenEnv: "PANOPTES_MATRIX_TOKEN"},
 		LLM: LLM{
 			Provider:   "none",
 			Model:      "claude-sonnet-5-5",
@@ -136,6 +158,18 @@ func (c *Config) validate() error {
 		return errors.New("data_dir must not be empty")
 	}
 	c.PublicURL = strings.TrimRight(c.PublicURL, "/")
+	if c.Alerts.AgentSilentAfter < 0 || c.Alerts.FeedStaleAfter < 0 {
+		return errors.New("alerts.agent_silent_after and alerts.feed_stale_after must not be negative")
+	}
+	if (c.TLSCert == "") != (c.TLSKey == "") {
+		return errors.New("tls_cert and tls_key must be set together")
+	}
+	if (c.AdminTLSCert == "") != (c.AdminTLSKey == "") {
+		return errors.New("admin_tls_cert and admin_tls_key must be set together")
+	}
+	if _, err := ParseCIDRs(c.TrustedProxies); err != nil {
+		return fmt.Errorf("trusted_proxies: %w", err)
+	}
 	// *_env values name environment variables; restrict them so a config file cannot be used to
 	// read arbitrary variables (HOME, AWS_*, ...) or to reuse the admin password as another secret.
 	for _, e := range []struct{ key, val string }{
@@ -153,6 +187,39 @@ func (c *Config) validate() error {
 		}
 	}
 	return nil
+}
+
+// ParseCIDRs parses CIDRs; a bare IP is treated as a /32 or /128.
+func ParseCIDRs(in []string) ([]*net.IPNet, error) {
+	var out []*net.IPNet
+	for _, s := range in {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		if !strings.Contains(s, "/") {
+			ip := net.ParseIP(s)
+			if ip == nil {
+				return nil, fmt.Errorf("%q is not an IP address or CIDR", s)
+			}
+			bits := 128
+			if ip.To4() != nil {
+				bits = 32
+			}
+			s += "/" + strconv.Itoa(bits)
+		}
+		_, n, err := net.ParseCIDR(s)
+		if err != nil {
+			return nil, fmt.Errorf("%q: %w", s, err)
+		}
+		out = append(out, n)
+	}
+	return out, nil
+}
+
+// SharedListener reports whether the admin UI and the agent API share one port (legacy mode).
+func (c *Config) SharedListener() bool {
+	return c.AdminListen == "" || c.AdminListen == c.Listen
 }
 
 var envNameRe = regexp.MustCompile(`^PANOPTES_[A-Z0-9_]+$`)

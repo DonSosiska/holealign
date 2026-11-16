@@ -2,6 +2,7 @@ package notify
 
 import (
 	"cmp"
+	"strconv"
 	"strings"
 
 	"panoptes/internal/model"
@@ -27,6 +28,9 @@ func groupEvents(events []model.Event) []group {
 	var out []group
 	for n, ev := range events {
 		k := groupKey{kind: ev.Kind, hostID: ev.Host.ID, vulnID: ev.Finding.VulnID, targetName: ev.Finding.Target}
+		if ev.Kind.IsHealth() {
+			k.targetName = "\x00health#" + strconv.Itoa(n) // health events are never merged
+		}
 		i, ok := idx[k]
 		if !ok {
 			i = len(out)

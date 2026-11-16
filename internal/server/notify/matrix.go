@@ -28,6 +28,7 @@ type Config struct {
 	Homeserver   string
 	AccessToken  string
 	DefaultRooms []string // used when no label route matches
+	OpsRooms     []string // server-level events (feed, pipeline, aggregated silence); empty: DefaultRooms
 	Routes       []Route  // from the config file
 }
 
@@ -57,6 +58,7 @@ type Matrix struct {
 	homeserver string
 	token      string
 	defaults   []string
+	ops        []string
 	cfgRoutes  []Route
 	routes     RouteSource
 	client     *http.Client
@@ -97,6 +99,7 @@ func NewMatrix(cfg Config, routes RouteSource, httpClient *http.Client) (*Matrix
 		homeserver: hs,
 		token:      cfg.AccessToken,
 		defaults:   appendUnique(nil, cfg.DefaultRooms...),
+		ops:        appendUnique(nil, cfg.OpsRooms...),
 		cfgRoutes:  cfgRoutes,
 		routes:     routes,
 		client:     httpClient,
@@ -216,6 +219,12 @@ func (m *Matrix) effectiveRoutes(ctx context.Context) (map[string][]string, erro
 // the default rooms when no label matches.
 func (m *Matrix) roomsFor(ev model.Event, routes map[string][]string) []string {
 	var out []string
+	if ev.ServerLevel() {
+		if len(m.ops) > 0 {
+			return slices.Clone(m.ops)
+		}
+		return slices.Clone(m.defaults)
+	}
 	for _, l := range ev.Host.Labels {
 		out = appendUnique(out, routes[l]...)
 	}
@@ -241,6 +250,18 @@ func (m *Matrix) sendRoom(ctx context.Context, room string, groups []group) (ret
 			return
 		}
 		retry = append(retry, g...)
+	}
+	// Health events are never part of a burst: send them first, individually.
+	var health []group
+	groups = slices.DeleteFunc(slices.Clone(groups), func(g group) bool {
+		if g.first().Kind.IsHealth() {
+			health = append(health, g)
+			return true
+		}
+		return false
+	})
+	for _, g := range health {
+		record([]group{g}, m.sendGroup(ctx, room, g))
 	}
 	if len(groups) <= burstThreshold {
 		for _, g := range groups {
@@ -280,7 +301,7 @@ type message struct {
 
 func newMessage(ev model.Event, plain, h string) message {
 	mt := "m.text"
-	if ev.Kind == model.EventResolved {
+	if ev.Kind == model.EventResolved || ev.Kind == model.EventAgentBack || ev.Kind == model.EventFeedOK {
 		mt = "m.notice"
 	}
 	return message{MsgType: mt, Body: plain, Format: "org.matrix.custom.html", FormattedBody: h}

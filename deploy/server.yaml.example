@@ -3,11 +3,28 @@
 # Secrets are never stored here: they come from environment variables
 # (see server.env.example). Any scalar can also be set as PANOPTES_<SECTION>_<KEY>.
 
-# Address to listen on.
+# Agent API listener (/api/v1/*, /healthz). Monitored hosts connect here; nothing else is served.
 listen: ":8080"
 
-# Public URL of this server, used for links in notifications.
-public_url: "http://localhost:8080"
+# Admin web UI listener. Keep it on loopback (default) and reach it through an SSH tunnel, a VPN or
+# a reverse proxy, so monitored hosts cannot reach the login page. Empty or equal to `listen`
+# serves both on one port (legacy; logs a WARNING).
+admin_listen: "127.0.0.1:8081"
+
+# Public URL of the admin web UI, used for links in notifications.
+public_url: "http://localhost:8081"
+
+# Optional native TLS (both keys of a pair required; TLS 1.2 minimum). Alternative: terminate TLS
+# in a reverse proxy.
+# tls_cert: /etc/panoptes/agent.crt        # agent API
+# tls_key: /etc/panoptes/agent.key
+# admin_tls_cert: /etc/panoptes/admin.crt  # admin web UI
+# admin_tls_key: /etc/panoptes/admin.key
+
+# CIDRs / IPs of reverse proxies whose X-Forwarded-For header is trusted for the client address
+# (rate limiting, audit log). Empty: always the TCP peer address. Never list networks that
+# untrusted clients can reach directly.
+trusted_proxies: []
 
 # SQLite database and Grype DB cache. Must match StateDirectory in the systemd unit.
 data_dir: /var/lib/panoptes
@@ -20,6 +37,17 @@ feeds:
   interval: 6h
   # false disables all network updates (air-gapped hosts, tests).
   update: true
+
+# Silence alerts: an agent that stops checking in, a stale/failing vulnerability feed or a failing
+# pipeline is reported to Matrix.
+alerts:
+  # Alert when a host has not checked in for this long. 0 disables agent_silent/agent_back.
+  agent_silent_after: 30m
+  # Alert when the vulnerability DB was not updated for this long (or refreshing keeps failing).
+  # 0 disables feed_stale/feed_ok.
+  feed_stale_after: 48h
+  # Rooms for server-level events (feed, pipeline, mass silence). Empty: matrix.default_rooms.
+  ops_rooms: []
 
 matrix:
   # Homeserver for alerts, e.g. https://matrix.example.com. Empty disables Matrix.

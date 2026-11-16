@@ -50,6 +50,8 @@ type Deps struct {
 	Config   *config.Config
 	Logger   *slog.Logger
 	Now      func() time.Time
+	// ClientIP derives the client address (e.g. from X-Forwarded-For behind a trusted proxy). nil: the TCP peer.
+	ClientIP func(*http.Request) string
 }
 
 // Server serves the UI.
@@ -64,6 +66,7 @@ type Server struct {
 	limIP   *limiter // per client IP, any username
 	limUser *limiter // per username, any IP (locks the name)
 	secure  bool
+	ipOf    func(*http.Request) string
 
 	sessName, loginName string
 	bcryptSem           chan struct{}
@@ -95,6 +98,10 @@ func New(d Deps) (*Server, error) {
 	if s.cfg == nil {
 		c := config.Default()
 		s.cfg = &c
+	}
+	s.ipOf = d.ClientIP
+	if s.ipOf == nil {
+		s.ipOf = remoteIP
 	}
 	s.secure = strings.HasPrefix(strings.ToLower(s.cfg.PublicURL), "https")
 	s.csrfKey = make([]byte, 32)
@@ -146,8 +153,10 @@ func (s *Server) parseTemplates() error {
 		"tbl": func(f []model.Finding, names map[string]string, showHost bool) findingsTbl {
 			return findingsTbl{f, names, showHost}
 		},
-		"rclass":  func(st model.RuleStatus) string { return "st-" + string(st) },
-		"rstatus": func(st model.RuleStatus) string { return string(st) },
+		"rclass":       func(st model.RuleStatus) string { return "st-" + string(st) },
+		"rstatus":      func(st model.RuleStatus) string { return string(st) },
+		"tokenExpired": func(t store.EnrollTokenInfo) bool { return !t.ExpiresAt.IsZero() && s.now().After(t.ExpiresAt) },
+		"tokenFull":    func(t store.EnrollTokenInfo) bool { return t.MaxHosts > 0 && t.Hosts >= t.MaxHosts },
 	}
 	s.pages = map[string]*template.Template{}
 	entries, err := fs.Glob(assets, "templates/*.html")
