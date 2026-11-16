@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # Build context: repository root (see docker-compose.yml).
-FROM golang:1.27 AS build
+FROM golang:1.27.4 AS build
 ENV CGO_ENABLED=0
 WORKDIR /src
 COPY go.mod go.sum ./

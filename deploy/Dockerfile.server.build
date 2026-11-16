@@ -1,7 +1,7 @@
 # Builds panoptes-server from source, for people without goreleaser.
 # Run from the repository root (the build context is the repo):
 #   docker build -f deploy/Dockerfile.server.build -t panoptes-server:dev .
-ARG GO_IMAGE=golang:1.27
+ARG GO_IMAGE=golang:1.27.4
 
 FROM ${GO_IMAGE} AS build
 ARG VERSION=dev
