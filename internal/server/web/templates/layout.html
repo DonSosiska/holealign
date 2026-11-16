@@ -1,0 +1,35 @@
+{{define "layout"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>{{template "title" .}} - Panoptes</title>
+<link rel="stylesheet" href="/static/style.css">
+<script src="/static/app.js" defer></script>
+</head>
+<body>
+{{if .User}}
+<header class="top">
+  <a class="brand" href="/">Panoptes</a>
+  <nav>
+    <a href="/" {{if eq .Nav "dashboard"}}class="active"{{end}}>Dashboard</a>
+    <a href="/hosts" {{if or (eq .Nav "hosts") (eq .Nav "host")}}class="active"{{end}}>Hosts</a>
+    <a href="/findings" {{if or (eq .Nav "findings") (eq .Nav "finding") (eq .Nav "vuln")}}class="active"{{end}}>Findings</a>
+    <a href="/rules" {{if or (eq .Nav "rules") (eq .Nav "rule")}}class="active"{{end}}>Rules{{if .Drafts}} <span class="count">{{.Drafts}}</span>{{end}}</a>
+    <a href="/settings" {{if eq .Nav "settings"}}class="active"{{end}}>Settings</a>
+  </nav>
+  <form method="post" action="/logout" class="logout">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <span class="muted">{{.User}}</span>
+    <button type="submit" class="link">Log out</button>
+  </form>
+</header>
+{{end}}
+<main>
+{{if .Flash}}<div class="flash ok" role="status">{{.Flash}}</div>{{end}}
+{{template "content" .}}
+</main>
+</body>
+</html>
+{{end}}

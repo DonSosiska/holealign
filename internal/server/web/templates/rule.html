@@ -1,0 +1,33 @@
+{{define "title"}}Rule {{.Rule.ID}}{{end}}
+{{define "content"}}
+<p class="crumbs"><a href="/rules">Rules</a> /</p>
+<h1>{{.Rule.ID}} <span class="badge {{rclass .Rule.Status}}">{{rstatus .Rule.Status}}</span></h1>
+<p>{{.Rule.Title}}</p>
+<p class="muted">Source: {{.Rule.Source}}{{if .Rule.Vulns}} &middot; Covers: {{range .Rule.Vulns}}<a href="/vulns/{{.}}">{{.}}</a> {{end}}{{end}}</p>
+{{if .Rule.Explanation}}<div class="panel"><strong>Why it matters.</strong> {{.Rule.Explanation}}</div>{{end}}
+
+{{if .Error}}<div class="flash err" role="alert"><strong>Not saved:</strong> <span class="pre-wrap">{{.Error}}</span></div>{{end}}
+{{if .NoEngine}}<div class="flash err">The rules engine is not running; expressions cannot be validated and rules will not reload.</div>{{end}}
+
+<div class="actions">
+  <form method="post" action="/rules/{{.Rule.ID}}/approve">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <button type="submit" class="primary" {{if eq (rstatus .Rule.Status) "reviewed"}}disabled{{end}}>Approve</button>
+  </form>
+  <form method="post" action="/rules/{{.Rule.ID}}/reject" data-confirm="Reject this rule? It will no longer be applied.">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <button type="submit" class="danger" {{if eq (rstatus .Rule.Status) "rejected"}}disabled{{end}}>Reject</button>
+  </form>
+</div>
+
+<h2>Edit</h2>
+<form method="post" action="/rules/{{.Rule.ID}}/edit" class="stack">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <textarea name="yaml" rows="28" spellcheck="false" class="code-edit">{{.YAML}}</textarea>
+  <div><button type="submit" class="primary">Validate and save</button>
+  <span class="muted">Saving stores the rule as a user rule, reloads the engine and re-evaluates all hosts.</span></div>
+</form>
+
+<h2>Affected findings</h2>
+{{template "findingsTable" (tbl .Findings .HostNames true)}}
+{{end}}

@@ -1,0 +1,219 @@
+package web
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"regexp"
+	"strings"
+
+	"panoptes/internal/server/config"
+	"panoptes/internal/server/store"
+)
+
+const matrixSettingKey = "matrix.routes"
+
+var nameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._@-]{0,63}$`)
+
+// parseMatrixRoutes parses lines of the form "label = !room:server, !room2:server".
+func parseMatrixRoutes(text string) ([]config.MatrixRoute, error) {
+	routes := []config.MatrixRoute{}
+	seen := map[string]bool{}
+	for i, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		label, rest, ok := strings.Cut(line, "=")
+		label = strings.TrimSpace(label)
+		if !ok || label == "" {
+			return nil, fmt.Errorf("line %d: expected \"label = !room:server, ...\"", i+1)
+		}
+		if seen[label] {
+			return nil, fmt.Errorf("line %d: label %q is listed twice", i+1, label)
+		}
+		seen[label] = true
+		var rooms []string
+		for _, rm := range strings.Split(rest, ",") {
+			rm = strings.TrimSpace(rm)
+			if rm == "" {
+				continue
+			}
+			if !strings.HasPrefix(rm, "!") || !strings.Contains(rm, ":") || strings.ContainsAny(rm, " \t\r") {
+				return nil, fmt.Errorf("line %d: %q is not a Matrix room ID (expected !id:server)", i+1, rm)
+			}
+			rooms = append(rooms, rm)
+		}
+		if len(rooms) == 0 {
+			return nil, fmt.Errorf("line %d: no rooms given for label %q", i+1, label)
+		}
+		routes = append(routes, config.MatrixRoute{Label: label, Rooms: rooms})
+	}
+	return routes, nil
+}
+
+func routesText(rs []config.MatrixRoute) string {
+	var b strings.Builder
+	for _, r := range rs {
+		b.WriteString(r.Label + " = " + strings.Join(r.Rooms, ", ") + "\n")
+	}
+	return b.String()
+}
+
+func (s *Server) storedRoutes(r *http.Request) []config.MatrixRoute {
+	raw, err := s.d.Store.GetSetting(r.Context(), matrixSettingKey)
+	if err != nil {
+		if !errors.Is(err, store.ErrNotFound) {
+			s.log.Error("web: get matrix routes", "err", err)
+		}
+		return nil
+	}
+	var rs []config.MatrixRoute
+	if err := json.Unmarshal(raw, &rs); err != nil {
+		s.log.Error("web: decode matrix routes", "err", err)
+		return nil
+	}
+	return rs
+}
+
+// renderSettings renders the settings page; extra overrides/extends the data (errors, one-time token).
+func (s *Server) renderSettings(w http.ResponseWriter, r *http.Request, sess *session, status int, extra map[string]any) {
+	ctx := r.Context()
+	tokens, err := s.d.Store.ListEnrollTokens(ctx)
+	if err != nil {
+		s.storeErr(w, r, sess, err)
+		return
+	}
+	users, err := s.d.Store.ListUsers(ctx)
+	if err != nil {
+		s.storeErr(w, r, sess, err)
+		return
+	}
+	data := map[string]any{
+		"Tokens": tokens, "Users": users, "Me": sess.Username,
+		"RoutesText":   routesText(s.storedRoutes(r)),
+		"CfgRoutes":    s.cfg.Matrix.Routes,
+		"CfgRooms":     s.cfg.Matrix.DefaultRooms,
+		"MatrixConfig": s.cfg.Matrix.Homeserver != "",
+		"LLM":          s.cfg.LLM,
+		"PublicURL":    s.cfg.PublicURL,
+	}
+	for k, v := range extra {
+		data[k] = v
+	}
+	s.render(w, r, sess, status, "settings", data)
+}
+
+func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request, sess *session) {
+	s.renderSettings(w, r, sess, http.StatusOK, nil)
+}
+
+func (s *Server) handleMatrixSave(w http.ResponseWriter, r *http.Request, sess *session) {
+	text := r.PostFormValue("routes")
+	routes, err := parseMatrixRoutes(text)
+	if err != nil {
+		s.renderSettings(w, r, sess, http.StatusUnprocessableEntity, map[string]any{"MatrixError": err.Error(), "RoutesText": text})
+		return
+	}
+	raw, _ := json.Marshal(routes)
+	if err := s.d.Store.SetSetting(r.Context(), matrixSettingKey, raw, s.now()); err != nil {
+		s.fail(w, r, sess, http.StatusInternalServerError, "Could not save routes; see server log.", err)
+		return
+	}
+	s.redirectOK(w, r, "/settings", "saved")
+}
+
+func (s *Server) handleTokenCreate(w http.ResponseWriter, r *http.Request, sess *session) {
+	name := strings.TrimSpace(r.PostFormValue("name"))
+	if !nameRe.MatchString(name) {
+		s.renderSettings(w, r, sess, http.StatusUnprocessableEntity, map[string]any{
+			"TokenError": "Token name must be 1-64 characters: letters, digits, '.', '_', '-', '@'.", "TokenName": name})
+		return
+	}
+	secret, hash, err := store.NewSecret("pt_")
+	if err != nil {
+		s.fail(w, r, sess, http.StatusInternalServerError, "Could not generate a token; see server log.", err)
+		return
+	}
+	if err := s.d.Store.CreateEnrollToken(r.Context(), name, hash); err != nil {
+		if errors.Is(err, store.ErrExists) {
+			s.renderSettings(w, r, sess, http.StatusConflict, map[string]any{"TokenError": "A token with this name already exists.", "TokenName": name})
+			return
+		}
+		s.fail(w, r, sess, http.StatusInternalServerError, "Could not create the token; see server log.", err)
+		return
+	}
+	snippet := fmt.Sprintf("server_url: %s\nenroll_token: %q\nlabels: []\n", s.cfg.PublicURL, secret)
+	s.renderSettings(w, r, sess, http.StatusOK, map[string]any{"NewTokenName": name, "NewToken": secret, "Snippet": snippet})
+}
+
+func (s *Server) handleTokenRevoke(w http.ResponseWriter, r *http.Request, sess *session) {
+	if err := s.d.Store.RevokeEnrollToken(r.Context(), r.PathValue("name")); err != nil {
+		s.storeErr(w, r, sess, err)
+		return
+	}
+	s.redirectOK(w, r, "/settings", "revoked")
+}
+
+func (s *Server) handleUserAdd(w http.ResponseWriter, r *http.Request, sess *session) {
+	name := strings.TrimSpace(r.PostFormValue("username"))
+	pw := r.PostFormValue("password")
+	msg := ""
+	switch {
+	case !nameRe.MatchString(name):
+		msg = "Username must be 1-64 characters: letters, digits, '.', '_', '-', '@'."
+	case len(pw) < 8:
+		msg = "Password must be at least 8 characters."
+	}
+	if msg != "" {
+		s.renderSettings(w, r, sess, http.StatusUnprocessableEntity, map[string]any{"UserError": msg, "UserName": name})
+		return
+	}
+	hash, err := store.HashPassword(pw)
+	if err != nil {
+		s.fail(w, r, sess, http.StatusInternalServerError, "Could not hash the password; see server log.", err)
+		return
+	}
+	if err := s.d.Store.CreateUser(r.Context(), name, hash); err != nil {
+		if errors.Is(err, store.ErrExists) {
+			s.renderSettings(w, r, sess, http.StatusConflict, map[string]any{"UserError": "This user already exists.", "UserName": name})
+			return
+		}
+		s.fail(w, r, sess, http.StatusInternalServerError, "Could not create the user; see server log.", err)
+		return
+	}
+	s.redirectOK(w, r, "/settings", "created")
+}
+
+func (s *Server) handleUserPassword(w http.ResponseWriter, r *http.Request, sess *session) {
+	name := r.PathValue("name")
+	pw := r.PostFormValue("password")
+	if len(pw) < 8 {
+		s.renderSettings(w, r, sess, http.StatusUnprocessableEntity, map[string]any{"UserError": "Password must be at least 8 characters."})
+		return
+	}
+	hash, err := store.HashPassword(pw)
+	if err != nil {
+		s.fail(w, r, sess, http.StatusInternalServerError, "Could not hash the password; see server log.", err)
+		return
+	}
+	if err := s.d.Store.SetUserPassword(r.Context(), name, hash); err != nil {
+		s.storeErr(w, r, sess, err)
+		return
+	}
+	s.redirectOK(w, r, "/settings", "password")
+}
+
+func (s *Server) handleUserDelete(w http.ResponseWriter, r *http.Request, sess *session) {
+	name := r.PathValue("name")
+	if name == sess.Username {
+		s.renderSettings(w, r, sess, http.StatusUnprocessableEntity, map[string]any{"UserError": "You cannot delete your own account."})
+		return
+	}
+	if err := s.d.Store.DeleteUser(r.Context(), name); err != nil {
+		s.storeErr(w, r, sess, err)
+		return
+	}
+	s.redirectOK(w, r, "/settings", "deleted")
+}

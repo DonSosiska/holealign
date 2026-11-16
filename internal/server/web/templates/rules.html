@@ -1,0 +1,23 @@
+{{define "title"}}Rules{{end}}
+{{define "content"}}
+<h1>Rules</h1>
+{{if .NoEngine}}<div class="flash err">The rules engine is not running; showing rules stored in the database only.</div>{{end}}
+<div class="tabs">
+  <a href="/rules" {{if not .Filter}}class="active"{{end}}>All ({{.Total}})</a>
+  <a href="/rules?status=draft" {{if eq .Filter "draft"}}class="active"{{end}}>Draft ({{index .Counts "draft"}})</a>
+  <a href="/rules?status=reviewed" {{if eq .Filter "reviewed"}}class="active"{{end}}>Reviewed ({{index .Counts "reviewed"}})</a>
+  <a href="/rules?status=rejected" {{if eq .Filter "rejected"}}class="active"{{end}}>Rejected ({{index .Counts "rejected"}})</a>
+</div>
+{{if .Rules}}
+<div class="table-wrap"><table>
+<thead><tr><th>ID</th><th>Title</th><th>Status</th><th>Source</th><th>Covers</th></tr></thead>
+<tbody>{{range .Rules}}
+<tr>
+  <td><a href="/rules/{{.ID}}">{{.ID}}</a></td>
+  <td>{{.Title}}</td>
+  <td><span class="badge {{rclass .Status}}">{{rstatus .Status}}</span></td>
+  <td class="muted small">{{.Source}}</td>
+  <td class="small">{{join .Vulns ", "}}</td>
+</tr>{{end}}</tbody></table></div>
+{{else}}<p class="empty">No rules.</p>{{end}}
+{{end}}

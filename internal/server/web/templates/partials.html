@@ -1,0 +1,25 @@
+{{define "badge"}}<span class="badge {{vclass .}}">{{vlabel .}}</span>{{end}}
+
+{{define "findingsTable"}}
+{{if .Findings}}
+<div class="table-wrap">
+<table>
+<thead><tr><th>Verdict</th><th>Vulnerability</th><th>Package</th>{{if .ShowHost}}<th>Host</th>{{end}}<th>Sev</th><th>CVSS</th><th>Fix</th><th>Last seen</th></tr></thead>
+<tbody>
+{{range .Findings}}
+<tr>
+  <td>{{template "badge" .Verdict}}{{if .KEV}} <span class="badge kev" title="Known exploited (CISA KEV)">KEV</span>{{end}}</td>
+  <td><a href="/findings/{{.ID}}">{{.VulnID}}</a></td>
+  <td><span class="mono">{{.PackageName}}</span> <span class="muted">{{.PackageVer}}</span>{{if ne .Target "host"}}<br><span class="muted small">{{.Target}}</span>{{end}}</td>
+  {{if $.ShowHost}}<td><a href="/hosts/{{.HostID}}">{{with index $.HostNames .HostID}}{{.}}{{else}}{{.HostID}}{{end}}</a></td>{{end}}
+  <td>{{.Severity}}</td>
+  <td class="num">{{score .CVSS}}</td>
+  <td>{{if .FixedVersions}}<span class="mono small">{{join .FixedVersions ", "}}</span>{{else}}<span class="muted small">{{.FixState}}</span>{{end}}</td>
+  <td class="muted small">{{age .LastSeen}}</td>
+</tr>
+{{end}}
+</tbody>
+</table>
+</div>
+{{else}}<p class="empty">No findings.</p>{{end}}
+{{end}}
