@@ -155,6 +155,15 @@ func (e *env) post(path string, form url.Values, c *http.Cookie) *httptest.Respo
 		form = url.Values{}
 	}
 	form.Set("csrf", e.csrf(c))
+	if form.Get("current_password") == "" {
+		form.Set("current_password", "pw-long-enough")
+	}
+	return e.do("POST", path, form, c)
+}
+
+// postNoAuth posts without adding the acting user's current password.
+func (e *env) postNoAuth(path string, form url.Values, c *http.Cookie) *httptest.ResponseRecorder {
+	form.Set("csrf", e.csrf(c))
 	return e.do("POST", path, form, c)
 }
 

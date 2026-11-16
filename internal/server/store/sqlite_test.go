@@ -407,3 +407,27 @@ func TestRulesUsersSessionsSettingsKV(t *testing.T) {
 		t.Fatal(v)
 	}
 }
+
+func TestExtendSession(t *testing.T) {
+	s := open(t)
+	ctx := context.Background()
+	now := time.Now()
+	if err := s.CreateUser(ctx, "u", "h"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateSession(ctx, Session{TokenHash: "x", Username: "u", CreatedAt: now, ExpiresAt: now.Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ExtendSession(ctx, "x", now.Add(3*time.Hour), now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.GetSession(ctx, "x", now.Add(2*time.Hour)); err != nil {
+		t.Fatalf("extended session should be valid: %v", err)
+	}
+	if err := s.ExtendSession(ctx, "x", now.Add(9*time.Hour), now.Add(4*time.Hour)); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expired session must not be extended: %v", err)
+	}
+	if err := s.ExtendSession(ctx, "nope", now.Add(time.Hour), now); !errors.Is(err, ErrNotFound) {
+		t.Fatal(err)
+	}
+}

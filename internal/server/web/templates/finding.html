@@ -58,7 +58,7 @@
   {{if .Facts}}<p><strong>Facts read:</strong> {{range .Facts}}<code>{{.}}</code> {{end}}</p>{{end}}
   {{if .Fix.Upgrade}}<p><strong>Upgrade:</strong> {{.Fix.Upgrade}}</p>{{end}}
   {{if .Fix.Mitigation}}<p><strong>Mitigation:</strong> {{.Fix.Mitigation}}</p>{{end}}
-  {{if .References}}<p><strong>References:</strong> {{range .References}}<a href="{{.}}" rel="noopener noreferrer" target="_blank">{{.}}</a> {{end}}</p>{{end}}
+  {{if .References}}<p><strong>References:</strong> {{range .References}}{{if safeRef .}}<a href="{{.}}" rel="noopener noreferrer" target="_blank">{{.}}</a>{{else}}<span class="mono">{{.}}</span>{{end}} {{end}}</p>{{end}}
   <p><a href="/rules/{{.ID}}">Open rule</a></p>
 </div>
 {{end}}

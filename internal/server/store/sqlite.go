@@ -784,6 +784,19 @@ func (s *SQLite) DeleteSession(ctx context.Context, tokenHash string) error {
 	return err
 }
 
+// ExtendSession sets a still-valid session's expiry; ErrNotFound if it is gone or already expired.
+func (s *SQLite) ExtendSession(ctx context.Context, tokenHash string, expiresAt, now time.Time) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE sessions SET expires_at=? WHERE token_hash=? AND expires_at>?`,
+		ts(expiresAt), tokenHash, ts(now))
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (s *SQLite) DeleteExpiredSessions(ctx context.Context, now time.Time) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE expires_at<=?`, ts(now))
 	return err
