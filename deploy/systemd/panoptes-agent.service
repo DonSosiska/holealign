@@ -1,0 +1,36 @@
+[Unit]
+Description=Panoptes agent (host facts and package inventory)
+Wants=network-online.target
+After=network-online.target docker.service
+
+[Service]
+Type=simple
+# Runs as root: needs sshd -T, nginx -T, all package databases and docker.sock.
+ExecStart=/usr/bin/panoptes-agent -config /etc/panoptes/agent.yaml
+Restart=always
+RestartSec=10
+
+# State (agent_id, agent_key) lives in /var/lib/panoptes-agent; state_dir in agent.yaml must match.
+StateDirectory=panoptes-agent
+StateDirectoryMode=0700
+ReadWritePaths=/var/lib/panoptes-agent
+
+# Hardening that keeps read access to the whole system. The agent needs to read
+# everything, so ProtectHome and ProtectProc are deliberately not set.
+ProtectSystem=strict
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+# Resource limits: scans must not disturb the host.
+Nice=10
+IOSchedulingClass=idle
+CPUQuota=50%
+MemoryMax=1G
+
+[Install]
+WantedBy=multi-user.target

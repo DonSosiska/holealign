@@ -1,0 +1,36 @@
+# Single-host Panoptes server.
+#
+#   cp deploy/server.env.example deploy/.env   # then set PANOPTES_ADMIN_PASSWORD etc.
+#   cd deploy && docker compose up -d --build
+#   docker compose exec panoptes-server panoptes-server token create first
+#
+# The server has no healthcheck: the distroless image has no shell or curl.
+# Check it with: docker compose logs -f panoptes-server
+services:
+  panoptes-server:
+    # Build from source. To use a prebuilt image instead, comment out "build"
+    # and set image: ghcr.io/OWNER/panoptes-server:latest (replace OWNER).
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.server.build
+    image: panoptes-server:local
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      # SQLite database and Grype DB cache.
+      - panoptes-data:/var/lib/panoptes
+    environment:
+      # Secrets come from deploy/.env. Empty values are ignored by the server.
+      PANOPTES_ADMIN_PASSWORD: ${PANOPTES_ADMIN_PASSWORD:-}   # min 8 chars, first start only
+      PANOPTES_MATRIX_TOKEN: ${PANOPTES_MATRIX_TOKEN:-}       # Matrix bot access token
+      PANOPTES_LLM_API_KEY: ${PANOPTES_LLM_API_KEY:-}         # LLM provider key, if any
+      # Non-secret overrides (optional).
+      PANOPTES_PUBLIC_URL: ${PANOPTES_PUBLIC_URL:-http://localhost:8080}
+      PANOPTES_MATRIX_HOMESERVER: ${PANOPTES_MATRIX_HOMESERVER:-}
+      PANOPTES_LLM_PROVIDER: ${PANOPTES_LLM_PROVIDER:-none}   # none | anthropic | openai-compatible
+      PANOPTES_LLM_MODEL: ${PANOPTES_LLM_MODEL:-}
+      PANOPTES_LLM_BASE_URL: ${PANOPTES_LLM_BASE_URL:-}       # openai-compatible only
+
+volumes:
+  panoptes-data:

@@ -1,0 +1,27 @@
+# Builds panoptes-server from source, for people without goreleaser.
+# Run from the repository root (the build context is the repo):
+#   docker build -f deploy/Dockerfile.server.build -t panoptes-server:dev .
+ARG GO_IMAGE=golang:1.27
+
+FROM ${GO_IMAGE} AS build
+ARG VERSION=dev
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" \
+        -o /out/panoptes-server ./cmd/panoptes-server \
+ && mkdir -p /out/var/lib/panoptes
+
+FROM gcr.io/distroless/static-debian12:nonroot
+
+COPY --from=build /out/panoptes-server /usr/bin/panoptes-server
+COPY rules/ /usr/share/panoptes/rules/
+COPY --from=build --chown=65532:65532 /out/var/lib/panoptes /var/lib/panoptes
+
+VOLUME /var/lib/panoptes
+EXPOSE 8080
+
+# -version works as: docker run --rm <image> -version
+ENTRYPOINT ["/usr/bin/panoptes-server"]
+CMD ["serve"]
