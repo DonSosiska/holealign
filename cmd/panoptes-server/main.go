@@ -158,6 +158,15 @@ func (s settingsRoutes) MatrixRoutes(ctx context.Context) ([]notify.Route, error
 	return routes, nil
 }
 
+// unknownGrace gives the LLM drafter time to produce a rule before a
+// "conditions unknown" alert is sent; without an LLM there is nothing to wait for.
+func unknownGrace(cfg *config.Config) time.Duration {
+	if cfg.LLM.Provider == "" || cfg.LLM.Provider == "none" {
+		return 0
+	}
+	return 2 * time.Hour
+}
+
 // wire is THE place where real implementations replace the no-op defaults.
 func wire(cfg *config.Config, st store.Store, log *slog.Logger, trig *lateTrigger) components {
 	comp := components{
@@ -225,8 +234,9 @@ func serve(cfg *config.Config) error {
 	grypeDB := match.NewGrype(cfg.GrypeDBDir(), log)
 	defer grypeDB.Close()
 	pipe := pipeline.New(st, grypeDB, comp.Evaluator, comp.Notifier, comp.Drafter,
-		pipeline.Options{PublicURL: cfg.PublicURL, Logger: log})
+		pipeline.Options{PublicURL: cfg.PublicURL, Logger: log, UnknownGrace: unknownGrace(cfg)})
 	trig.p = pipe
+	pipe.StartNotifyLoop(ctx, 5*time.Minute)
 
 	mux := api.NewMux(api.Deps{Store: st, Evaluator: comp.Evaluator, Pipeline: pipe, Logger: log})
 	for _, m := range comp.Mount {
