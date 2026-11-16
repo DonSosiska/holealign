@@ -113,18 +113,20 @@ func (s *Server) parseTemplates() error {
 			}
 			return t.UTC().Format("2006-01-02 15:04 UTC")
 		},
-		"vlabel":  verdictLabel,
-		"vclass":  verdictClass,
-		"join":    strings.Join,
-		"json":    prettyJSON,
-		"nvd":     func(id string) string { return "https://nvd.nist.gov/vuln/detail/" + url.PathEscape(id) },
-		"osv":     func(id string) string { return "https://osv.dev/vulnerability/" + url.PathEscape(id) },
-		"isCVE":   func(id string) bool { return strings.HasPrefix(strings.ToUpper(id), "CVE-") },
-		"fixcmd":  pipeline.FixCmd,
-		"add":     func(a, b int) int { return a + b },
-		"pct":     func(f float64) string { return fmt.Sprintf("%.1f%%", f*100) },
-		"score":   func(f float64) string { return fmt.Sprintf("%.1f", f) },
-		"tbl":     func(f []model.Finding, names map[string]string, showHost bool) findingsTbl { return findingsTbl{f, names, showHost} },
+		"vlabel": verdictLabel,
+		"vclass": verdictClass,
+		"join":   strings.Join,
+		"json":   prettyJSON,
+		"nvd":    func(id string) string { return "https://nvd.nist.gov/vuln/detail/" + url.PathEscape(id) },
+		"osv":    func(id string) string { return "https://osv.dev/vulnerability/" + url.PathEscape(id) },
+		"isCVE":  func(id string) bool { return strings.HasPrefix(strings.ToUpper(id), "CVE-") },
+		"fixcmd": pipeline.FixCmd,
+		"add":    func(a, b int) int { return a + b },
+		"pct":    func(f float64) string { return fmt.Sprintf("%.1f%%", f*100) },
+		"score":  func(f float64) string { return fmt.Sprintf("%.1f", f) },
+		"tbl": func(f []model.Finding, names map[string]string, showHost bool) findingsTbl {
+			return findingsTbl{f, names, showHost}
+		},
 		"rclass":  func(st model.RuleStatus) string { return "st-" + string(st) },
 		"rstatus": func(st model.RuleStatus) string { return string(st) },
 	}
