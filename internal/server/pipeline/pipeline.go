@@ -25,10 +25,14 @@ type Matcher interface {
 
 // Options tune the pipeline.
 type Options struct {
-	PublicURL   string // base for Event.WebURL
-	Logger      *slog.Logger
-	Now         func() time.Time
-	Concurrency int // hosts processed in parallel (default 2; matching is CPU/memory heavy)
+	PublicURL string // base for Event.WebURL
+	Logger    *slog.Logger
+	Now       func() time.Time
+	// UnknownGrace delays unknown_critical events: they are emitted only once a finding has been
+	// conditions_unknown for this long (giving a rule drafter time to produce a verdict).
+	// 0 = immediate. Delayed events are emitted by RunNotifyPass / StartNotifyLoop.
+	UnknownGrace time.Duration
+	Concurrency  int // hosts processed in parallel (default 2; matching is CPU/memory heavy)
 }
 
 // Pipeline recomputes findings for hosts. Trigger is non-blocking and coalesces per host.
@@ -220,7 +224,7 @@ func (p *Pipeline) Run(ctx context.Context, hostID string) error {
 	}
 
 	// 5. events
-	events, err := p.buildEvents(ctx, host, prevByKey, res, rules)
+	events, err := p.buildEvents(ctx, now, host, prevByKey, res, rules)
 	if err != nil {
 		return err
 	}
@@ -239,7 +243,7 @@ func (p *Pipeline) Run(ctx context.Context, hostID string) error {
 	return nil
 }
 
-func (p *Pipeline) buildEvents(ctx context.Context, host model.Host, prev map[fkey]model.Finding, res store.ApplyResult, rules map[fkey]*model.Rule) ([]model.Event, error) {
+func (p *Pipeline) buildEvents(ctx context.Context, now time.Time, host model.Host, prev map[fkey]model.Finding, res store.ApplyResult, rules map[fkey]*model.Rule) ([]model.Event, error) {
 	var events []model.Event
 	add := func(kind model.EventKind, f model.Finding) error {
 		sent, err := p.st.NotificationSent(ctx, store.DedupKey(f, kind))
@@ -275,7 +279,7 @@ func (p *Pipeline) buildEvents(ctx context.Context, host model.Host, prev map[fk
 			if err := add(model.EventExploitable, f); err != nil {
 				return nil, err
 			}
-		case f.Verdict == model.VerdictConditionsUnknown && isNew && (f.KEV || strings.EqualFold(f.Severity, "Critical")):
+		case f.Verdict == model.VerdictConditionsUnknown && isNew && unknownCritical(f) && p.graceElapsed(f, now):
 			if err := add(model.EventUnknownCritical, f); err != nil {
 				return nil, err
 			}
@@ -363,3 +367,91 @@ func safeName(s string) bool {
 }
 func safeVersion(s string) bool { return allowed(s, "+._:~-", alnum) }
 func safeRef(s string) bool     { return allowed(s, "._:/@-", alnum) }
+
+func unknownCritical(f model.Finding) bool {
+	return f.Verdict == model.VerdictConditionsUnknown && (f.KEV || strings.EqualFold(f.Severity, "Critical"))
+}
+
+func (p *Pipeline) graceElapsed(f model.Finding, now time.Time) bool {
+	return p.opts.UnknownGrace <= 0 || now.Sub(f.FirstSeen) >= p.opts.UnknownGrace
+}
+
+// RunNotifyPass emits the delayed unknown_critical events without re-running the matcher: it
+// reads stored findings that are still conditions_unknown (KEV or Critical), older than
+// UnknownGrace, and not yet notified. Dedup rules are the same as in Run.
+func (p *Pipeline) RunNotifyPass(ctx context.Context) error {
+	now := p.opts.Now()
+	hosts := map[string]model.Host{}
+	var events []model.Event
+	for off := 0; ; off += 1000 {
+		fs, _, err := p.st.ListFindings(ctx, store.FindingFilter{Verdict: model.VerdictConditionsUnknown, Limit: 1000, Offset: off})
+		if err != nil {
+			return fmt.Errorf("list findings: %w", err)
+		}
+		for _, f := range fs {
+			if !unknownCritical(f) || !p.graceElapsed(f, now) {
+				continue
+			}
+			if sent, err := p.st.NotificationSent(ctx, store.DedupKey(f, model.EventUnknownCritical)); err != nil {
+				return err
+			} else if sent {
+				continue
+			}
+			// a finding that was already alerted on (e.g. exploitable, then facts lost) is not "new"
+			if notified, err := p.st.FindingNotified(ctx, store.FindingKey(f)); err != nil {
+				return err
+			} else if notified {
+				continue
+			}
+			h, ok := hosts[f.HostID]
+			if !ok {
+				if h, err = p.st.GetHost(ctx, f.HostID); err != nil {
+					continue
+				}
+				hosts[f.HostID] = h
+			}
+			events = append(events, model.Event{Kind: model.EventUnknownCritical, Finding: f, Host: h,
+				FixCmd: FixCmd(f), WebURL: WebURL(p.opts.PublicURL, f.ID)})
+		}
+		if len(fs) < 1000 {
+			break
+		}
+	}
+	if len(events) == 0 {
+		return nil
+	}
+	if err := p.notifier.Notify(ctx, events); err != nil {
+		return fmt.Errorf("notify: %w", err)
+	}
+	for _, e := range events {
+		if err := p.st.RecordNotification(ctx, store.FindingKey(e.Finding), store.DedupKey(e.Finding, e.Kind), e.Kind, now); err != nil {
+			return fmt.Errorf("record notification: %w", err)
+		}
+	}
+	return nil
+}
+
+// StartNotifyLoop runs RunNotifyPass every interval in a goroutine until ctx is done.
+func (p *Pipeline) StartNotifyLoop(ctx context.Context, every time.Duration) {
+	if every <= 0 {
+		every = time.Minute
+	}
+	p.wg.Add(1)
+	go func() {
+		defer p.wg.Done()
+		t := time.NewTicker(every)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-p.baseCtx.Done():
+				return
+			case <-t.C:
+				if err := p.RunNotifyPass(ctx); err != nil && ctx.Err() == nil {
+					p.log.Error("notify pass failed", "err", err)
+				}
+			}
+		}
+	}()
+}
