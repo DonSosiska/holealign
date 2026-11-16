@@ -3,7 +3,6 @@ package notify
 
 import (
 	"bytes"
-	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -118,9 +117,11 @@ func (m *Matrix) Notify(ctx context.Context, events []model.Event) error {
 		errs = append(errs, fmt.Errorf("matrix: load routes: %w", err))
 	}
 
-	byRoom := map[string][]model.Event{}
+	// Group before routing and burst counting: one message per (kind, host, vuln, target).
+	byRoom := map[string][]group{}
 	var order []string
-	for _, ev := range events {
+	for _, g := range groupEvents(events) {
+		ev := g.first()
 		rooms := m.roomsFor(ev, routes)
 		if len(rooms) == 0 {
 			slog.Warn("matrix: no room for event, skipping",
@@ -131,7 +132,7 @@ func (m *Matrix) Notify(ctx context.Context, events []model.Event) error {
 			if _, ok := byRoom[r]; !ok {
 				order = append(order, r)
 			}
-			byRoom[r] = append(byRoom[r], ev)
+			byRoom[r] = append(byRoom[r], g)
 		}
 	}
 
@@ -181,64 +182,36 @@ func (m *Matrix) roomsFor(ev model.Event, routes map[string][]string) []string {
 	return out
 }
 
-func (m *Matrix) sendRoom(ctx context.Context, room string, evs []model.Event) error {
-	if len(evs) <= burstThreshold {
-		for _, ev := range evs {
-			if err := m.sendEvent(ctx, room, ev); err != nil {
+func (m *Matrix) sendRoom(ctx context.Context, room string, groups []group) error {
+	if len(groups) <= burstThreshold {
+		for _, g := range groups {
+			if err := m.sendGroup(ctx, room, g); err != nil {
 				return err
 			}
 		}
 		return nil
 	}
 
-	// Burst: send the most important ones individually, then one summary of the rest.
-	sorted := slices.Clone(evs)
-	slices.SortStableFunc(sorted, compareImportance)
-	for _, ev := range sorted[:burstKeep] {
-		if err := m.sendEvent(ctx, room, ev); err != nil {
+	// Burst: send the most important groups individually, then one summary of the rest.
+	sorted := slices.Clone(groups)
+	slices.SortStableFunc(sorted, compareGroups)
+	for _, g := range sorted[:burstKeep] {
+		if err := m.sendGroup(ctx, room, g); err != nil {
 			return err
 		}
 	}
 	link := ""
-	for _, ev := range sorted {
-		if link = findingsURL(ev.WebURL); link != "" {
+	for _, g := range sorted {
+		if link = findingsURL(g.first().WebURL); link != "" {
 			break
 		}
 	}
 	return m.send(ctx, room, renderSummary(sorted[burstKeep:], link))
 }
 
-func (m *Matrix) sendEvent(ctx context.Context, room string, ev model.Event) error {
-	plain, h := renderEvent(ev)
-	return m.send(ctx, room, newMessage(ev, plain, h))
-}
-
-// compareImportance orders events most important first: exploitable, unknown_critical,
-// resolved; within a kind KEV first, then higher CVSS.
-func compareImportance(a, b model.Event) int {
-	if c := cmp.Compare(kindRank(a.Kind), kindRank(b.Kind)); c != 0 {
-		return c
-	}
-	if a.Finding.KEV != b.Finding.KEV {
-		if a.Finding.KEV {
-			return -1
-		}
-		return 1
-	}
-	return cmp.Compare(b.Finding.CVSS, a.Finding.CVSS)
-}
-
-func kindRank(k model.EventKind) int {
-	switch k {
-	case model.EventExploitable:
-		return 0
-	case model.EventUnknownCritical:
-		return 1
-	case model.EventResolved:
-		return 2
-	default:
-		return 3
-	}
+func (m *Matrix) sendGroup(ctx context.Context, room string, g group) error {
+	plain, h := renderGroup(g.evs)
+	return m.send(ctx, room, newMessage(g.first(), plain, h))
 }
 
 // message is the content of an m.room.message event.

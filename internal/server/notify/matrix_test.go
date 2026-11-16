@@ -122,7 +122,7 @@ func testEvent(kind model.EventKind, vuln, host string, labels ...string) model.
 			CVSS:        7.5,
 			Verdict:     model.VerdictExploitable,
 		},
-		Host: model.Host{Hostname: host, Labels: labels},
+		Host: model.Host{ID: "id-" + host, Hostname: host, Labels: labels},
 	}
 }
 
