@@ -55,8 +55,14 @@ func parseNginxDirectives(data []byte) map[string][]string {
 		tokens = tokens[:0]
 	}
 
+	// inTypes/typesDepth track a `types { ... }` block (MIME map inlined by
+	// `nginx -T`); everything inside it is skipped.
+	inTypes := false
+	typesDepth := 0
+
 	for _, line := range strings.Split(string(data), "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), "nginx:") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "nginx:") || strings.HasPrefix(trimmed, "# configuration file ") {
 			continue
 		}
 		for i := 0; i < len(line); i++ {
@@ -74,8 +80,39 @@ func parseNginxDirectives(data []byte) map[string][]string {
 				i = len(line) // comment to end of line
 			case ' ', '\t', '\r':
 				flushWord()
-			case ';', '{', '}':
-				endStatement()
+			case ';':
+				if inTypes {
+					flushWord()
+					tokens = tokens[:0]
+				} else {
+					endStatement()
+				}
+			case '{':
+				if inTypes {
+					typesDepth++
+					flushWord()
+					tokens = tokens[:0]
+				} else {
+					flushWord()
+					if len(tokens) == 1 && tokens[0] == "types" {
+						inTypes = true
+						typesDepth = 1
+						tokens = tokens[:0]
+					} else {
+						endStatement()
+					}
+				}
+			case '}':
+				if inTypes {
+					flushWord()
+					tokens = tokens[:0]
+					typesDepth--
+					if typesDepth == 0 {
+						inTypes = false
+					}
+				} else {
+					endStatement()
+				}
 			case '"', '\'':
 				quote = c
 				inWord = true
