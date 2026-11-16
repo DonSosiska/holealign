@@ -219,7 +219,7 @@ func wire(cfg *config.Config, st store.Store, log *slog.Logger, trig *lateTrigge
 	case prov != nil:
 		d := llm.NewDrafter(llm.Deps{
 			Store: st, Provider: prov, Validator: rulesService{engine},
-			FactCatalog: factCatalog(), DailyLimit: cfg.LLM.DailyLimit, Logger: log,
+			FactCatalog: factCatalog(), DailyLimit: cfg.LLM.DailyLimit, Logger: log, Rules: engine.Rules,
 			OnRuleAdded: func(ctx context.Context, r model.Rule) {
 				if err := engine.Reload(ctx); err != nil {
 					log.Warn("reload rules after LLM draft", "err", err)

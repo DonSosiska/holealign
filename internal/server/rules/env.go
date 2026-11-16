@@ -1,6 +1,7 @@
 package rules
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"strings"
@@ -60,30 +61,73 @@ func celEnv() (*cel.Env, error) {
 	return envInst, envErr
 }
 
-// rewriteOptionalIndex translates the optional-index spelling used in
-// docs/contracts.md and the shipped rules, m.?["k"], into the syntax cel-go
-// actually accepts, m[?"k"].
-func rewriteOptionalIndex(src string) string {
-	return strings.ReplaceAll(src, ".?[", "[?")
+// hasDotOptIndex reports whether src contains the legacy spelling ".?[" outside
+// string literals and comments.
+func hasDotOptIndex(src string) bool {
+	for i := 0; i < len(src); i++ {
+		c := src[i]
+		switch {
+		case c == '/' && i+1 < len(src) && src[i+1] == '/':
+			for i < len(src) && src[i] != '\n' {
+				i++
+			}
+		case c == '"' || c == '\'':
+			raw := i > 0 && (src[i-1] == 'r' || src[i-1] == 'R')
+			q := string(c)
+			triple := i+2 < len(src) && src[i+1] == c && src[i+2] == c
+			if triple {
+				q = strings.Repeat(q, 3)
+				i += 3
+			} else {
+				i++
+			}
+			for i < len(src) {
+				if !raw && src[i] == '\\' {
+					i += 2
+					continue
+				}
+				if strings.HasPrefix(src[i:], q) {
+					i += len(q) - 1
+					break
+				}
+				if !triple && src[i] == '\n' {
+					break
+				}
+				i++
+			}
+		case strings.HasPrefix(src[i:], ".?["):
+			return true
+		}
+	}
+	return false
 }
 
-// compileBool compiles an expression and checks that it yields bool.
-func compileBool(src string) (cel.Program, error) {
+// compileBool compiles an expression, checks that it yields bool and returns
+// the program together with the facts it references (from the checked AST).
+func compileBool(src string) (cel.Program, []factRef, error) {
 	env, err := celEnv()
 	if err != nil {
-		return nil, fmt.Errorf("cel environment: %w", err)
+		return nil, nil, fmt.Errorf("cel environment: %w", err)
 	}
-	ast, iss := env.Compile(rewriteOptionalIndex(src))
+	if hasDotOptIndex(src) {
+		return nil, nil, errors.New(`the ".?[" optional-index syntax is not supported; use m[?"key"]`)
+	}
+	ast, iss := env.Compile(src)
 	if iss != nil && iss.Err() != nil {
-		return nil, iss.Err()
+		return nil, nil, iss.Err()
 	}
 	if t := ast.OutputType(); !t.IsExactType(cel.BoolType) {
-		return nil, fmt.Errorf("expression must return bool, got %s", t)
+		return nil, nil, fmt.Errorf("expression must return bool, got %s", t)
 	}
-	return env.Program(ast,
+	refs, err := astFactRefs(ast.NativeRep().Expr())
+	if err != nil {
+		return nil, nil, err
+	}
+	p, err := env.Program(ast,
 		cel.CostLimit(costLimit),
 		cel.InterruptCheckFrequency(interruptFrequency),
 	)
+	return p, refs, err
 }
 
 // normalize converts JSON-decoded values into forms that behave naturally in CEL:

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"panoptes/internal/model"
+	"panoptes/internal/server/rules"
 	"panoptes/internal/server/store"
 )
 
@@ -23,6 +24,13 @@ const (
 	failedTTL   = 7 * 24 * time.Hour
 	kvFailedPfx = "llm.failed."
 	kvCallsPfx  = "llm.calls."
+	kvCoolPfx   = "llm.cooldown."
+
+	cooldownTTL          = 6 * time.Hour
+	completeTimeout      = 120 * time.Second
+	maxEnqueuePerHostDay = 100
+	maxRetryErrBytes     = 2048
+	maxFixChars          = 300
 )
 
 // Validator checks a drafted rule (implemented by internal/server/rules).
@@ -39,8 +47,10 @@ type Deps struct {
 	Advisory    AdvisorySource // default: OSV
 	// Siblings returns the findings of a vulnerability that share a source package (optional).
 	Siblings func(ctx context.Context, vulnID, source string) []model.Finding
-	Logger   *slog.Logger
-	Now      func() time.Time
+	// Rules returns the engine's rules (file rules included) for coverage checks (optional).
+	Rules  func() []model.Rule
+	Logger *slog.Logger
+	Now    func() time.Time
 }
 
 // Drafter implements core.RuleDrafter.
@@ -51,6 +61,8 @@ type Drafter struct {
 	mu       sync.Mutex
 	inflight map[string]bool
 	limitLog string // day for which the limit message was logged
+	hostDay  string
+	hostCnt  map[string]int
 }
 
 // NewDrafter fills defaults.
@@ -67,7 +79,7 @@ func NewDrafter(d Deps) *Drafter {
 	if d.Now == nil {
 		d.Now = time.Now
 	}
-	return &Drafter{d: d, queue: make(chan model.Finding, queueSize), inflight: map[string]bool{}}
+	return &Drafter{d: d, queue: make(chan model.Finding, queueSize), inflight: map[string]bool{}, hostCnt: map[string]int{}}
 }
 
 func keyOf(f model.Finding) string { return f.VulnID + "|" + SourceOf(f) }
@@ -105,6 +117,9 @@ func (d *Drafter) covered(ctx context.Context, f model.Finding) (bool, error) {
 	rules, err := d.d.Store.ListRules(ctx)
 	if err != nil {
 		return false, err
+	}
+	if d.d.Rules != nil {
+		rules = append(rules, d.d.Rules()...)
 	}
 	ids := append([]string{f.VulnID}, f.Aliases...)
 	for _, r := range rules {
@@ -165,9 +180,21 @@ func (d *Drafter) Enqueue(_ context.Context, f model.Finding) {
 	if d.inflight[k] {
 		return
 	}
+	day := d.d.Now().UTC().Format("2006-01-02")
+	if d.hostDay != day {
+		d.hostDay, d.hostCnt = day, map[string]int{}
+	}
+	// Findings always carry a host; the empty ID only occurs in tests.
+	if f.HostID != "" && d.hostCnt[f.HostID] >= maxEnqueuePerHostDay {
+		d.d.Logger.Debug("llm: per-host daily enqueue cap reached", "host", f.HostID)
+		return
+	}
 	select {
 	case d.queue <- f:
 		d.inflight[k] = true
+		if f.HostID != "" {
+			d.hostCnt[f.HostID]++
+		}
 	default:
 		d.d.Logger.Debug("llm: queue full, dropping", "key", k)
 	}
@@ -210,6 +237,15 @@ func (d *Drafter) handle(ctx context.Context, f model.Finding) {
 		}
 	}
 
+	if v, err := d.d.Store.KVGet(ctx, kvCoolPfx+key); err == nil {
+		if t, perr := time.Parse(time.RFC3339, v); perr == nil && now.Sub(t) < cooldownTTL {
+			return
+		}
+	}
+	if !d.underLimit(ctx, now, log) { // before any network I/O
+		return
+	}
+
 	distro := ""
 	if h, err := d.d.Store.GetHost(ctx, f.HostID); err == nil {
 		distro = h.OS.PrettyName
@@ -229,7 +265,8 @@ func (d *Drafter) handle(ctx context.Context, f model.Finding) {
 	}
 	siblings := siblingPackages(all)
 	system := buildSystemPrompt(d.d.FactCatalog)
-	user := buildUserPrompt(f, source, siblings, distro, advisory)
+	user := buildUserPrompt(f, source, siblings, distro, advisory) +
+		"\n\nIf you declare fact_requests, every name must start with \"" + rules.FactRequestPrefix(id) + "\" followed by a short id."
 
 	var lastReply string
 	var lastErr error
@@ -241,14 +278,19 @@ func (d *Drafter) handle(ctx context.Context, f model.Finding) {
 		if !d.takeCall(ctx, now, log) {
 			return
 		}
-		reply, err := d.d.Provider.Complete(ctx, system, prompt)
+		cctx, cancel := context.WithTimeout(ctx, completeTimeout)
+		reply, err := d.d.Provider.Complete(cctx, system, prompt)
+		cancel()
 		if err != nil {
 			if errors.Is(err, ErrRefused) {
 				log.Warn("llm: model refused")
 				d.markFailed(ctx, key, now)
 			} else {
-				// API/network error: not recorded, so the next pipeline run retries.
+				// API/network error: cool this key down so a failing provider is not hammered.
 				log.Warn("llm: completion failed", "err", err)
+				if kerr := d.d.Store.KVSet(ctx, kvCoolPfx+key, now.UTC().Format(time.RFC3339), now); kerr != nil {
+					log.Warn("llm: recording cooldown", "err", kerr)
+				}
 			}
 			return
 		}
@@ -278,6 +320,25 @@ func (d *Drafter) markFailed(ctx context.Context, key string, now time.Time) {
 	if err := d.d.Store.KVSet(ctx, kvFailedPfx+key, now.UTC().Format(time.RFC3339), now); err != nil {
 		d.d.Logger.Warn("llm: recording failure", "err", err)
 	}
+}
+
+func (d *Drafter) underLimit(ctx context.Context, now time.Time, log *slog.Logger) bool {
+	day := now.UTC().Format("2006-01-02")
+	n := 0
+	if v, err := d.d.Store.KVGet(ctx, kvCallsPfx+day); err == nil {
+		n, _ = strconv.Atoi(v)
+	}
+	if n >= d.d.DailyLimit {
+		d.mu.Lock()
+		first := d.limitLog != day
+		d.limitLog = day
+		d.mu.Unlock()
+		if first {
+			log.Warn("llm: daily limit reached, dropping drafts", "limit", d.d.DailyLimit)
+		}
+		return false
+	}
+	return true
 }
 
 // takeCall enforces and increments the UTC daily counter.
@@ -320,15 +381,37 @@ func (d *Drafter) parse(reply string, f model.Finding, siblings []model.PackageS
 		name = name[i+1:]
 	}
 	r.Source = "llm:" + name
-	if !contains(r.Vulns, f.VulnID) {
-		r.Vulns = append(r.Vulns, f.VulnID)
-	}
-	for _, sel := range append([]model.PackageSelector{{Name: f.PackageName, Type: f.PackageType}}, siblings...) {
-		if !selectorMatches(r.Packages, sel.Name, sel.Type) {
-			r.Packages = append(r.Packages, sel)
+	// Vulns and Packages are forced from the finding: nothing the model wrote there is trusted.
+	r.Vulns = nil
+	for _, v := range append([]string{f.VulnID}, f.Aliases...) {
+		if v != "" && !contains(r.Vulns, v) {
+			r.Vulns = append(r.Vulns, v)
 		}
 	}
-	r.Packages = normalizeSelectors(r.Packages)
+	allowed := map[model.PackageSelector]bool{}
+	var forced []model.PackageSelector
+	for _, sel := range append([]model.PackageSelector{{Name: f.PackageName, Type: f.PackageType}}, siblings...) {
+		if sel.Name == "" {
+			continue
+		}
+		e := model.PackageSelector{Name: escapeGlob(sel.Name), Type: sel.Type}
+		if !allowed[e] {
+			allowed[e] = true
+			forced = append(forced, e)
+		}
+	}
+	var kept []model.PackageSelector
+	for _, sel := range r.Packages { // drop anything not in the allowed set
+		if allowed[sel] {
+			kept = append(kept, sel)
+		}
+	}
+	r.Packages = normalizeSelectors(append(kept, forced...))
+	if len(r.Packages) == 0 {
+		return r, errors.New("no package selectors for the finding")
+	}
+	r.Fix.Upgrade = cleanText(r.Fix.Upgrade, maxFixChars)
+	r.Fix.Mitigation = cleanText(r.Fix.Mitigation, maxFixChars)
 	for i := range r.FactRequests {
 		if r.FactRequests[i].Collector == "" {
 			r.FactRequests[i].Collector = "file.match"
@@ -400,4 +483,16 @@ func extractJSON(s string) (string, error) {
 		}
 	}
 	return "", errors.New("unterminated JSON object in reply")
+}
+
+// escapeGlob escapes path.Match metacharacters so that name matches literally.
+func escapeGlob(name string) string {
+	var b strings.Builder
+	for _, r := range name {
+		if strings.ContainsRune(`*?[]\`, r) {
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }

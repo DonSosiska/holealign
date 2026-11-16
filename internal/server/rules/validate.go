@@ -9,6 +9,8 @@ import (
 	"panoptes/internal/model"
 )
 
+var ruleIDRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
+
 // ValidationError aggregates every problem found in one rule.
 type ValidationError struct {
 	RuleID   string
@@ -21,27 +23,6 @@ func (e *ValidationError) Error() string {
 		id = "<no id>"
 	}
 	return fmt.Sprintf("rule %s: %d problem(s): %s", id, len(e.Problems), strings.Join(e.Problems, "; "))
-}
-
-// factRefRe finds literal facts["name"] references, optionally followed by one
-// map key access (facts["m"]["k"] or facts["m"].?["k"]).
-var factRefRe = regexp.MustCompile(`facts\["([^"]+)"\](?:\.\?\["([^"]+)"\]|\[\??"([^"]+)"\])?`)
-
-type factRef struct{ Name, Key string }
-
-func expressionFactRefs(exprs ...string) []factRef {
-	var out []factRef
-	seen := map[factRef]bool{}
-	for _, e := range exprs {
-		for _, m := range factRefRe.FindAllStringSubmatch(e, -1) {
-			r := factRef{Name: m[1], Key: m[2] + m[3]}
-			if !seen[r] {
-				seen[r] = true
-				out = append(out, r)
-			}
-		}
-	}
-	return out
 }
 
 // declaredFacts returns rule.Facts plus the names of its fact_requests, deduped, in order.
@@ -71,6 +52,8 @@ func Validate(r model.Rule) error {
 
 	if strings.TrimSpace(r.ID) == "" {
 		add("id is required")
+	} else if !ruleIDRe.MatchString(r.ID) {
+		add("id %q is invalid (want %s)", r.ID, ruleIDRe)
 	}
 	if strings.TrimSpace(r.Title) == "" {
 		add("title is required")
@@ -113,23 +96,21 @@ func Validate(r model.Rule) error {
 
 	// fact_requests
 	reqs := map[string]bool{}
+	if len(r.FactRequests) > maxFactRequests {
+		add("at most %d fact_requests per rule (got %d)", maxFactRequests, len(r.FactRequests))
+	}
 	for i, fr := range r.FactRequests {
-		switch {
-		case !strings.HasPrefix(fr.Name, FileMatchPrefix) || len(fr.Name) == len(FileMatchPrefix):
-			add("fact_requests[%d]: name %q must be %s<id>", i, fr.Name, FileMatchPrefix)
-		case fr.Collector != "file.match":
+		if fr.Collector != "file.match" {
 			add("fact_requests[%d] (%s): collector must be \"file.match\", got %q", i, fr.Name, fr.Collector)
 		}
 		if fr.Params["path"] == "" {
 			add("fact_requests[%d] (%s): params.path is required", i, fr.Name)
 		}
-		pat := fr.Params["pattern"]
-		if pat == "" {
+		if fr.Params["pattern"] == "" {
 			add("fact_requests[%d] (%s): params.pattern is required", i, fr.Name)
-		} else if len(pat) > 512 {
-			add("fact_requests[%d] (%s): params.pattern longer than 512 chars", i, fr.Name)
-		} else if _, err := regexp.Compile(pat); err != nil {
-			add("fact_requests[%d] (%s): params.pattern is not valid RE2: %v", i, fr.Name, err)
+		}
+		for _, m := range checkRequest(r.ID, factReq{Name: fr.Name, Path: fr.Params["path"], Pattern: fr.Params["pattern"]}) {
+			add("fact_requests[%d] (%s): %s", i, fr.Name, m)
 		}
 		if reqs[fr.Name] {
 			add("fact_requests[%d]: duplicate name %q", i, fr.Name)
@@ -156,17 +137,22 @@ func Validate(r model.Rule) error {
 	}
 
 	// expressions
+	var refLists [][]factRef
 	if strings.TrimSpace(r.ExploitableIf) == "" {
 		add("exploitable_if is required")
-	} else if _, err := compileBool(r.ExploitableIf); err != nil {
+	} else if _, refs, err := compileBool(r.ExploitableIf); err != nil {
 		add("exploitable_if: %v", singleLine(err))
+	} else {
+		refLists = append(refLists, refs)
 	}
 	if strings.TrimSpace(r.NotAffectedIf) != "" {
-		if _, err := compileBool(r.NotAffectedIf); err != nil {
+		if _, refs, err := compileBool(r.NotAffectedIf); err != nil {
 			add("not_affected_if: %v", singleLine(err))
+		} else {
+			refLists = append(refLists, refs)
 		}
 	}
-	for _, ref := range expressionFactRefs(r.ExploitableIf, r.NotAffectedIf) {
+	for _, ref := range mergeRefs(refLists...) {
 		if !declared[ref.Name] {
 			if _, known := FactTypeOf(ref.Name); known {
 				add("expression reads fact %q which is not listed in facts", ref.Name)
