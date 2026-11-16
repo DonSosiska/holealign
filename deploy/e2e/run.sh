@@ -13,12 +13,14 @@ done
 # ---- configuration -----------------------------------------------------------
 export E2E_MATRIX_PORT="${E2E_MATRIX_PORT:-18008}"
 export E2E_SERVER_PORT="${E2E_SERVER_PORT:-18080}"
+export E2E_ADMIN_PORT="${E2E_ADMIN_PORT:-18081}"
 export E2E_REG_TOKEN="e2e-$(openssl rand -hex 8)"
 export PANOPTES_ADMIN_PASSWORD="$(openssl rand -hex 12)"
 WAIT_TIMEOUT="${E2E_WAIT_TIMEOUT:-180}"
 KEEP="${E2E_KEEP:-0}"
 HS="http://127.0.0.1:${E2E_MATRIX_PORT}"
 SRV="http://127.0.0.1:${E2E_SERVER_PORT}"
+ADMIN="http://127.0.0.1:${E2E_ADMIN_PORT}"   # admin web UI listener (the agent API port serves no UI)
 BOT_PASS="$(openssl rand -hex 12)"
 OBS_PASS="$(openssl rand -hex 12)"
 
@@ -241,7 +243,7 @@ fi
 
 # f: web UI smoke
 JAR="$E2E_TMP/cookies"
-code=$(curl -s -o "$E2E_TMP/login.html" -w '%{http_code}' -c "$JAR" "$SRV/login")
+code=$(curl -s -o "$E2E_TMP/login.html" -w '%{http_code}' -c "$JAR" "$ADMIN/login")
 csrf=$(grep -Eo 'name="csrf" value="[^"]+"' "$E2E_TMP/login.html" | sed -E 's/.*value="([^"]+)"/\1/' | head -1 || true)
 if [[ "$code" != 200 ]]; then
   fail "f. web: GET /login returned $code"
@@ -249,8 +251,8 @@ elif [[ -z "$csrf" ]]; then
   fail "f. web: no CSRF token on /login"
 else
   lcode=$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR" -c "$JAR" --data-urlencode "csrf=$csrf" \
-    --data-urlencode "username=admin" --data-urlencode "password=$PANOPTES_ADMIN_PASSWORD" "$SRV/login")
-  fcode=$(curl -s -o "$E2E_TMP/findings.html" -w '%{http_code}' -b "$JAR" "$SRV/findings?q=CVE-2024-6387&resolved=1")
+    --data-urlencode "username=admin" --data-urlencode "password=$PANOPTES_ADMIN_PASSWORD" "$ADMIN/login")
+  fcode=$(curl -s -o "$E2E_TMP/findings.html" -w '%{http_code}' -b "$JAR" "$ADMIN/findings?q=CVE-2024-6387&resolved=1")
   if [[ "$lcode" == 303 && "$fcode" == 200 ]] && grep -q 'web-default' "$E2E_TMP/findings.html"; then
     pass "f. web: /login 200, form login 303, /findings?q=CVE-2024-6387 200 and lists web-default"
   else

@@ -6,8 +6,11 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
+	"time"
 
+	"panoptes/internal/server/api"
 	"panoptes/internal/server/config"
 	"panoptes/internal/server/store"
 )
@@ -136,12 +139,20 @@ func (s *Server) handleTokenCreate(w http.ResponseWriter, r *http.Request, sess 
 			"TokenError": "Token name must be 1-64 characters: letters, digits, '.', '_', '-', '@'.", "TokenName": name})
 		return
 	}
+	opts, msg := s.parseTokenOpts(r, name)
+	if msg != "" {
+		s.renderSettings(w, r, sess, http.StatusUnprocessableEntity, map[string]any{
+			"TokenError": msg, "TokenName": name, "TokenMaxHosts": r.PostFormValue("max_hosts"),
+			"TokenExpires": r.PostFormValue("expires"), "TokenLabels": r.PostFormValue("labels")})
+		return
+	}
 	secret, hash, err := store.NewSecret("pt_")
 	if err != nil {
 		s.fail(w, r, sess, http.StatusInternalServerError, "Could not generate a token; see server log.", err)
 		return
 	}
-	if err := s.d.Store.CreateEnrollToken(r.Context(), name, hash); err != nil {
+	opts.Hash = hash
+	if err := s.d.Store.CreateEnrollTokenOpts(r.Context(), opts); err != nil {
 		if errors.Is(err, store.ErrExists) {
 			s.renderSettings(w, r, sess, http.StatusConflict, map[string]any{"TokenError": "A token with this name already exists.", "TokenName": name})
 			return
@@ -149,9 +160,52 @@ func (s *Server) handleTokenCreate(w http.ResponseWriter, r *http.Request, sess 
 		s.fail(w, r, sess, http.StatusInternalServerError, "Could not create the token; see server log.", err)
 		return
 	}
-	s.audit(r, sess.Username, "token_create", name)
+	s.audit(r, sess.Username, "token_create", name, "max_hosts", opts.MaxHosts, "expires", opts.ExpiresAt.UTC().Format(time.RFC3339), "labels", strings.Join(opts.Labels, ","))
 	snippet := fmt.Sprintf("server_url: %s\nenroll_token: %q\nlabels: []\n", s.cfg.PublicURL, secret)
 	s.renderSettings(w, r, sess, http.StatusOK, map[string]any{"NewTokenName": name, "NewToken": secret, "Snippet": snippet})
+}
+
+// parseTokenOpts reads the optional max_hosts, expires (duration, e.g. 72h or 7d) and labels
+// (comma separated) form fields. On invalid input it returns a user-facing message.
+func (s *Server) parseTokenOpts(r *http.Request, name string) (store.EnrollTokenOpts, string) {
+	o := store.EnrollTokenOpts{Name: name}
+	if v := strings.TrimSpace(r.PostFormValue("max_hosts")); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 || n > 100000 {
+			return o, "Max hosts must be a whole number (0 = unlimited)."
+		}
+		o.MaxHosts = n
+	}
+	if v := strings.TrimSpace(r.PostFormValue("expires")); v != "" {
+		d, err := parseLifetime(v)
+		if err != nil || d < 0 {
+			return o, "Expires must be a duration such as 72h or 7d (empty = never)."
+		}
+		if d > 0 {
+			o.ExpiresAt = s.now().Add(d)
+		}
+	}
+	for _, l := range strings.Split(r.PostFormValue("labels"), ",") {
+		if l = strings.TrimSpace(l); l != "" {
+			o.Labels = append(o.Labels, l)
+		}
+	}
+	if err := api.ValidateLabels(o.Labels); err != nil {
+		return o, "Labels: " + err.Error()
+	}
+	return o, ""
+}
+
+// parseLifetime parses a Go duration, additionally accepting a "d" (days) suffix.
+func parseLifetime(v string) (time.Duration, error) {
+	if n, ok := strings.CutSuffix(v, "d"); ok {
+		days, err := strconv.Atoi(n)
+		if err != nil || days < 0 || days > 3650 {
+			return 0, errors.New("invalid days")
+		}
+		return time.Duration(days) * 24 * time.Hour, nil
+	}
+	return time.ParseDuration(v)
 }
 
 func (s *Server) handleTokenRevoke(w http.ResponseWriter, r *http.Request, sess *session) {

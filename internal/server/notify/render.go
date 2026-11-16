@@ -68,6 +68,16 @@ func sanitize(ev model.Event) model.Event {
 	f.PURL, f.VerdictReason, f.Severity = cl(f.PURL), cl(f.VerdictReason), cl(f.Severity)
 	f.FixedVersions = clAll(f.FixedVersions)
 	ev.Host.Hostname = cl(ev.Host.Hostname)
+	if ev.Detail != "" { // multi-line: clean each line, keep the line structure
+		lines := strings.Split(ev.Detail, "\n")
+		for i, l := range lines {
+			lines[i] = cl(l)
+		}
+		if len(lines) > 25 {
+			lines = append(lines[:25], "…")
+		}
+		ev.Detail = strings.Join(lines, "\n")
+	}
 	ev.FixCmd = cl(ev.FixCmd)
 	if ev.Rule != nil {
 		r := *ev.Rule
@@ -166,6 +176,9 @@ func renderGroup(raw []model.Event) (string, string) {
 	}
 	g := group{evs: evs}
 	first := g.first()
+	if first.Kind.IsHealth() {
+		return renderHealth(first)
+	}
 	f := first.Finding
 	host := first.Host.Hostname
 	var l lineSet
@@ -370,4 +383,74 @@ func findingsURL(webURL string) string {
 func isHTTP(raw string) bool {
 	u, err := url.Parse(raw)
 	return err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != ""
+}
+
+// renderHealth renders feed, pipeline and agent silence events. ev must be sanitized.
+func renderHealth(ev model.Event) (string, string) {
+	host := ev.Host.Hostname
+	if host == "" {
+		host = "(unnamed host)"
+	}
+	icon, label, subject := "ℹ️", string(ev.Kind), host
+	detail := ev.Detail
+	switch ev.Kind {
+	case model.EventAgentSilent:
+		icon, label = "🔇", "AGENT SILENT"
+		if ev.Host.ID == "" { // aggregated: the detail names the hosts
+			subject = ""
+		}
+		if detail == "" && !ev.Host.LastCheckin.IsZero() {
+			detail = "no check-in (last: " + ev.Host.LastCheckin.UTC().Format("2006-01-02 15:04 UTC") + ")"
+		}
+	case model.EventAgentBack:
+		icon, label = "🔊", "AGENT BACK"
+		if ev.Host.ID == "" {
+			subject = ""
+		}
+		if detail == "" {
+			detail = "checking in again"
+		}
+	case model.EventFeedStale:
+		icon, label, subject = "🟣", "FEED STALE", ""
+	case model.EventFeedOK:
+		icon, label, subject = "✅", "FEED OK", ""
+		if detail == "" {
+			detail = "vulnerability DB is up to date again"
+		}
+	case model.EventPipelineError:
+		icon, label = "⚠️", "PIPELINE ERROR"
+		if ev.Host.ID == "" {
+			subject = ""
+		}
+	}
+	lines := strings.Split(detail, "\n")
+	head := icon + " " + label + ":"
+	if subject != "" {
+		head += " " + subject
+	}
+	headHTML := icon + " <b>" + esc(label) + ":"
+	if subject != "" {
+		headHTML += " " + esc(subject)
+	}
+	headHTML += "</b>"
+	first := strings.TrimSpace(lines[0])
+	var l lineSet
+	if first != "" {
+		sep := " — "
+		if subject == "" {
+			sep = " "
+		}
+		l.add(head+sep+first, headHTML+esc(sep)+esc(first))
+	} else {
+		l.add(head, headHTML)
+	}
+	for _, line := range lines[1:] {
+		if strings.TrimSpace(line) != "" {
+			l.add(line, esc(line))
+		}
+	}
+	if ev.WebURL != "" && isHTTP(ev.WebURL) {
+		l.add("Details: "+ev.WebURL, `Details: <a href="`+esc(ev.WebURL)+`">`+esc(ev.WebURL)+`</a>`)
+	}
+	return l.render()
 }

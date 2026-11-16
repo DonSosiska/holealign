@@ -208,14 +208,43 @@ const (
 	EventExploitable     EventKind = "exploitable"      // new finding, or verdict changed to exploitable
 	EventUnknownCritical EventKind = "unknown_critical" // conditions_unknown AND (KEV or severity critical)
 	EventResolved        EventKind = "resolved"         // a previously notified finding is gone or no longer exploitable
+
+	// Health events carry no finding (Event.Finding is zero) and a human text in Event.Detail.
+	EventAgentSilent   EventKind = "agent_silent"   // a host stopped checking in (Host empty: aggregated, see Detail)
+	EventAgentBack     EventKind = "agent_back"     // a silent host checked in again
+	EventFeedStale     EventKind = "feed_stale"     // vulnerability DB is too old or cannot be refreshed
+	EventFeedOK        EventKind = "feed_ok"        // the vulnerability DB recovered
+	EventPipelineError EventKind = "pipeline_error" // matching keeps failing for a host
 )
+
+// IsHealth reports whether k is a health event (not about a finding).
+func (k EventKind) IsHealth() bool {
+	switch k {
+	case EventAgentSilent, EventAgentBack, EventFeedStale, EventFeedOK, EventPipelineError:
+		return true
+	}
+	return false
+}
 
 // Event is produced by the pipeline and consumed by notifiers.
 type Event struct {
 	Kind    EventKind `json:"kind"`
 	Finding Finding   `json:"finding"`
 	Host    Host      `json:"host"`
+	Detail  string    `json:"detail,omitempty"` // human text of health events
 	Rule    *Rule     `json:"rule,omitempty"`
 	FixCmd  string    `json:"fix_cmd,omitempty"` // concrete command for this host's package manager
 	WebURL  string    `json:"web_url,omitempty"` // link to the finding in the web UI
+}
+
+// ServerLevel reports whether the event is routed to the operations rooms instead of the rooms of
+// the host's labels: feed and pipeline events, and aggregated host events (no host).
+func (e Event) ServerLevel() bool {
+	switch e.Kind {
+	case EventFeedStale, EventFeedOK, EventPipelineError:
+		return true
+	case EventAgentSilent, EventAgentBack:
+		return e.Host.ID == ""
+	}
+	return false
 }

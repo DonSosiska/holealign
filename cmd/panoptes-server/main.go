@@ -16,21 +16,25 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"runtime/debug"
 	"sort"
 	"strings"
+	"sync"
 	"syscall"
 	"text/tabwriter"
 	"time"
 
 	"panoptes/internal/model"
 	"panoptes/internal/server/api"
+	"panoptes/internal/server/clientip"
 	"panoptes/internal/server/config"
 	"panoptes/internal/server/core"
 	"panoptes/internal/server/feeds"
+	"panoptes/internal/server/health"
 	"panoptes/internal/server/llm"
 	"panoptes/internal/server/match"
 	"panoptes/internal/server/notify"
@@ -131,7 +135,8 @@ type components struct {
 	Evaluator core.RuleEvaluator
 	Notifier  core.Notifier
 	Drafter   core.RuleDrafter
-	// Mount lets other packages (web UI) register routes on the shared mux.
+	// Mount lets other packages (web UI) register routes on the admin mux (or on the shared mux
+	// in legacy single-port mode).
 	Mount []func(mux *http.ServeMux)
 	// Start runs background workers (LLM drafter) once the server context exists.
 	Start []func(ctx context.Context)
@@ -192,7 +197,7 @@ func unknownGrace(cfg *config.Config) time.Duration {
 }
 
 // wire is THE place where real implementations replace the no-op defaults.
-func wire(cfg *config.Config, st store.Store, log *slog.Logger, trig *lateTrigger) components {
+func wire(cfg *config.Config, st store.Store, log *slog.Logger, trig *lateTrigger, clientIP func(*http.Request) string) components {
 	comp := components{
 		Evaluator: core.NoopEvaluator{},
 		Notifier:  core.NoopNotifier{},
@@ -217,6 +222,7 @@ func wire(cfg *config.Config, st store.Store, log *slog.Logger, trig *lateTrigge
 			Homeserver:   cfg.Matrix.Homeserver,
 			AccessToken:  os.Getenv(cfg.Matrix.AccessTokenEnv),
 			DefaultRooms: cfg.Matrix.DefaultRooms,
+			OpsRooms:     cfg.Alerts.OpsRooms,
 		}
 		for _, r := range cfg.Matrix.Routes {
 			mcfg.Routes = append(mcfg.Routes, notify.Route{Label: r.Label, Rooms: r.Rooms})
@@ -264,9 +270,9 @@ func wire(cfg *config.Config, st store.Store, log *slog.Logger, trig *lateTrigge
 		log.Info("LLM drafter enabled", "provider", prov.Name(), "daily_limit", cfg.LLM.DailyLimit)
 	}
 
-	// Web UI on the same mux as the agent API.
+	// Web UI (admin listener, or the shared mux in legacy mode).
 	ui, err := web.New(web.Deps{
-		Store: st, Rules: rulesService{engine}, Pipeline: trig, Config: cfg, Logger: log,
+		Store: st, Rules: rulesService{engine}, Pipeline: trig, Config: cfg, Logger: log, ClientIP: clientIP,
 	})
 	if err != nil {
 		log.Error("web UI disabled", "err", err)
@@ -335,12 +341,24 @@ func serve(cfg *config.Config) error {
 		return err
 	}
 
+	trusted, err := config.ParseCIDRs(cfg.TrustedProxies)
+	if err != nil {
+		return fmt.Errorf("trusted_proxies: %w", err)
+	}
+	clientIP := clientip.New(trusted)
+
 	trig := &lateTrigger{log: log}
-	comp := wire(cfg, st, log, trig)
+	comp := wire(cfg, st, log, trig, clientIP)
 	grypeDB := match.NewGrype(cfg.GrypeDBDir(), log)
 	defer grypeDB.Close()
+	mon := health.New(st, comp.Notifier, health.Options{
+		AgentSilentAfter: cfg.Alerts.AgentSilentAfter, FeedStaleAfter: cfg.Alerts.FeedStaleAfter,
+		FeedBuilt: func() time.Time { return grypeDB.Status().Built },
+		PublicURL: cfg.PublicURL, Logger: log,
+	})
 	pipe := pipeline.New(st, grypeDB, comp.Evaluator, comp.Notifier, comp.Drafter,
-		pipeline.Options{PublicURL: cfg.PublicURL, Logger: log, UnknownGrace: unknownGrace(cfg)})
+		pipeline.Options{PublicURL: cfg.PublicURL, Logger: log, UnknownGrace: unknownGrace(cfg),
+			OnRun: mon.ReportRun, OnPoison: mon.ReportPoison})
 	trig.p = pipe
 	for _, start := range comp.Start {
 		func() {
@@ -349,20 +367,14 @@ func serve(cfg *config.Config) error {
 		}()
 	}
 	pipe.StartNotifyLoop(ctx, 5*time.Minute)
+	monDone := mon.Start(ctx, time.Minute)
 
-	mux := api.NewMux(api.Deps{Store: st, Evaluator: comp.Evaluator, Pipeline: pipe, Logger: log})
-	for _, m := range comp.Mount {
-		m(mux)
-	}
-
-	srv := &http.Server{
-		Addr:              cfg.Listen,
-		Handler:           api.LogRequests(log, mux),
-		MaxHeaderBytes:    64 << 10,
-		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       5 * time.Minute, // inventory uploads up to 64 MiB
-		WriteTimeout:      2 * time.Minute,
-		IdleTimeout:       2 * time.Minute,
+	apiMux := api.NewMux(api.Deps{Store: st, Evaluator: comp.Evaluator, Pipeline: pipe, Logger: log, ClientIP: clientIP})
+	servers, err := buildServers(cfg, log, apiMux, comp.Mount)
+	if err != nil {
+		stop()
+		pipe.Shutdown()
+		return err
 	}
 
 	updater := &feeds.Updater{
@@ -376,33 +388,55 @@ func serve(cfg *config.Config) error {
 	feedsDone := make(chan struct{})
 	go func() { defer close(feedsDone); defer recoverLog(log, "feeds updater"); updater.Run(ctx) }()
 
-	errCh := make(chan error, 1)
-	go func() {
-		log.Info("panoptes-server listening", "addr", cfg.Listen, "version", version, "data_dir", cfg.DataDir)
-		if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
-			errCh <- err
-		}
-		close(errCh)
-	}()
-
-	select {
-	case err := <-errCh:
+	errCh := make(chan error, len(servers))
+	var serving sync.WaitGroup
+	for _, s := range servers {
+		ln, err := net.Listen("tcp", s.srv.Addr)
 		if err != nil {
 			stop()
 			<-feedsDone
+			<-monDone
 			pipe.Shutdown()
-			return fmt.Errorf("listen: %w", err)
+			return fmt.Errorf("listen %s (%s): %w", s.name, s.srv.Addr, err)
 		}
+		serving.Add(1)
+		go func() {
+			defer serving.Done()
+			defer recoverLog(log, "http serve "+s.name)
+			log.Info("panoptes-server listening", "role", s.name, "addr", ln.Addr().String(), "tls", s.tls, "version", version, "data_dir", cfg.DataDir)
+			var err error
+			if s.tls {
+				err = s.srv.ServeTLS(ln, "", "") // certificates are in srv.TLSConfig
+			} else {
+				err = s.srv.Serve(ln)
+			}
+			if !errors.Is(err, http.ErrServerClosed) {
+				errCh <- fmt.Errorf("%s listener: %w", s.name, err)
+			}
+		}()
+	}
+
+	var serveErr error
+	select {
+	case serveErr = <-errCh:
+		stop()
 	case <-ctx.Done():
 		log.Info("shutting down")
 	}
 	shCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if err := srv.Shutdown(shCtx); err != nil {
-		log.Warn("http shutdown", "err", err)
+	for _, s := range servers {
+		if err := s.srv.Shutdown(shCtx); err != nil {
+			log.Warn("http shutdown", "role", s.name, "err", err)
+		}
 	}
+	serving.Wait()
 	<-feedsDone
+	<-monDone
 	pipe.Shutdown()
+	if serveErr != nil {
+		return fmt.Errorf("listen: %w", serveErr)
+	}
 	return nil
 }
 
@@ -530,8 +564,8 @@ func userCmd(cfg *config.Config, args []string, stdin io.Reader, stdout, stderr 
 		return fmt.Errorf("read password from stdin: %w", err)
 	}
 	pw := strings.TrimRight(line, "\r\n")
-	if len(pw) < 8 {
-		return errors.New("password must be at least 8 characters")
+	if len(pw) < minAdminPassword {
+		return fmt.Errorf("password must be at least %d characters", minAdminPassword)
 	}
 	if err := os.MkdirAll(cfg.DataDir, 0o750); err != nil {
 		return err

@@ -229,11 +229,38 @@ rule changes, the server (re)computes findings for affected hosts:
    Each pipeline run has a 10 min timeout; a panic in any background goroutine is logged and recovered, and a
    target whose matching panicked is flagged (`kv poison.<host>.<target-hash>`) and skipped until a new inventory arrives.
 
+### Health events (silence alerts)
+
+`model.Event` additionally carries `Detail` (human text) for events without a finding. Kinds, evaluated by
+`internal/server/health` every minute (dedup via `notifications_sent` keys `host|<id>|<kind>` and `server|feed|<kind>`):
+
+- `agent_silent` — a host that has checked in at least once has not checked in for `alerts.agent_silent_after`.
+  Routed by the host's labels. When more than max(5, 30% of the fleet) hosts go silent in one pass, ONE event without
+  a host (`Host.ID == ""`, `Detail` = "N agents silent — server/network problem?" + up to 20 hostnames) goes to the ops rooms.
+  Held back for 2 x check-in interval after server start.
+- `agent_back` — a silent host checked in again (clears the silent record so a later silence alerts again).
+- `feed_stale` / `feed_ok` — the vulnerability DB (kv `feeds.grype.updated_at` or the loaded DB build time, whichever is
+  newer) is older than `alerts.feed_stale_after`, or `feeds.grype.last_error` stayed set for more than 2 consecutive
+  checks; ok on recovery. Ops rooms.
+- `pipeline_error` — 3 consecutive failed pipeline runs for a host, or a poisoned target; once per host per 24 h
+  (kv `health.pipeline_alert.<host>`); more than 5 hosts at once are aggregated. Ops rooms.
+
+`Event.ServerLevel()` marks events routed to `alerts.ops_rooms`. Health events are never grouped with each other or
+with findings and are exempt from burst summarising. The web dashboard shows active feed/pipeline problems from kv
+`health.feed_stale` and `health.pipeline_errors`.
+
 ## 6. Server configuration (`/etc/panoptes/server.yaml`, all keys optional)
 
 ```yaml
-listen: ":8080"
-public_url: "http://localhost:8080"   # used for links in notifications
+listen: ":8080"                       # agent API: /api/v1/* and /healthz only
+admin_listen: "127.0.0.1:8081"        # web UI (+ /healthz); empty or == listen: one shared port (legacy, WARN)
+public_url: "http://localhost:8081"   # base URL of the admin UI, used for links in notifications
+# tls_cert / tls_key (agent listener) and admin_tls_cert / admin_tls_key (admin listener): native TLS, min 1.2
+trusted_proxies: []                   # CIDRs; X-Forwarded-For is honoured only when the peer is in this list
+alerts:
+  agent_silent_after: 30m             # 0 disables agent_silent / agent_back
+  feed_stale_after: 48h               # 0 disables feed_stale / feed_ok
+  ops_rooms: []                       # Matrix rooms for server-level events; empty: matrix.default_rooms
 data_dir: /var/lib/panoptes           # SQLite DB + Grype DB cache
 feeds:
   interval: 6h                        # vuln DB / KEV / EPSS refresh
@@ -259,6 +286,12 @@ The initial admin password needs ≥ 12 characters and may come from the file na
 `PANOPTES_ADMIN_PASSWORD_FILE`. Startup logs a WARN when `public_url`, `matrix.homeserver` or `llm.base_url`
 use `http://` for a non-loopback host, and when the Grype DB is older than 5 days. The server runs with
 `umask 077` and a 0600 database file; HTTP limits: header ≤ 64 KiB, read timeout 5 min, write timeout 2 min.
+
+Listeners: the agent listener serves only `/api/v1/*` and `/healthz` (everything else is 404); the admin listener
+serves the web UI and `/healthz` and not the agent API. With `admin_listen` empty or equal to `listen` both share one
+port. `trusted_proxies`: only when the TCP peer is in the list is the client IP taken from the right-most
+`X-Forwarded-For` entry that is not itself a trusted proxy (used for rate limits and the audit log).
+`panoptes-server user set-password` needs at least 12 characters.
 
 Environment variable `PANOPTES_CONFIG` points to the file; every scalar can be overridden by
 `PANOPTES_<SECTION>_<KEY>` (e.g. `PANOPTES_MATRIX_HOMESERVER`).

@@ -41,6 +41,12 @@ type Options struct {
 	UnknownGrace time.Duration
 	Concurrency  int           // hosts processed in parallel (default 2; matching is CPU/memory heavy)
 	RunTimeout   time.Duration // per-run limit (default DefaultRunTimeout)
+
+	// OnRun, if set, is told the outcome of every background run (err nil = success; a panic is
+	// reported as an error; cancellation at shutdown is not reported). OnPoison is called when a
+	// target's matching panicked and the target was flagged. Both must not block.
+	OnRun    func(hostID string, err error)
+	OnPoison func(hostID, target string)
 }
 
 // Pipeline recomputes findings for hosts. Trigger is non-blocking and coalesces per host.
@@ -140,13 +146,21 @@ func (p *Pipeline) runLimited(hostID string) {
 	// A host has at most one goroutine (Trigger coalesces), so it holds at most one slot.
 	ctx, cancel := context.WithTimeout(p.baseCtx, p.opts.RunTimeout)
 	defer cancel()
+	var runErr error
 	defer func() {
 		if r := recover(); r != nil {
 			p.log.Error("pipeline run panicked; run marked failed", "host", hostID, "panic", r, "stack", string(debug.Stack()))
+			runErr = fmt.Errorf("panic: %v", r)
+		}
+		if p.opts.OnRun != nil && !errors.Is(runErr, context.Canceled) {
+			func() {
+				defer p.recoverLog("OnRun")
+				p.opts.OnRun(hostID, runErr)
+			}()
 		}
 	}()
-	if err := p.Run(ctx, hostID); err != nil && !errors.Is(err, context.Canceled) {
-		p.log.Error("pipeline run failed", "host", hostID, "err", err)
+	if runErr = p.Run(ctx, hostID); runErr != nil && !errors.Is(runErr, context.Canceled) {
+		p.log.Error("pipeline run failed", "host", hostID, "err", runErr)
 	}
 }
 
@@ -291,6 +305,9 @@ func (p *Pipeline) Run(ctx context.Context, hostID string) error {
 				return fmt.Errorf("record poison flag: %w", err)
 			}
 			p.log.Error("target poisoned: matcher panicked; skipped until a new inventory arrives", "host", hostID, "kind", t.Kind, "target", t.Name)
+			if p.opts.OnPoison != nil {
+				p.opts.OnPoison(hostID, t.Name)
+			}
 			carryOver(t.Name)
 			continue
 		}

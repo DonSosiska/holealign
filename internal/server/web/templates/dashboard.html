@@ -1,6 +1,9 @@
 {{define "title"}}Dashboard{{end}}
 {{define "content"}}
 <h1>Dashboard</h1>
+{{if .FeedStale}}<div class="flash err" role="alert"><strong>Vulnerability feed stale:</strong> {{.FeedStale}}</div>{{end}}
+{{if .PipelineErrors}}<div class="flash err" role="alert"><strong>Pipeline errors:</strong>
+<ul>{{range .PipelineErrors}}<li>{{.}}</li>{{end}}</ul></div>{{end}}
 <div class="cards">
 {{range .Counts}}
   <a class="card {{vclass .Verdict}}" href="/findings?verdict={{.Verdict}}">
@@ -16,7 +19,7 @@
 
 <div class="two-col">
 <section>
-<h2>Hosts not checked in &gt; 30 min</h2>
+<h2>Hosts not checked in recently</h2>
 {{if .Stale}}
 <div class="table-wrap"><table>
 <thead><tr><th>Host</th><th>Last check-in</th></tr></thead>

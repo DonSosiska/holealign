@@ -186,7 +186,7 @@ func (s *Server) checkPassword(ctx context.Context, hash, pw string) (bool, erro
 	return store.CheckPassword(hash, pw), nil
 }
 
-func clientIP(r *http.Request) string {
+func remoteIP(r *http.Request) string {
 	h, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return r.RemoteAddr
@@ -247,7 +247,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	user := strings.TrimSpace(r.PostFormValue("username"))
 	pw := r.PostFormValue("password")
-	ip := clientIP(r)
+	ip := s.ipOf(r)
 	lu := strings.ToLower(user)
 	if s.loginBlocked(ip, lu) {
 		s.log.Warn("web: login rate limited", "user", user, "ip", ip)
@@ -303,7 +303,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request, sess *sess
 
 // audit writes a structured audit entry for a security-relevant action.
 func (s *Server) audit(r *http.Request, actor, action, target string, extra ...any) {
-	args := append([]any{"actor", actor, "action", action, "target", target, "ip", clientIP(r)}, extra...)
+	args := append([]any{"actor", actor, "action", action, "target", target, "ip", s.ipOf(r)}, extra...)
 	s.log.Info("audit", args...)
 }
 
@@ -315,7 +315,7 @@ func sha256hex(v string) string {
 // reauth requires the acting user's current password (field current_password). On failure it writes
 // the response (403, or 429 when locked) and returns false. Failures count toward the limiters.
 func (s *Server) reauth(w http.ResponseWriter, r *http.Request, sess *session) bool {
-	ip := clientIP(r)
+	ip := s.ipOf(r)
 	lu := strings.ToLower(sess.Username)
 	if s.limIP.blocked(ip) || s.limUser.blocked(lu) {
 		s.fail(w, r, sess, http.StatusTooManyRequests, "Too many failed password checks. Try again later.", nil)

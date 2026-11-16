@@ -64,7 +64,7 @@ You need Docker with Compose, and a Linux host with systemd for the agent.
    (mode 0600), and starts the `panoptes-agent` service. Logs:
    `journalctl -u panoptes-agent -f`. For air-gapped hosts, use `--binary PATH`.
 
-4. **Open the web UI** at `http://localhost:8080` (or your public URL) and log in as
+4. **Open the web UI** at `http://localhost:8081` (the admin listener, bound to loopback; or your public URL) and log in as
    `admin`. The host appears after its first check-in, and findings follow after the
    first inventory upload.
 

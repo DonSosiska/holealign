@@ -41,12 +41,13 @@ services:
     profiles: ["server"]
     environment:
       PANOPTES_CONFIG: /etc/panoptes/server.yaml
-      PANOPTES_PUBLIC_URL: http://localhost:${E2E_SERVER_PORT:-18080}
+      PANOPTES_PUBLIC_URL: http://localhost:${E2E_ADMIN_PORT:-18081}
+      PANOPTES_ADMIN_LISTEN: 0.0.0.0:8081
       PANOPTES_FEEDS_UPDATE: ${E2E_FEEDS_UPDATE:-true}
       PANOPTES_MATRIX_HOMESERVER: http://matrix:8008
-      PANOPTES_MATRIX_ACCESS_TOKEN_ENV: E2E_MATRIX_BOT_TOKEN
+      PANOPTES_MATRIX_ACCESS_TOKEN_ENV: PANOPTES_E2E_MATRIX_BOT_TOKEN
       PANOPTES_MATRIX_DEFAULT_ROOMS: ${E2E_ROOM_DEFAULT:-}
-      E2E_MATRIX_BOT_TOKEN: ${E2E_BOT_TOKEN:-}
+      PANOPTES_E2E_MATRIX_BOT_TOKEN: ${E2E_BOT_TOKEN:-}
       PANOPTES_ADMIN_PASSWORD: ${PANOPTES_ADMIN_PASSWORD:-}
     volumes:
       - ${E2E_TMP:-/tmp}/server.yaml:/etc/panoptes/server.yaml:ro
@@ -54,6 +55,7 @@ services:
       - e2e-data:/var/lib/panoptes
     ports:
       - "127.0.0.1:${E2E_SERVER_PORT:-18080}:8080"
+      - "127.0.0.1:${E2E_ADMIN_PORT:-18081}:8081"
     depends_on: [matrix]
 
   web-default:
