@@ -22,7 +22,7 @@ ENTRYPOINT ["/usr/local/bin/panoptes-server"]
 CMD ["serve"]
 
 # ---- host: Debian 12 as of 2024-06-01 (openssh 1:9.2p1-2+deb12u2, CVE-2024-6387) ----
-FROM debian:bookworm-20240513-slim@sha256:804194b909ef23fb995d9412c9378fb3505fe2427b70f3cc425339e48a828fca AS host
+FROM debian:bookworm-20261104-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc AS host
 RUN rm -f /etc/apt/sources.list.d/* /etc/apt/sources.list \
     && printf '%s\n' \
       'deb http://snapshot.debian.org/archive/debian/20240601T000000Z bookworm main' \
