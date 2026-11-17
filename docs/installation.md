@@ -254,7 +254,7 @@ the file after the first successful check-in.
 | `--allow-downgrade` | Allow installing an older release than the installed one (refused by default). |
 | `--binary PATH` | Install this local `panoptes-agent` binary instead of downloading (air-gapped). No signature check is done for it. |
 | `--skip-signature-check` | Do not verify the release signature (not recommended). Without it the install aborts when cosign is missing. |
-| `--collector-only` | New (agentless mode): install only the root collector, for the host that runs the server. No `--server` or token. |
+| `--collector-only` | For agentless mode: install the root collector (`panoptes-collector.service`), the `panoptes` user and group, and a minimal `agent.yaml`, but no sender (`panoptes-agent.service`). No `--server` or token. The release is still downloaded and verified (or use `--binary`). See [Agentless mode](#agentless-mode). |
 | `--force` | Overwrite an existing `/etc/panoptes/agent.yaml`. With `--uninstall`: also remove the config and state. |
 | `--uninstall` | Stop and remove the units and the binary. |
 | `-h`, `--help` | Show the built-in help. |
@@ -380,50 +380,88 @@ Rules edited or approved in the web UI live in the database and override same-ID
 
 ## Agentless mode
 
-New. The server monitors its own host through a built-in local agent, without enrolling a separate
-agent. It is off by default. The local agent feeds the same pipeline as a remote agent, with the
-same facts, inventory, rules and alerts; the host appears in the UI like any other.
+The server monitors its own host through a built-in local agent, without a separately installed
+`panoptes-agent` and without an enrollment token. It is off by default. The local agent runs the same
+agent logic in the server process and feeds the same pipeline as a remote agent, so the host gets the
+same facts, inventory, rules and alerts. In the web UI it is marked with a "local (built-in)" badge.
+Every key is listed in [configuration.md](configuration.md#local-agent-agentless-mode).
 
 ```yaml
 # /etc/panoptes/server.yaml
 local_agent:
   enabled: true
-  source: auto            # collector | inprocess | auto
-  collector_socket: /run/panoptes/collector.sock
-  labels: [server]
+  source: collector       # collector | inprocess | auto (default auto)
+  labels: [server]        # default
 ```
 
-| Key | Default | Env | Description |
-|---|---|---|---|
-| `local_agent.enabled` | `false` | `PANOPTES_LOCAL_AGENT_ENABLED` | Turn the local agent on. |
-| `local_agent.source` | set it explicitly | `PANOPTES_LOCAL_AGENT_SOURCE` | `collector`: read facts and inventory from the root collector's socket. `inprocess`: collect inside the server process (no root: root-only data is missing). `auto`: the collector socket if it exists, else in-process. |
-| `local_agent.collector_socket` | `/run/panoptes/collector.sock` | `PANOPTES_LOCAL_AGENT_COLLECTOR_SOCKET` | Socket of the host's root collector. |
-| `local_agent.labels` | `[server]` | `PANOPTES_LOCAL_AGENT_LABELS` | Labels of the local host. Authoritative (like token labels). |
-| `local_agent.checkin_interval`, `inventory_interval`, `scan_language_packages`, `exclude_paths`, `docker_socket` | as in the agent config | `PANOPTES_LOCAL_AGENT_<KEY>` | Same meaning as in [agent configuration](configuration.md#agent-configuration). |
+**Source choice.**
 
-**Recommended setup (package or binary install):**
+- `collector` (recommended for a host install): the server reads the host through the root collector's
+  socket. The server then needs no root privileges, but it must run as the static user `panoptes` (see
+  below). It does not fall back: if the socket refuses the server, the local agent does not run.
+- `inprocess`: the server collects the host itself with its own privileges. Without root, root-only data
+  (for example `sshd -T`, `nginx -T`, `docker.sock`) is missing, and a WARN says so. Use it for dev or
+  single-box setups.
+- `auto` (default): uses `collector` when a real request to the socket succeeds, otherwise `inprocess`.
+  The chosen source is logged at startup. Because `auto` falls back to `inprocess` without an error,
+  check the logged source after the first start.
 
-1. On the server host install only the collector: `sudo sh install.sh --collector-only`. This
-   creates the user and group `panoptes` and the `panoptes-collector` service (root, no network).
-2. Set `local_agent.enabled: true` and `source: collector` (or `auto`).
-3. Give the server unit access to the socket, which is `root:panoptes 0660`:
+**Recommended setup (package or binary install with systemd):**
+
+1. On the server host install the collector only: `sudo sh install.sh --collector-only`. It downloads and
+   verifies the release like a normal install (or uses `--binary`), installs `/usr/bin/panoptes-agent`,
+   creates the system user and group `panoptes`, writes a minimal `/etc/panoptes/agent.yaml` (no sender,
+   no token) and starts `panoptes-collector.service` (root, no network). The socket is
+   `/run/panoptes/collector.sock`, `root:panoptes 0660`.
+2. Set `local_agent.enabled: true` and `local_agent.source: collector` (or `auto`) in `server.yaml`.
+3. Run the server as the static user `panoptes`. A systemd `DynamicUser` uid is rejected by the collector,
+   and adding only `SupplementaryGroups=panoptes` is **not enough**: the collector authorises the peer by
+   its uid (`SO_PEERCRED`) and accepts only root and `collector_user` (default `panoptes`). In the unit,
+   the lines for this are commented out in `deploy/systemd/panoptes-server.service`. Use a drop-in:
 
    ```ini
    # systemctl edit panoptes-server
    [Service]
-   SupplementaryGroups=panoptes
+   DynamicUser=no
+   User=panoptes
+   Group=panoptes
    ```
 
-4. `sudo systemctl restart panoptes-server`.
+   This is **unverified on a real host** (the unit comments say so; `PrivateUsers=yes` and
+   `StateDirectory=` must be checked with a static user). Back up the database first, check that
+   `data_dir` ends up owned by `panoptes`, and check the first start in the logs.
 
-**Docker.** `source: inprocess` inside the container scans the container's own filesystem, not the
-host. To monitor the Docker host, install the collector on the host (`--collector-only`) and
-mount its socket directory into the container, for example `volumes: ["/run/panoptes:/run/panoptes"]`
-with `source: collector`; the container user needs access to the socket's group.
+4. `sudo systemctl restart panoptes-server`, then check the log for `local agent source: collector`.
 
-**Conflicts.** If a host with the same machine ID is already enrolled by a standalone agent, the
-local agent refuses to start (log message at startup). Delete the old host
-(`panoptes-server host delete`) or uninstall the standalone agent first.
+**Docker.** `source: inprocess` inside a container scans the container's own filesystem, not the Docker
+host. To monitor the host, install the collector on the host (`--collector-only`), mount its socket
+directory read-only, and run the container as the host's `panoptes` user, as the commented example in
+`deploy/docker-compose.yml` shows:
 
-This section describes the agentless mode as specified for the release that adds it. Details such
-as exact log messages and socket access checks are confirmed in that release's changelog.
+```yaml
+services:
+  panoptes-server:
+    user: "<panoptes uid>:<panoptes gid>"   # `id panoptes` on the host
+    group_add: ["<panoptes gid>"]
+    volumes:
+      - /run/panoptes:/run/panoptes:ro
+    environment:
+      PANOPTES_LOCAL_AGENT_ENABLED: "true"
+      PANOPTES_LOCAL_AGENT_SOURCE: collector
+```
+
+The data volume must be writable by that uid as well: the image owns `/var/lib/panoptes` as uid 65532,
+so change its ownership before you switch the user. With `source: auto` and no socket mounted, the
+container falls back to scanning itself (the log says `inprocess`).
+
+**Conflicts.** If a host with the same machine ID is already enrolled by a standalone agent (or an earlier
+enrollment), the local agent does not take it over. It logs an ERROR, and the local agent does not start.
+Either remove that host and uninstall the standalone agent, then restart the server:
+
+```sh
+panoptes-server host list
+panoptes-server host delete <hostname>   # also deletes its findings
+sudo systemctl restart panoptes-server
+```
+
+or set `local_agent.enabled: false`. Details: [operations](operations.md#troubleshooting).

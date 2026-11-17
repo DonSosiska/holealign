@@ -111,24 +111,29 @@ The agent has no environment overrides for its keys.
 
 ## Local agent (agentless mode)
 
-New. The `local_agent` section makes the server monitor its own host. It is not available in
-releases before the one that adds agentless mode. Setup steps and caveats:
+The `local_agent` section makes the server monitor its own host without a separately installed
+`panoptes-agent`. It is off by default. Setup steps and caveats:
 [installation.md](installation.md#agentless-mode).
 
 | Key | Type | Default | Environment | Description |
 |---|---|---|---|---|
-| `local_agent.enabled` | bool | `false` | `PANOPTES_LOCAL_AGENT_ENABLED` | Enable the built-in local agent. |
-| `local_agent.source` | string | see installation | `PANOPTES_LOCAL_AGENT_SOURCE` | `collector` (root collector socket), `inprocess` (collect inside the server process; in Docker this scans the container) or `auto` (collector socket if present, else in-process). |
-| `local_agent.collector_socket` | string (path) | `/run/panoptes/collector.sock` | `PANOPTES_LOCAL_AGENT_COLLECTOR_SOCKET` | Collector socket. The server unit needs `SupplementaryGroups=panoptes` for `source: collector`. |
-| `local_agent.labels` | list of strings | `[server]` | `PANOPTES_LOCAL_AGENT_LABELS` | Labels of the local host. Authoritative. |
-| `local_agent.checkin_interval` | duration | as the agent | `PANOPTES_LOCAL_AGENT_CHECKIN_INTERVAL` | Like the agent key of the same name. |
-| `local_agent.inventory_interval` | duration | as the agent | `PANOPTES_LOCAL_AGENT_INVENTORY_INTERVAL` | Like the agent key. |
-| `local_agent.scan_language_packages` | bool | as the agent | `PANOPTES_LOCAL_AGENT_SCAN_LANGUAGE_PACKAGES` | Like the agent key. |
-| `local_agent.exclude_paths` | list of globs | as the agent | `PANOPTES_LOCAL_AGENT_EXCLUDE_PATHS` | Like the agent key. |
-| `local_agent.docker_socket` | string (path) | as the agent | `PANOPTES_LOCAL_AGENT_DOCKER_SOCKET` | Like the agent key. |
+| `local_agent.enabled` | bool | `false` | `PANOPTES_LOCAL_AGENT_ENABLED` | Turn the built-in local agent on. |
+| `local_agent.source` | string | `auto` | `PANOPTES_LOCAL_AGENT_SOURCE` | `collector`: read facts and inventory from the root collector's socket. `inprocess`: collect inside the server process with the server's privileges (one WARN when not root; in Docker this scans the container). `auto`: `collector` if a real request to the socket succeeds, otherwise `inprocess`; the choice is logged. Values other than these three fail at startup. |
+| `local_agent.collector_socket` | string (absolute path) | `/run/panoptes/collector.sock` | `PANOPTES_LOCAL_AGENT_COLLECTOR_SOCKET` | Socket of the host's root collector. With `source: collector` the collector accepts only root and the uid of `collector_user` (`panoptes`), so the server must run as user `panoptes`; see [installation](installation.md#agentless-mode). |
+| `local_agent.labels` | list of strings | `[server]` | `PANOPTES_LOCAL_AGENT_LABELS` (comma-separated) | Labels of the local host. Authoritative and locked, like enrollment-token labels. A change is applied at the next server start and rotates the local agent key. Each label must match `^[a-z0-9][a-z0-9._-]{0,63}$`; at most 32. |
+| `local_agent.checkin_interval` | duration | `5m` | `PANOPTES_LOCAL_AGENT_CHECKIN_INTERVAL` | Check-in interval. Minimum `1m`. |
+| `local_agent.inventory_interval` | duration | `6h` | `PANOPTES_LOCAL_AGENT_INVENTORY_INTERVAL` | Safety-net full inventory rescan; package changes trigger earlier scans. Minimum `1m`. |
+| `local_agent.scan_language_packages` | bool | `true` | `PANOPTES_LOCAL_AGENT_SCAN_LANGUAGE_PACKAGES` | Also inventory language packages (as the agent key of the same name). |
+| `local_agent.exclude_paths` | list of globs | empty (= agent defaults) | `PANOPTES_LOCAL_AGENT_EXCLUDE_PATHS` (comma-separated) | Paths excluded from the host scan. Empty uses the agent defaults (see [agent configuration](#agent-configuration)). `data_dir` is always excluded in addition, whatever this list says. |
+| `local_agent.docker_socket` | string (absolute path, or empty) | `/var/run/docker.sock` | `PANOPTES_LOCAL_AGENT_DOCKER_SOCKET` | Docker socket; images are scanned when it exists and is readable. |
 
-A host with the same machine ID that is already enrolled by a standalone agent makes the local
-agent refuse to start.
+Notes:
+
+- The `local_agent` values are validated at startup even when `enabled` is `false`.
+- No enrollment token is used. The server creates the host record itself and stores the agent key in
+  `<data_dir>/local-agent/credentials.json` (0600). The host shows a "local (built-in)" badge in the web UI.
+- If a host with the same machine ID is already enrolled by a standalone agent, the local agent does not
+  take it over. It logs an ERROR and does not start; see [operations](operations.md#troubleshooting).
 
 ## Agent configuration
 

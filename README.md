@@ -149,13 +149,13 @@ Next: [Matrix alerts](docs/notifications.md), [LLM drafting](docs/llm.md) (optio
 
 ## Agentless quick start
 
-New: agentless mode. The server monitors its own host through a built-in local agent, so no
-separate agent install or enrollment is needed. Disabled by default.
+The server can monitor its own host through a built-in local agent, so no separate agent install or
+enrollment is needed. It is disabled by default.
 
 On a host that runs the server from the `.deb`/`.rpm` package or as a binary with systemd:
 
 ```sh
-sudo sh install.sh --collector-only      # installs only the root collector (see installation docs)
+sudo sh install.sh --collector-only      # installs only the root collector and the panoptes user
 ```
 
 then in `/etc/panoptes/server.yaml`:
@@ -163,14 +163,23 @@ then in `/etc/panoptes/server.yaml`:
 ```yaml
 local_agent:
   enabled: true
-  source: collector        # collector | inprocess | auto
+  source: collector        # collector | inprocess | auto (default auto)
   labels: [server]
 ```
 
-and add `SupplementaryGroups=panoptes` to the server unit (a drop-in:
-`systemctl edit panoptes-server`), then `systemctl restart panoptes-server`. In Docker,
-`source: inprocess` scans the container, not the host: mount the host collector socket into the
-container instead. Details, all `local_agent.*` keys and caveats:
+The collector accepts only root and the user `panoptes`, so the server must run as that user, not as
+a systemd `DynamicUser`. Add a drop-in with `systemctl edit panoptes-server`:
+
+```ini
+[Service]
+DynamicUser=no
+User=panoptes
+Group=panoptes
+```
+
+then `systemctl restart panoptes-server`. This static-user setup is not yet verified on a real host
+(see the comments in the unit file). In Docker, `source: inprocess` scans the container, not the host:
+use the host collector socket instead. Details, all `local_agent.*` keys and caveats:
 [docs/installation.md](docs/installation.md#agentless-mode).
 
 ## Documentation

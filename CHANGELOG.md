@@ -38,8 +38,12 @@ First public state of the project. No tagged release yet.
 - Releases: GoReleaser build, keyless cosign signatures, SPDX SBOMs, build provenance, gated by a
   protected `release` environment and tags on `main`.
 - Documentation: README (English and Ukrainian) and operator documentation in `docs/`.
-- Agentless mode: the server can monitor its own host through a built-in local agent
-  (`local_agent.*`), and `install.sh --collector-only` installs just the collector.
+- Agentless mode: the server can monitor its own host through a built-in local agent, with no
+  separate `panoptes-agent` and no enrollment token (`local_agent.*`, off by default). Data comes from
+  the root collector socket (`source: collector`), from the server process (`source: inprocess`), or
+  is picked at start (`source: auto`). The host is marked "local (built-in)" in the web UI. The server's
+  own `data_dir` is never scanned. `install.sh --collector-only` installs just the collector and the
+  `panoptes` user for this mode.
 
 ### Changed
 

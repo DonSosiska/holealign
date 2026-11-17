@@ -42,8 +42,12 @@ Contents: [Components](#components) - [Data flow](#data-flow) - [Privilege separ
 The agent has a third mode, `-mode all` (the default): one process doing both roles. It is used by
 `-once`, by containers and by the end-to-end tests. See [Privilege separation](#privilege-separation).
 
-The agentless local agent is new: the server can monitor its own host without a separately enrolled
-agent. See [installation.md](installation.md#agentless-mode).
+The built-in local agent (agentless mode) lets the server monitor its own host without a separately
+enrolled agent. It runs the same agent runner inside the server process and talks to the server's own
+agent API through an in-memory transport, so nothing goes over the network. Its data comes from the
+root collector's socket (`source: collector`) or from the server process itself (`source: inprocess`).
+The server never scans its own `data_dir`. See [installation.md](installation.md#agentless-mode) and
+[contracts.md §6](contracts.md#agentless-mode-local_agent).
 
 ## Data flow
 

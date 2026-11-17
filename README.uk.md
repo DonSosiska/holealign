@@ -156,13 +156,13 @@ ssh -L 8081:127.0.0.1:8081 you@panoptes-docker-host
 
 ## Швидкий старт без агента
 
-Нове: режим без агента. Сервер стежить за власним хостом через вбудований локальний агент, тож окреме
-встановлення агента й реєстрація не потрібні. Типово вимкнено.
+Сервер може стежити за власним хостом через вбудований локальний агент, тож окреме встановлення агента
+й реєстрація не потрібні. Типово вимкнено.
 
 На хості, де сервер працює з пакета `.deb`/`.rpm` або як бінарний файл під systemd:
 
 ```sh
-sudo sh install.sh --collector-only      # встановлює лише збирач від імені root (див. документацію зі встановлення)
+sudo sh install.sh --collector-only      # встановлює лише збирач від імені root і користувача panoptes
 ```
 
 потім у `/etc/panoptes/server.yaml`:
@@ -170,14 +170,23 @@ sudo sh install.sh --collector-only      # встановлює лише зби�
 ```yaml
 local_agent:
   enabled: true
-  source: collector        # collector | inprocess | auto
+  source: collector        # collector | inprocess | auto (типово auto)
   labels: [server]
 ```
 
-і додайте `SupplementaryGroups=panoptes` до unit-файлу сервера (drop-in:
-`systemctl edit panoptes-server`), потім `systemctl restart panoptes-server`. У Docker
-`source: inprocess` сканує контейнер, а не хост: натомість змонтуйте у контейнер сокет збирача з хоста.
-Подробиці, усі ключі `local_agent.*` і застереження:
+Збирач приймає лише root і користувача `panoptes`, тож сервер має працювати від імені цього користувача,
+а не як динамічний `DynamicUser` systemd. Додайте drop-in через `systemctl edit panoptes-server`:
+
+```ini
+[Service]
+DynamicUser=no
+User=panoptes
+Group=panoptes
+```
+
+потім `systemctl restart panoptes-server`. Така конфігурація зі статичним користувачем ще не перевірена
+на реальному хості (див. коментарі в unit-файлі). У Docker `source: inprocess` сканує контейнер, а не
+хост: натомість використовуйте сокет збирача з хоста. Подробиці, усі ключі `local_agent.*` і застереження:
 [docs/installation.md](docs/installation.md#agentless-mode).
 
 ## Документація
