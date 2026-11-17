@@ -27,7 +27,7 @@ func TestRenderTruncatesAndStripsControl(t *testing.T) {
 			t.Fatalf("line too long (%d): %.60s", len(l), l)
 		}
 	}
-	if !strings.Contains(plain, "Why: line1 line2 @room") {
+	if !strings.Contains(plain, "Why: line1 line2 @\u200broom") {
 		t.Fatalf("newlines must become spaces:\n%s", plain)
 	}
 }
@@ -96,12 +96,12 @@ func TestNotifyContinuesPastFailedGroup(t *testing.T) {
 	}
 }
 
-func TestPermanentErrorNotRetried(t *testing.T) {
+func TestPermanentErrorNotRetriedForNonCriticalKinds(t *testing.T) {
 	hs := newFakeHS(t, func(int, recorded) (int, string) { return http.StatusForbidden, `{}` })
 	m := newTestMatrix(t, hs, Config{DefaultRooms: []string{"!r:example.org"}}, nil)
-	err := m.Notify(context.Background(), []model.Event{testEvent(model.EventExploitable, "CVE-1", "h")})
+	err := m.Notify(context.Background(), []model.Event{testEvent(model.EventResolved, "CVE-1", "h")})
 	var de *DeliveryError
 	if !errors.As(err, &de) || len(de.Failed) != 0 {
-		t.Fatalf("err = %v; permanent 4xx must not be listed as failed", err)
+		t.Fatalf("err = %v; permanent 4xx of a resolved event must not be listed as failed", err)
 	}
 }

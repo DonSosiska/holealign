@@ -2,6 +2,8 @@
 {{define "content"}}
 <h1>Dashboard</h1>
 {{if .FeedStale}}<div class="flash err" role="alert"><strong>Vulnerability feed stale:</strong> {{.FeedStale}}</div>{{end}}
+{{if .NotifyProblems}}<div class="flash err" role="alert"><strong>Alert delivery problems:</strong>
+<ul>{{range .NotifyProblems}}<li>{{.}}</li>{{end}}</ul></div>{{end}}
 {{if .PipelineErrors}}<div class="flash err" role="alert"><strong>Pipeline errors:</strong>
 <ul>{{range .PipelineErrors}}<li>{{.}}</li>{{end}}</ul></div>{{end}}
 <div class="cards">

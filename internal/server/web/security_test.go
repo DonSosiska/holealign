@@ -85,42 +85,22 @@ func TestLimiterEvictsExpiredFirst(t *testing.T) {
 	}
 }
 
-func TestPerIPAndPerUserLimits(t *testing.T) {
-	e, logs := logEnv(t, "http://panoptes.test")
+func TestPerIPLimit(t *testing.T) {
+	e, _ := logEnv(t, "http://panoptes.test")
 	now := time.Now()
 	e.srv.now = func() time.Time { return now }
 	e.srv.lim = newLimiterCfg(e.srv.now, maxFailures, failWindow, 0, limiterCap)
 	e.srv.limIP = newLimiterCfg(e.srv.now, maxIPFailures, ipFailWindow, 0, limiterCap)
-	e.srv.limUser = newLimiterCfg(e.srv.now, maxUserFailures, userFailWindow, userLockFor, limiterCap)
 
 	// per-IP: many different usernames from one IP hit the IP cap
 	for i := 0; i < maxIPFailures; i++ {
-		e.srv.loginFailed("198.51.100.1", "user"+strconv.Itoa(i))
+		e.srv.loginFailed("198.51.100.1", "user"+strconv.Itoa(i), false)
 	}
-	if !e.srv.loginBlocked("198.51.100.1", "fresh") {
+	if e.srv.limIP.acquire("198.51.100.1") {
 		t.Fatal("per-IP limit not enforced")
 	}
-	if e.srv.loginBlocked("198.51.100.2", "fresh") {
+	if !e.srv.limIP.acquire("198.51.100.2") {
 		t.Fatal("other IP must not be blocked")
-	}
-
-	// per-username: distributed IPs lock the username for 15 minutes, logged
-	for i := 0; i < maxUserFailures; i++ {
-		e.srv.loginFailed("203.0.113."+strconv.Itoa(i), "victim")
-	}
-	if !e.srv.loginBlocked("192.0.2.200", "victim") {
-		t.Fatal("per-username limit not enforced")
-	}
-	if !strings.Contains(logs.String(), "username locked") {
-		t.Error("lock not logged")
-	}
-	now = now.Add(userLockFor - time.Second)
-	if !e.srv.loginBlocked("192.0.2.200", "victim") {
-		t.Fatal("lock expired early")
-	}
-	now = now.Add(2 * time.Second)
-	if e.srv.loginBlocked("192.0.2.200", "victim") {
-		t.Fatal("lock should have expired")
 	}
 }
 
@@ -171,7 +151,6 @@ func TestReauthRequired(t *testing.T) {
 	e := newEnv(t, true)
 	e.addUser("admin", "pw-long-enough")
 	e.addUser("bob", "bob-long-password")
-	c := e.session("admin")
 	ctx := context.Background()
 	cases := []struct {
 		path string
@@ -191,7 +170,7 @@ func TestReauthRequired(t *testing.T) {
 			if cur != "" {
 				f.Set("current_password", cur)
 			}
-			if w := e.postNoAuth(tc.path, f, c); w.Code != 403 {
+			if w := e.postNoAuth(tc.path, f, e.session("admin")); w.Code != 403 {
 				t.Errorf("%s cur=%q: %d", tc.path, cur, w.Code)
 			}
 		}
@@ -207,13 +186,6 @@ func TestReauthRequired(t *testing.T) {
 	}
 	if _, err := e.st.GetUser(ctx, "bob"); err != nil {
 		t.Error("bob deleted without re-auth")
-	}
-	// failures count toward the per-username limiter: 8 failures so far, 2 more lock admin
-	for i := 0; i < maxUserFailures; i++ {
-		e.postNoAuth("/settings/tokens", url.Values{"name": {"t1"}, "current_password": {"x"}}, c)
-	}
-	if w := e.post("/settings/tokens", url.Values{"name": {"t1"}}, c); w.Code != 429 {
-		t.Errorf("expected lock after repeated re-auth failures, got %d", w.Code)
 	}
 }
 

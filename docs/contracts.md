@@ -273,9 +273,17 @@ rule changes, the server (re)computes findings for affected hosts:
    Dedup key `(host_id, target, package_name, vuln_id, kind)`; never send the same key twice in a row.
    Delivery is per event: `Notifier.Notify` may return a `*notify.DeliveryError{Failed []int}` (indexes into the
    events passed in); the pipeline records every other event as delivered and retries only the failed ones.
-   A permanent 4xx from Matrix (other than 429) is logged at ERROR and recorded as delivered (not retried forever).
-   Message text: every untrusted field is cut to 300 characters with control characters removed, the body is
-   capped at 8 KiB; for draft (unreviewed LLM) rules only a warning and the server-generated fix command are shown.
+   A permanent 4xx from Matrix (other than 429) is logged at ERROR; for `resolved`, `agent_back`, `feed_ok` and
+   `pipeline_error` events it is recorded as delivered (not retried forever). For `exploitable`, `unknown_critical`,
+   `agent_silent` and `feed_stale` events a permanent failure is reported as failed (retried on later runs) and
+   surfaced through `notify.Config.OnDeliveryProblem(room, status, kind, permanent)` (wired to kv `health.notify_errors`,
+   the last 20 distinct problems, shown as a dashboard banner). "No room resolved for an event" is an error reported the
+   same way (not a silent success). A given (room, status) is logged / reported at most once per 10 min, and a retried
+   event is not posted again to rooms it already reached.
+   Message text: every untrusted field is cut to 300 characters with control characters removed and a zero-width space
+   after every `@` (no `@room` pings); every message carries `"m.mentions": {}`. At most 50 events are rendered per
+   group and 5 fixed versions per package ("+N more"); plain and formatted body are each capped at 8 KiB after HTML
+   escaping; for draft (unreviewed LLM) rules only a warning and the server-generated fix command are shown.
    Each pipeline run has a 10 min timeout; a panic in any background goroutine is logged and recovered, and a
    target whose matching panicked is flagged (`kv poison.<host>.<target-hash>`) and skipped until a new inventory arrives.
 
@@ -285,8 +293,12 @@ rule changes, the server (re)computes findings for affected hosts:
 `internal/server/health` every minute (dedup via `notifications_sent` keys `host|<id>|<kind>` and `server|feed|<kind>`):
 
 - `agent_silent` — a host that has checked in at least once has not checked in for `alerts.agent_silent_after`.
-  Routed by the host's labels. When more than max(5, 30% of the fleet) hosts go silent in one pass, ONE event without
-  a host (`Host.ID == ""`, `Detail` = "N agents silent — server/network problem?" + up to 20 hostnames) goes to the ops rooms.
+  Routed by the host's labels. When more than max(5, 30% of the fleet) hosts go silent in one pass (mass silence), the
+  hosts are still announced where their owners look: one event without a host (`Host.ID == ""`, "N agents silent —
+  server/network problem?", the first 50 hosts by last check-in, newest first, with IDs, and a link to the hosts page)
+  goes to the ops rooms, and for every label one event (`Host.ID == "group:<label>"`, `Host.Labels == [label]`) lists
+  up to 50 silent hosts carrying that label to that label's rooms (unlabelled hosts go to the default rooms). A host's
+  silence is recorded as notified only when a delivered message names it; unnamed hosts are announced on the next pass.
   Held back for 2 x check-in interval after server start.
 - `agent_back` — a silent host checked in again (clears the silent record so a later silence alerts again).
 - `feed_stale` / `feed_ok` — the vulnerability DB (kv `feeds.grype.updated_at` or the loaded DB build time, whichever is
@@ -297,7 +309,7 @@ rule changes, the server (re)computes findings for affected hosts:
 
 `Event.ServerLevel()` marks events routed to `alerts.ops_rooms`. Health events are never grouped with each other or
 with findings and are exempt from burst summarising. The web dashboard shows active feed/pipeline problems from kv
-`health.feed_stale` and `health.pipeline_errors`.
+`health.feed_stale`, `health.pipeline_errors` and `health.notify_errors`.
 
 ## 6. Server configuration (`/etc/panoptes/server.yaml`, all keys optional)
 

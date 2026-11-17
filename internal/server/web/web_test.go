@@ -28,6 +28,7 @@ type fakeRules struct {
 	validateErr error
 	validated   []model.Rule
 	reloads     int
+	st          store.Store // Reload picks up stored rules like the real engine
 }
 
 func (f *fakeRules) Rules() []model.Rule {
@@ -41,10 +42,17 @@ func (f *fakeRules) Validate(r model.Rule) error {
 	f.validated = append(f.validated, r)
 	return f.validateErr
 }
-func (f *fakeRules) Reload(context.Context) error {
+func (f *fakeRules) Reload(ctx context.Context) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.reloads++
+	if f.st != nil {
+		for i := range f.rules {
+			if r, err := f.st.GetRule(ctx, f.rules[i].ID); err == nil {
+				f.rules[i] = r
+			}
+		}
+	}
 	return nil
 }
 
@@ -84,7 +92,7 @@ func newEnv(t *testing.T, withRules bool) *env {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	e := &env{t: t, st: st, rules: &fakeRules{}, trig: &fakeTrig{}}
+	e := &env{t: t, st: st, rules: &fakeRules{st: st}, trig: &fakeTrig{}}
 	e.rules.rules = []model.Rule{{
 		ID: "CVE-2024-1", Vulns: []string{"CVE-2024-1"}, Title: "Test rule", Packages: []model.PackageSelector{{Name: "foo"}},
 		Facts: []string{"os.id"}, ExploitableIf: `facts["os.id"] == "debian"`, Explanation: "because", Status: model.RuleDraft, Source: "llm:test",
@@ -134,6 +142,9 @@ func (e *env) do(method, path string, form url.Values, c *http.Cookie, hdr ...st
 	}
 	r := httptest.NewRequest(method, path, body)
 	r.RemoteAddr = "192.0.2.1:1234"
+	if e.srv.pubURL != nil {
+		r.Host = e.srv.pubURL.Host
+	}
 	if form != nil {
 		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	}
@@ -158,12 +169,25 @@ func (e *env) post(path string, form url.Values, c *http.Cookie) *httptest.Respo
 	if form.Get("current_password") == "" {
 		form.Set("current_password", "pw-long-enough")
 	}
+	e.addRuleVersion(path, form)
 	return e.do("POST", path, form, c)
+}
+
+// addRuleVersion fills rule_version for /rules/{id}/... posts the way the rendered form would.
+func (e *env) addRuleVersion(path string, form url.Values) {
+	if form.Get("rule_version") != "" || !strings.HasPrefix(path, "/rules/") {
+		return
+	}
+	id := strings.Split(strings.TrimPrefix(path, "/rules/"), "/")[0]
+	if r, ok := e.srv.findRule(context.Background(), id); ok {
+		form.Set("rule_version", ruleVersion(r))
+	}
 }
 
 // postNoAuth posts without adding the acting user's current password.
 func (e *env) postNoAuth(path string, form url.Values, c *http.Cookie) *httptest.ResponseRecorder {
 	form.Set("csrf", e.csrf(c))
+	e.addRuleVersion(path, form)
 	return e.do("POST", path, form, c)
 }
 
@@ -365,7 +389,7 @@ func TestCSRFAndOriginRejected(t *testing.T) {
 		t.Errorf("foreign csrf: %d", w.Code)
 	}
 	// cross-origin with valid token
-	f := url.Values{"routes": {"prod = !a:b"}, "csrf": {e.csrf(c)}}
+	f := url.Values{"routes": {"prod = !a:b"}, "csrf": {e.csrf(c)}, "current_password": {"pw-long-enough"}}
 	if w := e.do("POST", "/settings/matrix", f, c, "Origin", "http://evil.example"); w.Code != 403 {
 		t.Errorf("cross origin: %d", w.Code)
 	}
@@ -376,7 +400,7 @@ func TestCSRFAndOriginRejected(t *testing.T) {
 		t.Error("setting saved despite rejected requests")
 	}
 	// same origin passes
-	if w := e.do("POST", "/settings/matrix", f, c, "Origin", "http://example.com", "Sec-Fetch-Site", "same-origin"); w.Code != 303 {
+	if w := e.do("POST", "/settings/matrix", f, c, "Origin", "http://panoptes.test", "Sec-Fetch-Site", "same-origin"); w.Code != 303 {
 		t.Errorf("same origin: %d", w.Code)
 	}
 }

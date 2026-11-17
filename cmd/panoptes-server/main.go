@@ -223,6 +223,8 @@ func wire(cfg *config.Config, st store.Store, log *slog.Logger, trig *lateTrigge
 			AccessToken:  os.Getenv(cfg.Matrix.AccessTokenEnv),
 			DefaultRooms: cfg.Matrix.DefaultRooms,
 			OpsRooms:     cfg.Alerts.OpsRooms,
+			// delivery problems show up as a banner on the dashboard
+			OnDeliveryProblem: health.NewProblemRecorder(st, log),
 		}
 		for _, r := range cfg.Matrix.Routes {
 			mcfg.Routes = append(mcfg.Routes, notify.Route{Label: r.Label, Rooms: r.Rooms})

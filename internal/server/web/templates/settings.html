@@ -11,6 +11,7 @@
   <input type="hidden" name="csrf" value="{{.CSRF}}">
   <label>Routes, one per line: <code>label = !room:server, !other:server</code>
   <textarea name="routes" rows="6" spellcheck="false" class="code-edit">{{.RoutesText}}</textarea></label>
+  <label>Your password <input type="password" name="current_password" autocomplete="current-password" required></label>
   <div><button type="submit" class="primary">Save routes</button></div>
 </form>
 <h3>From server.yaml (read-only)</h3>

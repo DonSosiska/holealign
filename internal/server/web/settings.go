@@ -17,10 +17,20 @@ import (
 
 const matrixSettingKey = "matrix.routes"
 
+const (
+	maxRoutesBytes   = 16 << 10
+	maxRoutes        = 200
+	maxRoomsPerRoute = 20
+	maxRoomIDLen     = 255
+)
+
 var nameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._@-]{0,63}$`)
 
 // parseMatrixRoutes parses lines of the form "label = !room:server, !room2:server".
 func parseMatrixRoutes(text string) ([]config.MatrixRoute, error) {
+	if len(text) > maxRoutesBytes {
+		return nil, fmt.Errorf("routes text is too long (max %d KiB)", maxRoutesBytes>>10)
+	}
 	routes := []config.MatrixRoute{}
 	seen := map[string]bool{}
 	for i, line := range strings.Split(text, "\n") {
@@ -33,6 +43,12 @@ func parseMatrixRoutes(text string) ([]config.MatrixRoute, error) {
 		if !ok || label == "" {
 			return nil, fmt.Errorf("line %d: expected \"label = !room:server, ...\"", i+1)
 		}
+		if err := api.ValidateLabels([]string{label}); err != nil {
+			return nil, fmt.Errorf("line %d: %s", i+1, clip(err.Error(), 200))
+		}
+		if len(routes) >= maxRoutes {
+			return nil, fmt.Errorf("line %d: too many routes (max %d)", i+1, maxRoutes)
+		}
 		if seen[label] {
 			return nil, fmt.Errorf("line %d: label %q is listed twice", i+1, label)
 		}
@@ -43,10 +59,16 @@ func parseMatrixRoutes(text string) ([]config.MatrixRoute, error) {
 			if rm == "" {
 				continue
 			}
+			if len(rm) > maxRoomIDLen {
+				return nil, fmt.Errorf("line %d: a room ID is longer than %d characters", i+1, maxRoomIDLen)
+			}
 			if !strings.HasPrefix(rm, "!") || !strings.Contains(rm, ":") || strings.ContainsAny(rm, " \t\r") {
 				return nil, fmt.Errorf("line %d: %q is not a Matrix room ID (expected !id:server)", i+1, rm)
 			}
 			rooms = append(rooms, rm)
+		}
+		if len(rooms) > maxRoomsPerRoute {
+			return nil, fmt.Errorf("line %d: label %q has more than %d rooms", i+1, label, maxRoomsPerRoute)
 		}
 		if len(rooms) == 0 {
 			return nil, fmt.Errorf("line %d: no rooms given for label %q", i+1, label)
@@ -113,6 +135,9 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request, sess *se
 }
 
 func (s *Server) handleMatrixSave(w http.ResponseWriter, r *http.Request, sess *session) {
+	if !s.reauth(w, r, sess) {
+		return
+	}
 	text := r.PostFormValue("routes")
 	routes, err := parseMatrixRoutes(text)
 	if err != nil {

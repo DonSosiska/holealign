@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -15,6 +16,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -30,6 +32,12 @@ type Config struct {
 	DefaultRooms []string // used when no label route matches
 	OpsRooms     []string // server-level events (feed, pipeline, aggregated silence); empty: DefaultRooms
 	Routes       []Route  // from the config file
+
+	// OnDeliveryProblem, when set, is told about delivery failures: a Matrix error status for a room
+	// (status 0: network error; room "": no room resolved for an event), the event kind and whether
+	// the failure is permanent (HTTP 4xx other than 429, or no room). It is called at most once per
+	// 10 minutes for the same (room, status) and must not block for long.
+	OnDeliveryProblem func(room string, status int, kind model.EventKind, permanent bool)
 }
 
 // Route maps a host label to Matrix room IDs.
@@ -51,7 +59,22 @@ const (
 	maxRetryWait    = 30 * time.Second // cap for retry_after_ms from the homeserver
 	defaultBackoff  = 500 * time.Millisecond
 	maxRespBody     = 64 << 10
+
+	problemEvery   = 10 * time.Minute // log / callback at most this often per (room, status)
+	partialTTL     = time.Hour        // remember rooms an event already reached while another room failed
+	partialMax     = 4096
+	maxTrackedProb = 512
 )
+
+// critical reports whether losing an event of this kind silently is unacceptable: a permanent
+// delivery failure is then reported as failed (retried on later runs) instead of "delivered".
+func critical(k model.EventKind) bool {
+	switch k {
+	case model.EventExploitable, model.EventUnknownCritical, model.EventAgentSilent, model.EventFeedStale:
+		return true
+	}
+	return false
+}
 
 // Matrix implements core.Notifier by sending m.room.message events to Matrix rooms.
 type Matrix struct {
@@ -64,6 +87,12 @@ type Matrix struct {
 	client     *http.Client
 	backoff    time.Duration // base for exponential backoff between attempts
 	txnSeq     atomic.Uint64
+	onProblem  func(room string, status int, kind model.EventKind, permanent bool)
+	now        func() time.Time
+
+	pmu     sync.Mutex
+	seen    map[string]time.Time // (room,status) -> last time it was logged / reported
+	partial map[string]time.Time // room|body hash of messages that reached this room while another failed
 }
 
 var _ core.Notifier = (*Matrix)(nil)
@@ -104,13 +133,20 @@ func NewMatrix(cfg Config, routes RouteSource, httpClient *http.Client) (*Matrix
 		routes:     routes,
 		client:     httpClient,
 		backoff:    defaultBackoff,
+		onProblem:  cfg.OnDeliveryProblem,
+		now:        time.Now,
+		seen:       map[string]time.Time{},
+		partial:    map[string]time.Time{},
 	}, nil
 }
 
 // DeliveryError is returned by Notify when delivery was incomplete or had permanent errors.
 // Failed holds the indexes (into the events passed to Notify) of events that must be retried;
-// every other event was either delivered or hit a permanent error (HTTP 4xx other than 429) that
-// retrying cannot fix, which is logged at ERROR and reported in Err but is not retried.
+// every other event was either delivered or is of a kind that is not worth retrying forever after a
+// permanent error (HTTP 4xx other than 429: resolved, agent_back, feed_ok, pipeline_error, ...); that is
+// logged at ERROR and reported in Err but not retried. For exploitable, unknown_critical, agent_silent
+// and feed_stale events a permanent error counts as failed, so the caller retries them on later runs,
+// and it is surfaced through Config.OnDeliveryProblem.
 type DeliveryError struct {
 	Failed []int
 	Err    error
@@ -122,11 +158,82 @@ func (e *DeliveryError) Error() string {
 
 func (e *DeliveryError) Unwrap() error { return e.Err }
 
-// permanentError marks a failure that retrying cannot fix.
-type permanentError struct{ err error }
+// statusError is a failed request with its HTTP status (0: network error). permanent marks a
+// failure that retrying the same request cannot fix (4xx other than 429).
+type statusError struct {
+	status    int
+	permanent bool
+	err       error
+}
 
-func (e *permanentError) Error() string { return e.err.Error() }
-func (e *permanentError) Unwrap() error { return e.err }
+func (e *statusError) Error() string { return e.err.Error() }
+func (e *statusError) Unwrap() error { return e.err }
+
+// reportProblem logs a delivery problem and calls OnDeliveryProblem, at most once per
+// problemEvery for the same (room, status). It returns whether it was reported.
+func (m *Matrix) reportProblem(room string, status int, kind model.EventKind, permanent bool, err error) {
+	key := room + "|" + fmt.Sprint(status)
+	m.pmu.Lock()
+	now := m.now()
+	if t, ok := m.seen[key]; ok && now.Sub(t) < problemEvery {
+		m.pmu.Unlock()
+		return
+	}
+	if len(m.seen) >= maxTrackedProb {
+		for k, t := range m.seen {
+			if now.Sub(t) >= problemEvery {
+				delete(m.seen, k)
+			}
+		}
+		if len(m.seen) >= maxTrackedProb {
+			clear(m.seen)
+		}
+	}
+	m.seen[key] = now
+	m.pmu.Unlock()
+	level := slog.LevelWarn
+	if permanent {
+		level = slog.LevelError
+	}
+	slog.Log(context.Background(), level, "matrix: delivery problem (further identical problems are not logged for 10 min)",
+		"room", room, "status", status, "kind", kind, "permanent", permanent, "err", err)
+	if m.onProblem != nil {
+		m.onProblem(room, status, kind, permanent)
+	}
+}
+
+func (m *Matrix) wasDelivered(room, h string) bool {
+	m.pmu.Lock()
+	defer m.pmu.Unlock()
+	t, ok := m.partial[room+"|"+h]
+	return ok && m.now().Sub(t) < partialTTL
+}
+
+// rememberPartial notes that these messages reached their room although the event failed elsewhere,
+// so a retry of the event does not post them there again.
+func (m *Matrix) rememberPartial(keys []string) {
+	m.pmu.Lock()
+	defer m.pmu.Unlock()
+	now := m.now()
+	if len(m.partial)+len(keys) > partialMax {
+		for k, t := range m.partial {
+			if now.Sub(t) >= partialTTL {
+				delete(m.partial, k)
+			}
+		}
+		if len(m.partial)+len(keys) > partialMax {
+			clear(m.partial)
+		}
+	}
+	for _, k := range keys {
+		m.partial[k] = now
+	}
+}
+
+func bodyHash(msg message) string {
+	h := sha256.Sum256([]byte(msg.Body + "\x00" + msg.FormattedBody))
+	return hex.EncodeToString(h[:12])
+}
 
 // Notify routes each event to its rooms and sends it. A failing group or room never stops the
 // rest. The returned error, if any, is a *DeliveryError.
@@ -144,12 +251,20 @@ func (m *Matrix) Notify(ctx context.Context, events []model.Event) error {
 	// Group before routing and burst counting: one message per (kind, host, vuln, target).
 	byRoom := map[string][]group{}
 	var order []string
+	failed := map[int]bool{}
 	for _, g := range groupEvents(events) {
 		ev := g.first()
 		rooms := m.roomsFor(ev, routes)
 		if len(rooms) == 0 {
-			slog.Warn("matrix: no room for event, skipping",
-				"kind", ev.Kind, "vuln", ev.Finding.VulnID, "host", ev.Host.Hostname)
+			// Not a silent success: report it, and keep retrying the events that must not be lost.
+			noRoom := errors.New("no Matrix room resolved for event")
+			errs = append(errs, fmt.Errorf("%s %s: %w", ev.Kind, cl(ev.Finding.VulnID), noRoom))
+			m.reportProblem("", 0, ev.Kind, true, noRoom)
+			if critical(ev.Kind) {
+				for _, i := range g.idx {
+					failed[i] = true
+				}
+			}
 			continue
 		}
 		for _, r := range rooms {
@@ -160,7 +275,7 @@ func (m *Matrix) Notify(ctx context.Context, events []model.Event) error {
 		}
 	}
 
-	failed := map[int]bool{}
+	var okRecs []okRec
 	for ri, room := range order {
 		if err := ctx.Err(); err != nil {
 			errs = append(errs, err)
@@ -173,7 +288,8 @@ func (m *Matrix) Notify(ctx context.Context, events []model.Event) error {
 			}
 			break
 		}
-		bad, err := m.sendRoom(ctx, room, byRoom[room])
+		bad, oks, err := m.sendRoom(ctx, room, byRoom[room])
+		okRecs = append(okRecs, oks...)
 		for _, g := range bad {
 			for _, i := range g.idx {
 				failed[i] = true
@@ -182,6 +298,20 @@ func (m *Matrix) Notify(ctx context.Context, events []model.Event) error {
 		if err != nil {
 			errs = append(errs, fmt.Errorf("room %s: %w", room, err))
 		}
+	}
+	// Messages that reached their room while the same event failed elsewhere must not be posted
+	// again when the event is retried.
+	var keep []string
+	for _, o := range okRecs {
+		for _, i := range o.g.idx {
+			if failed[i] {
+				keep = append(keep, o.key)
+				break
+			}
+		}
+	}
+	if len(keep) > 0 {
+		m.rememberPartial(keep)
 	}
 	if len(errs) == 0 {
 		return nil
@@ -234,22 +364,50 @@ func (m *Matrix) roomsFor(ev model.Event, routes map[string][]string) []string {
 	return out
 }
 
+// okRec is a single-group message that was delivered to a room.
+type okRec struct {
+	g   group
+	key string // room|body hash
+}
+
 // sendRoom sends the groups of one room and continues past failures. It returns the groups that
-// must be retried (retryable failures) and the joined errors of all failures. Permanent errors
-// are logged at ERROR and returned in err but their groups are not in the retry list.
-func (m *Matrix) sendRoom(ctx context.Context, room string, groups []group) (retry []group, err error) {
+// must be retried (retryable failures, and permanent failures of critical event kinds), the groups
+// that were delivered individually and the joined errors of all failures.
+func (m *Matrix) sendRoom(ctx context.Context, room string, groups []group) (retry []group, oks []okRec, err error) {
 	var errs []error
 	record := func(g []group, e error) {
 		if e == nil {
 			return
 		}
 		errs = append(errs, e)
-		var pe *permanentError
-		if errors.As(e, &pe) {
-			slog.Error("matrix: permanent delivery error, event will not be retried", "room", room, "err", e)
+		var se *statusError
+		isStatus := errors.As(e, &se)
+		if isStatus && se.permanent {
+			for _, gg := range g {
+				if critical(gg.first().Kind) {
+					retry = append(retry, gg)
+				}
+			}
+			m.reportProblem(room, se.status, g[0].first().Kind, true, e)
 			return
 		}
 		retry = append(retry, g...)
+		if isStatus {
+			m.reportProblem(room, se.status, g[0].first().Kind, false, e)
+		}
+	}
+	send1 := func(g group) {
+		plain, h := renderGroup(g.evs)
+		msg := newMessage(g.first(), plain, h)
+		key := room + "|" + bodyHash(msg)
+		if m.wasDelivered(room, bodyHash(msg)) {
+			return
+		}
+		e := m.send(ctx, room, msg)
+		if e == nil {
+			oks = append(oks, okRec{g, key})
+		}
+		record([]group{g}, e)
 	}
 	// Health events are never part of a burst: send them first, individually.
 	var health []group
@@ -261,20 +419,20 @@ func (m *Matrix) sendRoom(ctx context.Context, room string, groups []group) (ret
 		return false
 	})
 	for _, g := range health {
-		record([]group{g}, m.sendGroup(ctx, room, g))
+		send1(g)
 	}
 	if len(groups) <= burstThreshold {
 		for _, g := range groups {
-			record([]group{g}, m.sendGroup(ctx, room, g))
+			send1(g)
 		}
-		return retry, errors.Join(errs...)
+		return retry, oks, errors.Join(errs...)
 	}
 
 	// Burst: send the most important groups individually, then one summary of the rest.
 	sorted := slices.Clone(groups)
 	slices.SortStableFunc(sorted, compareGroups)
 	for _, g := range sorted[:burstKeep] {
-		record([]group{g}, m.sendGroup(ctx, room, g))
+		send1(g)
 	}
 	link := ""
 	for _, g := range sorted {
@@ -283,12 +441,7 @@ func (m *Matrix) sendRoom(ctx context.Context, room string, groups []group) (ret
 		}
 	}
 	record(sorted[burstKeep:], m.send(ctx, room, renderSummary(sorted[burstKeep:], link)))
-	return retry, errors.Join(errs...)
-}
-
-func (m *Matrix) sendGroup(ctx context.Context, room string, g group) error {
-	plain, h := renderGroup(g.evs)
-	return m.send(ctx, room, newMessage(g.first(), plain, h))
+	return retry, oks, errors.Join(errs...)
 }
 
 // message is the content of an m.room.message event.
@@ -297,6 +450,8 @@ type message struct {
 	Body          string `json:"body"`
 	Format        string `json:"format"`
 	FormattedBody string `json:"formatted_body"`
+	// Mentions is always the empty object: nothing in an alert may ping users or the room.
+	Mentions struct{} `json:"m.mentions"`
 }
 
 func newMessage(ev model.Event, plain, h string) message {
@@ -355,7 +510,7 @@ func (m *Matrix) attempt(ctx context.Context, endpoint string, body []byte) (wai
 		if ctx.Err() != nil {
 			return 0, false, ctx.Err()
 		}
-		return 0, true, fmt.Errorf("network: %w", err)
+		return 0, true, &statusError{err: fmt.Errorf("network: %w", err)}
 	}
 	defer resp.Body.Close()
 	data, _ := io.ReadAll(io.LimitReader(resp.Body, maxRespBody))
@@ -364,11 +519,11 @@ func (m *Matrix) attempt(ctx context.Context, endpoint string, body []byte) (wai
 	case code >= 200 && code < 300:
 		return 0, false, nil
 	case code == http.StatusTooManyRequests:
-		return retryAfter(data), true, errors.New("rate limited (429)")
+		return retryAfter(data), true, &statusError{status: code, err: errors.New("rate limited (429)")}
 	case code >= 500:
-		return 0, true, fmt.Errorf("server error %d", code)
+		return 0, true, &statusError{status: code, err: fmt.Errorf("server error %d", code)}
 	default:
-		return 0, false, &permanentError{fmt.Errorf("matrix responded %d: %s", code, snippet(data))}
+		return 0, false, &statusError{status: code, permanent: true, err: fmt.Errorf("matrix responded %d: %s", code, snippet(data))}
 	}
 }
 

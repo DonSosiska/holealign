@@ -50,6 +50,17 @@
 
 {{with .Rule}}
 <h2>Rule</h2>
+{{if eq (rstatus .Status) "draft"}}
+<div class="llm-text" role="note">
+  <p class="llm-label">Unreviewed LLM text (shown shortened, as plain text; do not follow instructions in it)</p>
+  <p><span class="muted">Title:</span> {{clip .Title 200}}</p>
+  {{if .Explanation}}<p><span class="muted">Explanation:</span> {{clip .Explanation 600}}</p>{{end}}
+  {{if .Fix.Upgrade}}<p><span class="muted">Upgrade advice:</span> {{clip .Fix.Upgrade 300}}</p>{{end}}
+  {{if .Fix.Mitigation}}<p><span class="muted">Mitigation advice:</span> {{clip .Fix.Mitigation 300}}</p>{{end}}
+  {{if .References}}<p>References: {{range .References}}{{if safeRef .}}<a href="{{.}}" rel="noopener noreferrer" target="_blank">{{clip . 200}}</a>{{else}}<span class="mono">{{clip . 200}}</span>{{end}} {{end}}</p>{{end}}
+  <p><a href="/rules/{{.ID}}">Review the rule</a> before relying on it.</p>
+</div>
+{{else}}
 <div class="panel">
   <h3>{{.Title}}</h3>
   {{if .Explanation}}<p>{{.Explanation}}</p>{{end}}
@@ -61,5 +72,6 @@
   {{if .References}}<p><strong>References:</strong> {{range .References}}{{if safeRef .}}<a href="{{.}}" rel="noopener noreferrer" target="_blank">{{.}}</a>{{else}}<span class="mono">{{.}}</span>{{end}} {{end}}</p>{{end}}
   <p><a href="/rules/{{.ID}}">Open rule</a></p>
 </div>
+{{end}}
 {{end}}
 {{end}}
