@@ -3,6 +3,9 @@ package pipeline
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 
@@ -142,5 +145,52 @@ func TestRealErrorWordingAndCleanOnSuccess(t *testing.T) {
 	defer mu.Unlock()
 	if poisoned != 1 || cleans != 1 {
 		t.Fatalf("poisoned=%d cleans=%d", poisoned, cleans)
+	}
+}
+
+// lockedBuf is a log sink that is safe for the pipeline's goroutines.
+type lockedBuf struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (l *lockedBuf) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuf) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
+}
+
+func TestNoDBLogsInfoNotError(t *testing.T) {
+	e := setup(t)
+	var buf lockedBuf
+	e.p.log = slog.New(slog.NewTextHandler(&buf, nil))
+	e.m.err = fmt.Errorf("grype: %w", match.ErrNoDB)
+	e.p.Trigger(e.host.ID)
+	e.p.Wait()
+	out := buf.String()
+	if strings.Contains(out, "level=ERROR") {
+		t.Fatalf("no-DB run logged an ERROR:\n%s", out)
+	}
+	if !strings.Contains(out, "level=INFO") || !strings.Contains(out, "vulnerability DB not loaded yet") {
+		t.Fatalf("missing postponed INFO line:\n%s", out)
+	}
+}
+
+func TestRealRunErrorStillLoggedAsError(t *testing.T) {
+	e := setup(t)
+	var buf lockedBuf
+	e.p.log = slog.New(slog.NewTextHandler(&buf, nil))
+	e.m.err = errors.New("kaboom")
+	e.p.Trigger(e.host.ID)
+	e.p.Wait()
+	out := buf.String()
+	if !strings.Contains(out, "level=ERROR") || !strings.Contains(out, "pipeline run failed") {
+		t.Fatalf("real failure not logged as ERROR:\n%s", out)
 	}
 }

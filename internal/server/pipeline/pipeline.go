@@ -371,7 +371,7 @@ func (p *Pipeline) runLimited(hostID string) (deferFor time.Duration) {
 			}()
 		}
 	}()
-	if runErr = p.Run(ctx, hostID); runErr != nil && !errors.Is(runErr, context.Canceled) {
+	if runErr = p.Run(ctx, hostID); runErr != nil && !errors.Is(runErr, context.Canceled) && !errors.Is(runErr, match.ErrNoDB) {
 		p.log.Error("pipeline run failed", "host", hostID, "err", runErr)
 	}
 	return 0

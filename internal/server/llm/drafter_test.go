@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"path/filepath"
@@ -252,6 +253,36 @@ func TestValidationRetrySucceeds(t *testing.T) {
 	e.run(finding())
 	if e.prov.n() != 2 || len(e.got) != 1 {
 		t.Fatalf("calls=%d got=%d", e.prov.n(), len(e.got))
+	}
+}
+
+func coolingDown(t *testing.T, e *env) bool {
+	t.Helper()
+	v, err := e.st.KVGet(context.Background(), "llm.cooldown.CVE-2030-0001|foo")
+	return err == nil && v != ""
+}
+
+func TestCanceledCompletionNoCooldown(t *testing.T) {
+	e := newEnv(t, 50, fmt.Errorf("provider: %w", context.Canceled), goodJSON)
+	e.run(finding())
+	if coolingDown(t, e) {
+		t.Fatal("cooldown recorded for a canceled completion")
+	}
+	e.run(finding()) // not cooled down: retried immediately
+	if e.prov.n() != 2 || len(e.got) != 1 {
+		t.Fatalf("calls=%d got=%d", e.prov.n(), len(e.got))
+	}
+}
+
+func TestPerCallTimeoutRecordsCooldown(t *testing.T) {
+	e := newEnv(t, 50, fmt.Errorf("provider: %w", context.DeadlineExceeded), goodJSON)
+	e.run(finding())
+	if !coolingDown(t, e) {
+		t.Fatal("per-call timeout must record the cooldown")
+	}
+	e.run(finding()) // within 6 h: skipped
+	if e.prov.n() != 1 {
+		t.Fatalf("retried during cooldown: calls=%d", e.prov.n())
 	}
 }
 

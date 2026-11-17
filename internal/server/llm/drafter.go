@@ -334,6 +334,9 @@ func (d *Drafter) handle(ctx context.Context, f model.Finding) {
 			if errors.Is(err, ErrRefused) {
 				log.Warn("llm: model refused")
 				d.markFailed(ctx, key, f.HostID, "refused", now)
+			} else if errors.Is(err, context.Canceled) || ctx.Err() != nil {
+				// Shutdown or cancellation, not a provider failure: no cooldown, the next pipeline run retries.
+				log.Debug("llm: completion interrupted", "err", err)
 			} else {
 				// API/network error: cool this key down so a failing provider is not hammered.
 				log.Warn("llm: completion failed", "err", err)
