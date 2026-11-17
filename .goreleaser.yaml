@@ -62,10 +62,11 @@ signs:
       - "${artifact}"
     output: true
 
-# Sign the multi-arch image manifests (by digest) pushed to ghcr.io.
+# Sign every pushed image digest (per-arch images and the multi-arch manifests)
+# by digest, so each one verifies on its own.
 docker_signs:
   - cmd: cosign
-    artifacts: manifests
+    artifacts: all
     output: true
     args:
       - sign
@@ -174,7 +175,10 @@ docker_manifests:
       - "ghcr.io/OWNER/panoptes-server:{{ .Version }}-amd64"
       - "ghcr.io/OWNER/panoptes-server:{{ .Version }}-arm64"
 
+  # "latest" moves on every release, so it is only published for final semver
+  # releases (no prerelease suffix such as -rc1). Prereleases skip it.
   - name_template: "ghcr.io/OWNER/panoptes-server:latest"
+    skip: "{{ if .Prerelease }}true{{ end }}"
     image_templates:
       - "ghcr.io/OWNER/panoptes-server:{{ .Version }}-amd64"
       - "ghcr.io/OWNER/panoptes-server:{{ .Version }}-arm64"

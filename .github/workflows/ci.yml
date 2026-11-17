@@ -3,9 +3,11 @@ name: ci
 # pull_request (not pull_request_target): PRs from forks run without secrets
 # and with a read-only token.
 on:
-  push:
   pull_request:
+  push:
+    branches: [main]
 
+# Read-only token for every job, including on pull requests.
 permissions:
   contents: read
 
