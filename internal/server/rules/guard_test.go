@@ -36,33 +36,40 @@ func TestDraftGuard(t *testing.T) {
 	// ungrounded: always unknown
 	e := draftEngine(model.Rule{ID: "a", Status: model.RuleDraft, ExploitableIf: "true"})
 	ev := evalKEV(t, e, false, nil)
-	want(t, ev, model.VerdictConditionsUnknown, "LLM draft suggests exploitable: because reasons")
+	want(t, ev, model.VerdictConditionsUnknown, "LLM draft: condition does not depend on host facts")
 	if ev.Rule == nil || ev.RuleStatus != model.RuleDraft {
 		t.Errorf("rule info lost: %+v", ev)
 	}
 	e = draftEngine(model.Rule{ID: "a", Status: model.RuleDraft, ExploitableIf: "false"})
-	want(t, evalKEV(t, e, false, nil), model.VerdictConditionsUnknown, "LLM draft suggests affected_not_exploitable")
+	want(t, evalKEV(t, e, false, nil), model.VerdictConditionsUnknown, "LLM draft suggests not exploitable (unreviewed)")
 	// .installed only
 	e = draftEngine(model.Rule{ID: "a", Status: model.RuleDraft, Facts: []string{"nginx.installed"}, ExploitableIf: `facts["nginx.installed"] == true`})
-	want(t, evalKEV(t, e, false, map[string]any{"nginx.installed": true}), model.VerdictConditionsUnknown, "LLM draft suggests")
+	want(t, evalKEV(t, e, false, map[string]any{"nginx.installed": true}), model.VerdictConditionsUnknown, "LLM draft: condition does not depend")
 	// declared-but-unused real fact does not ground
 	e = draftEngine(model.Rule{ID: "a", Status: model.RuleDraft, Facts: []string{"services.active"}, ExploitableIf: `true`})
-	want(t, evalKEV(t, e, false, map[string]any{"services.active": []any{"sshd"}}), model.VerdictConditionsUnknown, "LLM draft suggests")
+	want(t, evalKEV(t, e, false, map[string]any{"services.active": []any{"sshd"}}), model.VerdictConditionsUnknown, "LLM draft: condition does not depend")
 	// fact mentioned only inside a string literal does not ground
 	e = draftEngine(model.Rule{ID: "a", Status: model.RuleDraft, Facts: []string{"services.active"}, ExploitableIf: `"facts[\"services.active\"]" == "x" || true`})
-	want(t, evalKEV(t, e, false, map[string]any{"services.active": []any{"sshd"}}), model.VerdictConditionsUnknown, "LLM draft suggests")
+	want(t, evalKEV(t, e, false, map[string]any{"services.active": []any{"sshd"}}), model.VerdictConditionsUnknown, "LLM draft: condition does not depend")
 	// grounded exploitable allowed, with draft warning
 	g := model.Rule{ID: "a", Status: model.RuleDraft, Facts: []string{"services.active"}, ExploitableIf: `"sshd" in facts["services.active"]`}
 	e = draftEngine(g)
 	ev = evalKEV(t, e, true, map[string]any{"services.active": []any{"sshd"}})
 	want(t, ev, model.VerdictExploitable, "LLM draft (unreviewed)")
-	// grounded not exploitable: ok normally, unknown on KEV / Critical
+	// drafts never lower a verdict: not exploitable becomes unknown at every severity
 	g.ExploitableIf = `"nope" in facts["services.active"]`
 	e = draftEngine(g)
 	f := map[string]any{"services.active": []any{"sshd"}}
-	want(t, evalKEV(t, e, false, f), model.VerdictNotExploitable, "LLM draft (unreviewed)")
-	want(t, evalKEV(t, e, true, f), model.VerdictConditionsUnknown, "KEV/Critical need review")
-	want(t, evalSev(t, e, false, "CRITICAL", f), model.VerdictConditionsUnknown, "KEV/Critical need review")
+	for _, sev := range []string{"Low", "Medium", "High", "Critical"} {
+		want(t, evalSev(t, e, false, sev, f), model.VerdictConditionsUnknown, "LLM draft suggests not exploitable (unreviewed): because reasons")
+	}
+	want(t, evalKEV(t, e, true, f), model.VerdictConditionsUnknown, "LLM draft suggests not exploitable")
+	// not_affected_if on a draft cannot suppress either
+	g2 := g
+	g2.ExploitableIf = `"sshd" in facts["services.active"]`
+	g2.NotAffectedIf = `facts["services.active"].size() > 0`
+	e = draftEngine(g2)
+	want(t, evalSev(t, e, false, "High", f), model.VerdictConditionsUnknown, "LLM draft suggests not exploitable")
 	// reviewed: unaffected
 	e = draftEngine(model.Rule{ID: "a", Status: model.RuleReviewed, ExploitableIf: "true"})
 	want(t, evalKEV(t, e, false, nil), model.VerdictExploitable)
@@ -110,7 +117,7 @@ func TestValidateFileMatchPolicy(t *testing.T) {
 	if err := Validate(mk("/etc/nginx/conf.d/*.conf", `^\s*ssl_protocols`)); err != nil {
 		t.Fatalf("good request rejected: %v", err)
 	}
-	if err := Validate(mk("/opt/*/conf/*.conf", `Listen`)); err != nil {
+	if err := Validate(mk("/opt/app/conf/*.conf", `Listen\s+443`)); err != nil {
 		t.Fatalf("opt root rejected: %v", err)
 	}
 	bad := []struct{ path, pat string }{
@@ -136,6 +143,19 @@ func TestValidateFileMatchPolicy(t *testing.T) {
 		{"/etc/a.conf", "^"},
 		{"/etc/a.conf", "(?s).*"},
 		{"/etc/a.conf", "foo|"},
+		{"/etc/ssh/*_key", "Port22"},
+		{"/etc/ssh/ssh_?ost_rsa_key", "Port22"},
+		{"/etc/*.conf", "Port22"},
+		{"/opt/*/conf/a.conf", "Port22"},
+		{"/etc/a.conf", `[a-z]`},
+		{"/etc/a.conf", `[[:alpha:]]`},
+		{"/etc/a.conf", `\pL`},
+		{"/etc/a.conf", `e`},
+		{"/etc/a.conf", `[a-z0-9_]`},
+		{"/etc/a.conf", `abc`},
+		{"/etc/a.conf", `(foo)?(bar)*baz`},
+		{"/etc/a.conf", `(abcd|ef)`},
+		{"/etc/a.conf", `a{101}bcdef`},
 		{"/etc/a.conf", ".+"},
 		{"/etc/a.conf", strings.Repeat("a", 257)},
 	}

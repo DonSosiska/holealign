@@ -149,24 +149,43 @@ func renderOSV(v osvVuln) string {
 	return truncate(b.String(), maxAdvisoryChars)
 }
 
-// specificText renders the short scalar values of an OSV database_specific /
-// ecosystem_specific object (for example Debian's urgency "unimportant" or a
-// "disputed" flag) as "<label> <key>: <value>" lines, in key order.
+// specificKeys is the allowlist of OSV database_specific / ecosystem_specific
+// keys shown to the model; everything else is attacker-controllable free text.
+var specificKeys = map[string]bool{
+	"urgency": true, "severity": true, "disputed": true, "cwe_ids": true,
+	"github_reviewed": true, "nvd_published_at": true,
+}
+
+// specificText renders the allowlisted short scalar values of an OSV
+// database_specific / ecosystem_specific object (for example Debian's urgency
+// "unimportant" or a "disputed" flag) as "<label> <key>: <value>" lines, in key order.
 func specificText(label string, m map[string]any) string {
 	keys := make([]string, 0, len(m))
 	for k := range m {
-		keys = append(keys, k)
+		if specificKeys[k] {
+			keys = append(keys, k)
+		}
 	}
 	sort.Strings(keys)
 	var b strings.Builder
 	for _, k := range keys {
 		switch v := m[k].(type) {
 		case string:
-			if v != "" && len(v) <= 300 {
+			if v != "" && len(v) <= 100 {
 				fmt.Fprintf(&b, "%s %s: %s\n", label, k, v)
 			}
 		case bool, float64:
 			fmt.Fprintf(&b, "%s %s: %v\n", label, k, v)
+		case []any:
+			var parts []string
+			for i, e := range v {
+				if s, ok := e.(string); ok && len(s) <= 32 && i < 20 {
+					parts = append(parts, s)
+				}
+			}
+			if len(parts) > 0 {
+				fmt.Fprintf(&b, "%s %s: %s\n", label, k, strings.Join(parts, ", "))
+			}
 		}
 	}
 	return b.String()

@@ -14,7 +14,8 @@ const (
 )
 
 // denyPatterns are component sequences (lowercase, path.Match globs) that must
-// never appear in a file.match path. Keep in sync with the agent's copy.
+// never appear in a file.match path, at any depth. The agent keeps its own copy
+// and re-checks it on resolved paths; the server policy below is stricter.
 var denyPatterns = [][]string{
 	{"shadow*"}, {"gshadow*"}, {"passwd-"}, {"sudoers*"}, {"ssh", "ssh_host_*"},
 	{"ssl", "private"}, {"letsencrypt"}, {"pki"}, {"panoptes"}, {"krb5.keytab"},
@@ -25,52 +26,116 @@ var denyPatterns = [][]string{
 	{"mysql", "debian.cnf"}, {"*.env"},
 }
 
+// denyPaths are absolute path globs (lowercase) of credential-bearing files and
+// directories. A path is rejected when it equals, lies below, or (for a
+// wildcard final component) may match one of them.
+var denyPaths = []string{
+	"/etc/kubernetes", "/etc/rancher", "/etc/fstab", "/etc/exim4/passwd.client",
+	"/etc/postfix/sasl_passwd*", "/etc/samba/smbpasswd", "/etc/pgbouncer",
+	"/etc/wpa_supplicant", "/etc/environment", "/etc/default", "/etc/sysconfig",
+	"/etc/boto.cfg", "/etc/aws", "/etc/gcloud", "/etc/vault*", "/etc/consul*",
+	"/etc/nomad*", "/etc/ansible", "/etc/openldap", "/etc/ldap", "/etc/dovecot",
+	"/etc/zabbix", "/etc/telegraf", "/etc/filebeat", "/etc/grafana", "/etc/docker",
+	"/etc/opasswd", "/etc/cron*", "/etc/crontab", "/etc/redis", "/etc/mysql",
+	"/etc/postgresql", "/etc/mongod.conf", "/etc/rabbitmq", "/etc/elasticsearch",
+	"/etc/kibana", "/etc/logstash", "/etc/sssd", "/etc/krb5*", "/etc/letsencrypt",
+	"/etc/ssl", "/etc/pki",
+}
+
+// secretSubstrings must not occur in the final path component (literal parts).
+var secretSubstrings = []string{
+	"key", "secret", "token", "shadow", "passwd", "credential", ".pem", ".p12",
+	".pfx", ".jks", ".env", "htpasswd", "keystore", "sudoers", "keytab",
+}
+
+const minFinalLiteral = 3
+
 func hasMeta(s string) bool { return strings.ContainsAny(s, "*?") }
 
-// exemplars of a deny pattern: stars replaced by "" or "x".
-func exemplars(d string) []string {
-	out := []string{""}
-	parts := strings.Split(d, "*")
-	out = []string{parts[0]}
-	for _, p := range parts[1:] {
-		var next []string
-		for _, o := range out {
-			next = append(next, o+p, o+"x"+p)
-		}
-		out = next
-	}
-	return out
+// literalParts splits a glob component into its literal runs.
+func literalParts(g string) []string {
+	return strings.FieldsFunc(g, func(r rune) bool { return r == '*' || r == '?' })
 }
 
-// globCandidates are concrete strings a glob component can produce.
-func globCandidates(g string) []string {
-	a := strings.NewReplacer("*", "", "?", "x").Replace(g)
-	b := strings.NewReplacer("*", "x", "?", "x").Replace(g)
-	return []string{a, b}
+// fuzzyMatch reports whether wildcard component g may match deny component d:
+// every literal part of g occurs in d (stripped of its own '*'), in order.
+func fuzzyMatch(g, d string) bool {
+	d = strings.ReplaceAll(d, "*", "")
+	for _, p := range literalParts(g) {
+		i := strings.Index(d, p)
+		if i < 0 {
+			return false
+		}
+		d = d[i+len(p):]
+	}
+	return true
 }
 
-// mayMatch reports whether glob/literal component g can match deny pattern d.
-func mayMatch(g, d string) bool {
-	if !hasMeta(g) {
-		ok, _ := path.Match(d, g)
-		return ok
-	}
-	for _, x := range exemplars(d) {
-		if ok, _ := path.Match(g, x); ok {
-			return true
+// seqMayMatch reports whether the deny component sequence d can match chk at
+// some offset. Only the last component of chk may be a wildcard (wild).
+func seqMayMatch(chk, d []string, wild bool) bool {
+	n := len(chk)
+	for i := 0; i < n; i++ {
+		ok := true
+		for j := range d {
+			pos := i + j
+			if pos >= n {
+				ok = false
+				break
+			}
+			if pos == n-1 && wild {
+				if !fuzzyMatch(chk[pos], d[j]) {
+					ok = false
+				}
+				break // the wildcard component ends the comparison
+			}
+			if m, _ := path.Match(d[j], chk[pos]); !m {
+				ok = false
+				break
+			}
 		}
-	}
-	for _, c := range globCandidates(g) {
-		if ok, _ := path.Match(d, c); ok {
+		if ok {
 			return true
 		}
 	}
 	return false
 }
 
+// pathDenied checks chk against the absolute deny globs.
+func pathDenied(chk []string, wild bool) bool {
+	n := len(chk)
+	for _, e := range denyPaths {
+		ec := strings.Split(e[1:], "/")
+		for k := 1; k <= len(ec) && k <= n; k++ {
+			if k == n && wild {
+				// the wildcard final component against entry component k-1; deeper
+				// entry components below it are not reachable by a file glob
+				if exactPrefix(chk[:k-1], ec[:k-1]) && fuzzyMatch(chk[k-1], ec[k-1]) {
+					return true
+				}
+				continue
+			}
+			if k == len(ec) && exactPrefix(chk[:k], ec) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func exactPrefix(chk, ec []string) bool {
+	for i := range ec {
+		if m, _ := path.Match(ec[i], chk[i]); !m {
+			return false
+		}
+	}
+	return true
+}
+
 // FileMatchPathAllowed reports whether a file.match path glob is acceptable:
-// absolute, clean, under an allowed configuration root and not able to match
-// anything on the secret denylist.
+// absolute, clean, under an allowed configuration root, with wildcards only in
+// the final component, and not able to match anything on the secret denylist.
+// The agent applies its own denylist again to the resolved physical path.
 func FileMatchPathAllowed(p string) error {
 	if p == "" || len(p) > 1024 {
 		return fmt.Errorf("path must be 1..1024 characters")
@@ -99,34 +164,45 @@ func FileMatchPathAllowed(p string) error {
 	for i, c := range comps {
 		chk[i] = strings.ToLower(c)
 	}
+	n := len(chk)
+	for _, c := range chk[:n-1] {
+		if hasMeta(c) {
+			return fmt.Errorf("path %q: wildcards are only allowed in the final path component", p)
+		}
+	}
+	last := chk[n-1]
+	wild := hasMeta(last)
+	if wild {
+		pre := last[:strings.IndexAny(last, "*?")]
+		suf := last[strings.LastIndexAny(last, "*?")+1:]
+		if len(pre) < minFinalLiteral && len(suf) < minFinalLiteral {
+			return fmt.Errorf("path %q: a wildcard file name needs a literal prefix or suffix of at least %d characters", p, minFinalLiteral)
+		}
+	}
+	for _, s := range secretSubstrings {
+		if strings.Contains(last, s) {
+			return fmt.Errorf("path %q may match a protected (secret/credential) location (%q)", p, s)
+		}
+	}
 	ok := false
 	switch {
-	case chk[0] == "etc" && len(chk) >= 2:
+	case chk[0] == "etc" && n >= 2:
 		ok = true
-	case len(chk) >= 4 && chk[0] == "usr" && chk[1] == "local" && chk[2] == "etc":
+	case n >= 4 && chk[0] == "usr" && chk[1] == "local" && chk[2] == "etc":
 		ok = true
-	case len(chk) >= 4 && chk[0] == "opt" && (chk[2] == "conf" || chk[2] == "etc"):
+	case n >= 4 && chk[0] == "opt" && (chk[2] == "conf" || chk[2] == "etc"):
 		ok = true
-		if chk[1] == "*" {
-			chk[1] = "x" // the wildcard application directory of the root itself
-		}
 	}
 	if !ok {
-		return fmt.Errorf("path %q is not under an allowed root (/etc/, /opt/*/conf/, /opt/*/etc/, /usr/local/etc/)", p)
+		return fmt.Errorf("path %q is not under an allowed root (/etc/, /opt/<app>/conf/, /opt/<app>/etc/, /usr/local/etc/)", p)
 	}
 	for _, d := range denyPatterns {
-		for i := 0; i+len(d) <= len(chk); i++ {
-			all := true
-			for j := range d {
-				if !mayMatch(chk[i+j], d[j]) {
-					all = false
-					break
-				}
-			}
-			if all {
-				return fmt.Errorf("path %q may match a protected (secret/credential) location", p)
-			}
+		if seqMayMatch(chk, d, wild) {
+			return fmt.Errorf("path %q may match a protected (secret/credential) location", p)
 		}
+	}
+	if pathDenied(chk, wild) {
+		return fmt.Errorf("path %q may match a protected (secret/credential) location", p)
 	}
 	return nil
 }
@@ -151,8 +227,6 @@ func FactRequestPrefix(ruleID string) string {
 
 var requestSuffixRe = regexp.MustCompile(`^[a-z0-9._-]+$`)
 
-var probes = []string{"a", "Z", "0", "-", "#", "/", "=", " "}
-
 func checkRequest(ruleID string, fr factReq) []string {
 	var p []string
 	pre := FactRequestPrefix(ruleID)
@@ -173,22 +247,8 @@ func checkRequest(ruleID string, fr factReq) []string {
 	if pat != "" {
 		if len(pat) > maxFileMatchPatLen {
 			p = append(p, fmt.Sprintf("params.pattern longer than %d chars", maxFileMatchPatLen))
-		} else if re, err := regexp.Compile(pat); err != nil {
-			p = append(p, fmt.Sprintf("params.pattern is not valid RE2: %v", err))
-		} else {
-			if re.MatchString("") {
-				p = append(p, "params.pattern matches the empty string (match-all patterns are not allowed)")
-			} else {
-				n := 0
-				for _, s := range probes {
-					if re.MatchString(s) {
-						n++
-					}
-				}
-				if n >= 3 {
-					p = append(p, "params.pattern is too broad (matches almost any line); use a specific directive")
-				}
-			}
+		} else if msg := checkPattern(pat); msg != "" {
+			p = append(p, "params.pattern "+msg)
 		}
 	}
 	return p

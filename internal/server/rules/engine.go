@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"cel.dev/cel-go/cel"
+	celast "cel.dev/cel-go/common/ast"
 
 	"panoptes/internal/model"
 	"panoptes/internal/server/core"
@@ -45,6 +46,9 @@ type compiled struct {
 	declared []string // facts that must be present
 	refs     []factRef
 	redact   bool // rule reads file.match facts: never echo values in errors
+	// factDep reports (drafts only) that exploitable_if's result actually
+	// varies with host facts; computed once at compile time.
+	factDep bool
 }
 
 type snapshot struct {
@@ -97,7 +101,8 @@ func (e *Engine) Reload(ctx context.Context) error {
 		c := &compiled{rule: r, fromDB: fromDB, declared: declaredFacts(r), redact: len(r.FactRequests) > 0}
 		var err error
 		var r1, r2 []factRef
-		if c.exploit, r1, err = compileBool(r.ExploitableIf); err != nil {
+		var root celast.Expr
+		if c.exploit, r1, root, err = compileBoolAST(r.ExploitableIf); err != nil {
 			return nil, err
 		}
 		if r.NotAffectedIf != "" {
@@ -106,6 +111,9 @@ func (e *Engine) Reload(ctx context.Context) error {
 			}
 		}
 		c.refs = mergeRefs(r1, r2)
+		if r.Status == model.RuleDraft {
+			c.factDep = factDependent(c.exploit, root, r1, r)
+		}
 		return c, nil
 	}
 
@@ -274,22 +282,20 @@ func (e *Engine) Evaluate(ctx context.Context, hc core.HostContext, f model.Find
 	if c.rule.Status != model.RuleDraft {
 		return ev
 	}
-	if ev.Verdict != model.VerdictExploitable && ev.Verdict != model.VerdictNotExploitable {
-		return ev
-	}
-	expl := firstChars(c.rule.Explanation, 200)
-	if !c.grounded() {
-		suggested := string(ev.Verdict)
+	// Drafts are unreviewed LLM output: they may raise a finding to
+	// "exploitable" (when grounded in host facts) but never lower a verdict.
+	switch ev.Verdict {
+	case model.VerdictExploitable:
+		if !c.grounded() || !c.factDep {
+			ev.Verdict = model.VerdictConditionsUnknown
+			ev.Reason = "LLM draft: condition does not depend on host facts"
+			return ev
+		}
+		ev.Reason = "LLM draft (unreviewed): " + ev.Reason
+	case model.VerdictNotExploitable:
 		ev.Verdict = model.VerdictConditionsUnknown
-		ev.Reason = "LLM draft suggests " + suggested + ": " + expl
-		return ev
+		ev.Reason = "LLM draft suggests not exploitable (unreviewed): " + firstChars(c.rule.Explanation, 200)
 	}
-	if ev.Verdict == model.VerdictNotExploitable && (f.KEV || strings.EqualFold(strings.TrimSpace(f.Severity), "critical")) {
-		ev.Verdict = model.VerdictConditionsUnknown
-		ev.Reason = "LLM draft suggests not exploitable (unreviewed; KEV/Critical need review): " + expl
-		return ev
-	}
-	ev.Reason = "LLM draft (unreviewed): " + ev.Reason
 	return ev
 }
 
