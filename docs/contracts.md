@@ -49,7 +49,39 @@ ca_file: /etc/panoptes/ca.pem   # optional PEM bundle; when set ONLY these roots
 server_cert_sha256: ["<64 hex>"] # optional; leaf SubjectPublicKeyInfo SHA-256 pins, checked in addition to chain validation
 client_cert: /etc/panoptes/client.pem  # optional mTLS client certificate; client_key must be set with it
 client_key: /etc/panoptes/client.key
+collector_socket: /run/panoptes/collector.sock  # privilege separation (below); unused in -mode all
+collector_user: panoptes        # uid allowed on the socket besides root; its group owns the socket
 ```
+
+### Process modes and the collector socket
+
+One binary, `-mode` flag: `all` (default; one process doing everything, used by `-once`, containers and e2e),
+`collector` and `sender`. The process that parses untrusted local files as root has no network, and the process
+that talks to the network is not root.
+
+- **collector** (root, `panoptes-collector.service`, `PrivateNetwork=yes`, `IPAddressDeny=any`,
+  `RestrictAddressFamilies=AF_UNIX`): listens on `collector_socket` (`/run/panoptes/collector.sock`; directory
+  `0750 root:panoptes`, socket `0660 root:panoptes`). It applies every collection policy itself (file.match allow/deny
+  lists and budgets, binary trust checks, scan timeouts) and runs at most one inventory scan per 10 minutes whoever
+  asks (later requests get the previous result). Its code lives in packages that do not import the HTTP transport
+  (`go list -deps` test). In a private network namespace `/proc/net` is empty, so `-mode collector` reads
+  `sockets.listening` from `/proc/1/net/*` (the host namespace of PID 1); if that is unreadable the sockets facts are
+  omitted (unknown), never reported empty.
+- **sender** (user `panoptes`, `panoptes-agent.service`, empty capability set, `NoNewPrivileges`): the whole runner
+  (enroll, check-in loop, clamping, backoff, credentials in `state_dir` owned by `panoptes`), but facts, inventory,
+  OS info and change detection come from the collector. `/etc/panoptes/agent.yaml` is `root:panoptes 0640`.
+- Socket protocol: one request per connection, one JSON line of at most 64 KiB, answered by one JSON document
+  (gzip-compressed for `inventory`; errors are plain JSON). `SO_PEERCRED` uid must be 0 or the `collector_user`'s uid.
+
+| Request | Response |
+|---|---|
+| `{"op":"facts","fact_requests":[...]}` | `{"ok":true,"facts":{...}}` |
+| `{"op":"inventory","gzip":true}` | `{"ok":true,"inventory":<InventoryPayload>}` |
+| `{"op":"osinfo"}` | `{"ok":true,"os":<OSInfo>,"machine_id":"<sha256 hex>"}` |
+| `{"op":"changed"}` | `{"ok":true,"changed":<bool>}` |
+| anything else / too large / bad JSON | `{"ok":false,"error":"..."}` |
+
+`panoptes-agent -print-facts` / `-print-inventory` / `-once` always run in-process.
 
 Server identity: TLS 1.2+, chain and host name are always verified (`InsecureSkipVerify` is never set). With `ca_file`
 only that bundle is trusted. With `server_cert_sha256` the presented leaf's SPKI SHA-256 must be in the list (colons

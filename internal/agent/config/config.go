@@ -39,6 +39,13 @@ type Config struct {
 	ServerCertSHA256 []string `yaml:"server_cert_sha256"` // hex SHA-256 of the leaf SubjectPublicKeyInfo
 	ClientCert       string   `yaml:"client_cert"`        // optional mTLS client certificate (PEM)
 	ClientKey        string   `yaml:"client_key"`         // key for client_cert (PEM)
+
+	// Privilege separation (docs/contracts.md §2): the root collector listens on this
+	// unix socket, the unprivileged sender connects to it. Unused in -mode all.
+	CollectorSocket string `yaml:"collector_socket"`
+	// CollectorUser is the unprivileged user whose uid may use the socket (plus root);
+	// its primary group owns the socket.
+	CollectorUser string `yaml:"collector_user"`
 }
 
 // DefaultExcludePaths are excluded from the host scan unless configured otherwise.
@@ -58,6 +65,8 @@ func Default() Config {
 		ExcludePaths:         DefaultExcludePaths(),
 		HostScanTimeout:      10 * time.Minute,
 		ImageScanTimeout:     5 * time.Minute,
+		CollectorSocket:      "/run/panoptes/collector.sock",
+		CollectorUser:        "panoptes",
 	}
 }
 
@@ -120,6 +129,9 @@ func (c *Config) Validate() error {
 	}
 	if c.StateDir == "" {
 		return fmt.Errorf("config: state_dir must not be empty")
+	}
+	if c.CollectorSocket == "" || !strings.HasPrefix(c.CollectorSocket, "/") {
+		return fmt.Errorf("config: collector_socket must be an absolute path")
 	}
 	pins, err := NormalizePins(c.ServerCertSHA256)
 	if err != nil {

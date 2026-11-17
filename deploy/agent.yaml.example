@@ -1,4 +1,4 @@
-# Panoptes agent configuration, installed as /etc/panoptes/agent.yaml (mode 0600).
+# Panoptes agent configuration, installed as /etc/panoptes/agent.yaml (root:panoptes, mode 0640).
 # Values shown are the defaults unless marked required.
 
 # Base URL of panoptes-server (required). Must be https:// with a host and no user:password@.
@@ -28,6 +28,11 @@ enroll_token: "pt_replace-me"
 
 # Labels select Matrix rooms on the server (see the label routes in the web UI).
 labels: [prod, web]
+
+# Privilege separation (systemd install): the root collector listens on this unix socket and
+# the unprivileged sender (user "panoptes") connects to it. Ignored in `-mode all`.
+# collector_socket: /run/panoptes/collector.sock
+# collector_user: panoptes
 
 # Where agent_id and agent_key are stored. Must match StateDirectory in the systemd unit.
 state_dir: /var/lib/panoptes-agent

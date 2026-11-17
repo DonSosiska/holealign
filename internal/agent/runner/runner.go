@@ -11,8 +11,7 @@ import (
 	"time"
 
 	"panoptes/internal/agent/config"
-	"panoptes/internal/agent/facts"
-	"panoptes/internal/agent/inventory"
+	"panoptes/internal/agent/hostdata"
 	"panoptes/internal/agent/transport"
 	"panoptes/internal/model"
 )
@@ -67,13 +66,9 @@ type Runner struct {
 	log     *slog.Logger
 	client  *transport.Client
 
-	// injectable for tests
-	collectFacts func(ctx context.Context, reqs []model.FactRequest) model.Facts
-	scan         func(ctx context.Context, cfg config.Config) (model.InventoryPayload, error)
-	detector     interface {
-		Changed(ctx context.Context) bool
-		Reset(ctx context.Context)
-	}
+	// src provides facts, inventory, OS info and change detection: in-process (mode all)
+	// or from the root collector over its unix socket (mode sender).
+	src hostdata.Source
 
 	creds        transport.Credentials
 	lastFacts    model.Facts // last snapshot acknowledged by the server; nil = never sent
@@ -92,7 +87,11 @@ type Runner struct {
 }
 
 // New creates a runner.
-func New(cfg config.Config, version string, log *slog.Logger) (*Runner, error) {
+// src nil selects the in-process source.
+func New(cfg config.Config, version string, log *slog.Logger, src hostdata.Source) (*Runner, error) {
+	if src == nil {
+		src = hostdata.NewLocal(cfg, false)
+	}
 	if log == nil {
 		log = slog.Default()
 	}
@@ -113,13 +112,11 @@ func New(cfg config.Config, version string, log *slog.Logger) (*Runner, error) {
 		log.Info("server identity checks enabled", "ca_file", cfg.CAFile != "", "pins", len(cfg.ServerCertSHA256), "mtls", cfg.ClientCert != "")
 	}
 	return &Runner{
-		cfg:          cfg,
-		version:      version,
-		log:          log,
-		client:       client,
-		collectFacts: facts.Collect,
-		scan:         inventory.Scan,
-		detector:     inventory.NewChangeDetector(cfg),
+		cfg:     cfg,
+		version: version,
+		log:     log,
+		client:  client,
+		src:     src,
 	}, nil
 }
 
@@ -250,6 +247,10 @@ func (r *Runner) enroll(ctx context.Context) error {
 		return errors.New("not enrolled and no enroll_token configured")
 	}
 	host, _ := os.Hostname()
+	info, err := r.src.Info(ctx)
+	if err != nil {
+		return fmt.Errorf("host info: %w", err)
+	}
 	if r.client.Key == "" {
 		// keep proving identity with a previous key if the state dir still has one
 		if old, err := transport.LoadCredentials(r.cfg.StateDir); err == nil {
@@ -259,7 +260,7 @@ func (r *Runner) enroll(ctx context.Context) error {
 	resp, err := r.client.Enroll(ctx, model.EnrollRequest{
 		Token:        r.cfg.EnrollToken,
 		Hostname:     host,
-		MachineID:    MachineID(),
+		MachineID:    info.MachineID,
 		Labels:       r.cfg.Labels,
 		AgentVersion: r.version,
 	})
@@ -282,7 +283,15 @@ func (r *Runner) enroll(ctx context.Context) error {
 }
 
 func (r *Runner) checkinAndUpload(ctx context.Context, forceInventory bool) (time.Duration, error) {
-	cur := NormalizeFacts(r.collectFacts(ctx, r.factRequests))
+	rawFacts, err := r.src.Facts(ctx, r.factRequests)
+	if err != nil {
+		return r.interval(), fmt.Errorf("collect facts: %w", err)
+	}
+	info, err := r.src.Info(ctx)
+	if err != nil {
+		return r.interval(), fmt.Errorf("host info: %w", err)
+	}
+	cur := NormalizeFacts(rawFacts)
 	if r.lastScanErr != "" {
 		cur[inventoryErrKey] = r.lastScanErr
 	}
@@ -293,7 +302,7 @@ func (r *Runner) checkinAndUpload(ctx context.Context, forceInventory bool) (tim
 			Hostname:      host,
 			Labels:        r.cfg.Labels,
 			AgentVersion:  r.version,
-			OS:            CollectOSInfo(),
+			OS:            info.OS,
 			InventoryHash: r.invHash,
 		}
 		if r.lastFacts == nil || r.wantFull {
@@ -321,7 +330,10 @@ func (r *Runner) checkinAndUpload(ctx context.Context, forceInventory bool) (tim
 	r.log.Debug("checkin ok", "facts", len(cur), "want_inventory", resp.WantInventory, "fact_requests", len(resp.FactRequests))
 	next := clampNextCheckin(resp.NextCheckinSeconds, r.interval())
 
-	changed := r.detector.Changed(ctx)
+	changed, cerr := r.src.Changed(ctx)
+	if cerr != nil {
+		r.log.Warn("change detection failed", "err", cerr)
+	}
 	due := r.lastInvAt.IsZero() || time.Since(r.lastInvAt) >= r.cfg.InventoryInterval
 	if r.pendingInv != nil {
 		return next, r.sendInventory(ctx, r.pendingInv, time.Now())
@@ -367,7 +379,7 @@ func (r *Runner) interval() time.Duration { return r.cfg.CheckinInterval }
 func (r *Runner) uploadInventory(ctx context.Context, reason string) error {
 	r.log.Info("scanning inventory", "reason", reason)
 	start := time.Now()
-	payload, err := r.scan(ctx, r.cfg)
+	payload, err := r.src.Inventory(ctx)
 	if err != nil {
 		if ctx.Err() == nil {
 			r.scanFailures++
@@ -397,7 +409,6 @@ func (r *Runner) sendInventory(ctx context.Context, payload *model.InventoryPayl
 	r.pendingInv = nil
 	r.invHash = payload.Hash
 	r.lastInvAt = time.Now()
-	r.detector.Reset(ctx)
 	r.log.Info("inventory uploaded", "targets", len(payload.Targets), "hash", payload.Hash, "took", time.Since(start).Round(time.Millisecond))
 	return nil
 }

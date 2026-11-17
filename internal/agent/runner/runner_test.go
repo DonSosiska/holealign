@@ -6,14 +6,20 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"panoptes/internal/agent/collector"
 	"panoptes/internal/agent/config"
+	"panoptes/internal/agent/hostdata"
 	"panoptes/internal/model"
 )
 
@@ -36,19 +42,57 @@ func TestDiffFacts(t *testing.T) {
 	}
 }
 
-func TestParseOSRelease(t *testing.T) {
-	m := parseOSRelease([]byte("# c\nID=debian\nVERSION_ID=\"12\"\nPRETTY_NAME='Debian GNU/Linux 12 (bookworm)'\n"))
-	if m["ID"] != "debian" || m["VERSION_ID"] != "12" || m["PRETTY_NAME"] != "Debian GNU/Linux 12 (bookworm)" {
-		t.Fatalf("%v", m)
-	}
+// fakeSource is a hostdata.Source with injectable behaviour.
+type fakeSource struct {
+	mu           sync.Mutex
+	collectFacts func(ctx context.Context, reqs []model.FactRequest) model.Facts
+	scan         func(ctx context.Context, cfg config.Config) (model.InventoryPayload, error)
+	changed      bool
 }
 
-type fakeDetector struct{ changed bool }
+func (f *fakeSource) Facts(ctx context.Context, reqs []model.FactRequest) (model.Facts, error) {
+	f.mu.Lock()
+	fn := f.collectFacts
+	f.mu.Unlock()
+	if fn == nil {
+		return model.Facts{}, nil
+	}
+	return fn(ctx, reqs), nil
+}
 
-func (f *fakeDetector) Changed(context.Context) bool { r := f.changed; f.changed = false; return r }
-func (f *fakeDetector) Reset(context.Context)        {}
+func (f *fakeSource) Inventory(ctx context.Context) (model.InventoryPayload, error) {
+	f.mu.Lock()
+	fn := f.scan
+	f.mu.Unlock()
+	if fn == nil {
+		return model.InventoryPayload{}, nil
+	}
+	return fn(ctx, config.Config{})
+}
 
+func (f *fakeSource) Info(context.Context) (hostdata.HostInfo, error) {
+	return hostdata.HostInfo{OS: model.OSInfo{ID: "testos", VersionID: "1"}, MachineID: strings.Repeat("ab", 32)}, nil
+}
+
+func (f *fakeSource) Changed(context.Context) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	c := f.changed
+	f.changed = false
+	return c, nil
+}
+
+// fk returns the fake behind a test runner built with mustNew.
+func fk(r *Runner) *fakeSource { return r.src.(*fakeSource) }
+
+// TestRunnerFlow runs the whole flow with the in-process source and again through the
+// collector's unix socket: the runner must behave identically.
 func TestRunnerFlow(t *testing.T) {
+	t.Run("in-process", func(t *testing.T) { runnerFlow(t, false) })
+	t.Run("socket", func(t *testing.T) { runnerFlow(t, true) })
+}
+
+func runnerFlow(t *testing.T, viaSocket bool) {
 	var mu sync.Mutex
 	var checkins []model.CheckinRequest
 	var uploads int
@@ -87,19 +131,21 @@ func TestRunnerFlow(t *testing.T) {
 	cfg.EnrollToken = "tok"
 	cfg.StateDir = t.TempDir()
 	r := mustNew(t, cfg)
+	fake := fk(r)
+	if viaSocket {
+		r.src = socketSource(t, fake)
+	}
 	n := 0
-	r.collectFacts = func(context.Context, []model.FactRequest) model.Facts {
+	fake.collectFacts = func(context.Context, []model.FactRequest) model.Facts {
 		n++
 		if n == 1 {
 			return model.Facts{"a": "1", "b": "2"}
 		}
 		return model.Facts{"a": "1", "c": "3"}
 	}
-	r.scan = func(context.Context, config.Config) (model.InventoryPayload, error) {
+	fake.scan = func(context.Context, config.Config) (model.InventoryPayload, error) {
 		return model.InventoryPayload{Hash: "h1"}, nil
 	}
-	det := &fakeDetector{}
-	r.detector = det
 	ctx := context.Background()
 
 	if err := r.ensureEnrolled(ctx); err != nil {
@@ -112,7 +158,7 @@ func TestRunnerFlow(t *testing.T) {
 	if _, err := r.checkinAndUpload(ctx, false); err != nil { // diff, no upload
 		t.Fatal(err)
 	}
-	det.changed = true
+	fake.changed = true
 	if _, err := r.checkinAndUpload(ctx, false); err != nil { // change detector -> upload
 		t.Fatal(err)
 	}
@@ -172,11 +218,10 @@ func TestRunnerReenrollsOn401(t *testing.T) {
 	cfg.EnrollToken = "tok"
 	cfg.StateDir = t.TempDir()
 	r := mustNew(t, cfg)
-	r.collectFacts = func(context.Context, []model.FactRequest) model.Facts { return nil }
-	r.scan = func(context.Context, config.Config) (model.InventoryPayload, error) {
+	fk(r).collectFacts = func(context.Context, []model.FactRequest) model.Facts { return nil }
+	fk(r).scan = func(context.Context, config.Config) (model.InventoryPayload, error) {
 		return model.InventoryPayload{}, nil
 	}
-	r.detector = &fakeDetector{}
 	r.client.Key = "stale"
 	r.lastInvAt = time.Now()
 	if _, err := r.checkinAndUpload(context.Background(), false); err != nil {
@@ -189,9 +234,35 @@ func TestRunnerReenrollsOn401(t *testing.T) {
 
 func mustNew(t *testing.T, cfg config.Config) *Runner {
 	t.Helper()
-	r, err := New(cfg, "test", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	r, err := New(cfg, "test", slog.New(slog.NewTextHandler(io.Discard, nil)), &fakeSource{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return r
+}
+
+// socketSource serves fake over a collector on a temporary unix socket and returns a client.
+func socketSource(t *testing.T, fake hostdata.Source) hostdata.Source {
+	t.Helper()
+	dir, err := os.MkdirTemp("/tmp", "pc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	sock := filepath.Join(dir, "c.sock")
+	srv := &collector.Server{
+		Backend: fake, SocketPath: sock, InventoryMinGap: -1,
+		AllowedUIDs: []uint32{uint32(os.Getuid())},
+		PeerUID:     func(net.Conn) (uint32, error) { return uint32(os.Getuid()), nil },
+		Log:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	l, err := srv.Listen()
+	if err != nil {
+		t.Skipf("unix sockets unavailable: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { srv.ServeListener(ctx, l); close(done) }()
+	t.Cleanup(func() { cancel(); <-done })
+	return hostdata.NewClient(sock)
 }

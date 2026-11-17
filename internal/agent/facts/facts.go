@@ -27,6 +27,10 @@ type Env struct {
 	// root; nil = trust everything (tests).
 	TreeTrust func(roots []string) error
 
+	// NetDir is the FS-relative directory with tcp/tcp6/udp/udp6 for the sockets collector
+	// ("" = "proc/net"). /proc/net is per network namespace; see Options.HostNetNS.
+	NetDir string
+
 	skips skipLog
 }
 
@@ -67,11 +71,33 @@ func defaultEnv() *Env {
 //
 // On platforms other than Linux no facts are collected.
 func Collect(ctx context.Context, reqs []model.FactRequest) model.Facts {
+	return CollectWith(ctx, reqs, Options{})
+}
+
+// Options tune Collect.
+type Options struct {
+	// HostNetNS reads the listening sockets from /proc/1/net (the network namespace of PID 1,
+	// i.e. the host) instead of /proc/net (the namespace of this process). Required when the
+	// process runs in a private network namespace (systemd PrivateNetwork=yes, the collector
+	// unit); there the sockets facts are omitted (unknown) if /proc/1/net is unreadable,
+	// instead of reporting an empty, wrong list.
+	HostNetNS bool
+}
+
+// CollectWith is Collect with options.
+func CollectWith(ctx context.Context, reqs []model.FactRequest, o Options) model.Facts {
 	if runtime.GOOS != "linux" {
 		return model.Facts{}
 	}
-	return collect(ctx, defaultEnv(), reqs)
+	env := defaultEnv()
+	if o.HostNetNS {
+		env.NetDir = hostNetDir
+	}
+	return collect(ctx, env, reqs)
 }
+
+// hostNetDir is the network namespace of PID 1.
+const hostNetDir = "proc/1/net"
 
 func collect(ctx context.Context, env *Env, reqs []model.FactRequest) model.Facts {
 	results := make([]model.Facts, len(builtinCollectors))

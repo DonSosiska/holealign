@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -48,20 +47,6 @@ func TestScanBackoff(t *testing.T) {
 	}
 }
 
-func TestMachineIDHashed(t *testing.T) {
-	got := hashMachineID("abc123")
-	if !regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(got) {
-		t.Fatalf("hash = %q", got)
-	}
-	// sha256("panoptes-machine-id:abc123")
-	if got == "abc123" || got != hashMachineID("abc123") || got == hashMachineID("abc124") {
-		t.Error("hash must be deterministic and input dependent")
-	}
-	if id := MachineID(); !regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(id) {
-		t.Errorf("MachineID() = %q", id)
-	}
-}
-
 func TestHonorWantInventoryRateLimited(t *testing.T) {
 	r := &Runner{}
 	now := time.Now()
@@ -87,8 +72,7 @@ func newTestRunner(t *testing.T, url string) *Runner {
 	cfg.EnrollToken = "tok"
 	cfg.StateDir = t.TempDir()
 	r := mustNew(t, cfg)
-	r.collectFacts = func(context.Context, []model.FactRequest) model.Facts { return nil }
-	r.detector = &fakeDetector{}
+	fk(r).collectFacts = func(context.Context, []model.FactRequest) model.Facts { return nil }
 	return r
 }
 
@@ -104,7 +88,7 @@ func TestServerWantInventoryNotHonouredBackToBack(t *testing.T) {
 	defer srv.Close()
 	r := newTestRunner(t, srv.URL)
 	scans := 0
-	r.scan = func(context.Context, config.Config) (model.InventoryPayload, error) {
+	fk(r).scan = func(context.Context, config.Config) (model.InventoryPayload, error) {
 		scans++
 		return model.InventoryPayload{Hash: "h"}, nil
 	}
@@ -137,7 +121,7 @@ func TestScanFailureBackoffAndFact(t *testing.T) {
 	r := newTestRunner(t, srv.URL)
 	r.client.Key = "k"
 	scans := 0
-	r.scan = func(context.Context, config.Config) (model.InventoryPayload, error) {
+	fk(r).scan = func(context.Context, config.Config) (model.InventoryPayload, error) {
 		scans++
 		return model.InventoryPayload{}, errors.New(strings.Repeat("boom ", 100))
 	}
@@ -160,7 +144,7 @@ func TestScanFailureBackoffAndFact(t *testing.T) {
 
 	// recovery clears the fact
 	r.scanRetryAt = time.Time{}
-	r.scan = func(context.Context, config.Config) (model.InventoryPayload, error) {
+	fk(r).scan = func(context.Context, config.Config) (model.InventoryPayload, error) {
 		return model.InventoryPayload{Hash: "ok"}, nil
 	}
 	if _, err := r.checkinAndUpload(context.Background(), false); err != nil {
@@ -227,7 +211,7 @@ func TestRateLimitedInventoryStaysPending(t *testing.T) {
 	r := newTestRunner(t, srv.URL)
 	r.client.Key = "k"
 	scans := 0
-	r.scan = func(context.Context, config.Config) (model.InventoryPayload, error) {
+	fk(r).scan = func(context.Context, config.Config) (model.InventoryPayload, error) {
 		scans++
 		hashes = append(hashes, "h1")
 		return model.InventoryPayload{Hash: "h1"}, nil
@@ -277,7 +261,7 @@ func TestOnceRateLimited(t *testing.T) {
 		r := newTestRunner(t, srv.URL)
 		r.creds = transport.Credentials{AgentID: "a", AgentKey: "k"}
 		r.client.Key = "k"
-		r.scan = func(context.Context, config.Config) (model.InventoryPayload, error) {
+		fk(r).scan = func(context.Context, config.Config) (model.InventoryPayload, error) {
 			return model.InventoryPayload{Hash: "h"}, nil
 		}
 		var waited time.Duration

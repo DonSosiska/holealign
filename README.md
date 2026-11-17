@@ -63,8 +63,8 @@ You need Docker with Compose, and a Linux host with systemd for the agent.
    The script verifies the keyless cosign signature of `checksums.txt` and then the
    archive checksum (it aborts when `cosign` is missing unless you pass
    `--skip-signature-check`; or install the signed `.deb`/`.rpm` instead), installs the
-   binary to `/usr/bin/panoptes-agent`, writes `/etc/panoptes/agent.yaml` (mode 0600),
-   and starts the `panoptes-agent` service. Logs: `journalctl -u panoptes-agent -f`.
+   binary to `/usr/bin/panoptes-agent`, writes `/etc/panoptes/agent.yaml` (`root:panoptes`, mode 0640),
+   creates the system user `panoptes`, and starts the `panoptes-collector` and `panoptes-agent` services. Logs: `journalctl -u panoptes-agent -f`.
    For air-gapped hosts, use `--binary PATH`.
 
    To trust only your own CA and/or pin the server key, add `--ca-file PATH` and
@@ -155,12 +155,24 @@ and more, listed in the contract). A fact that is missing on a host means the ve
 - Release archives, `.deb` and `.rpm` packages, and the server image are published
   from tags `v*` (see `.goreleaser.yaml`). Packages install the service units but
   do not start them. Set `/etc/panoptes/agent.yaml` or `/etc/panoptes/server.env`
-  first, then `systemctl enable --now panoptes-agent` (or `panoptes-server`).
+  first, then `systemctl enable --now panoptes-collector panoptes-agent` (or `panoptes-server`). The
+  agent package creates the system user `panoptes` and makes `agent.yaml` `root:panoptes` 0640.
 - `make build` builds the binaries into `bin/`. `make docker` builds the server image
   from source. `make release-snapshot` runs a local goreleaser dry run.
 - Configuration reference: [deploy/agent.yaml.example](deploy/agent.yaml.example),
   [deploy/server.yaml.example](deploy/server.yaml.example),
   [deploy/server.env.example](deploy/server.env.example).
+
+## Privilege separation
+
+The agent runs as two services from one binary. `panoptes-collector` runs as root, has no network
+(`PrivateNetwork=yes`, `IPAddressDeny=any`, unix sockets only) and is the only process that parses
+untrusted local files (configs, package databases, images). It serves the results on
+`/run/panoptes/collector.sock`. `panoptes-agent` is the sender: it runs as the unprivileged user
+`panoptes`, holds the agent key, and is the only process that talks to the server. A bug in a parser
+cannot reach the network, and a compromised sender is not root. `-mode all` (the default, used by
+`-once`, containers and the e2e tests) keeps the single-process behaviour. Details:
+[docs/contracts.md](docs/contracts.md) section 2. Test it with `deploy/e2e/split-mode.sh`.
 
 ## Verifying releases
 
