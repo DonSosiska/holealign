@@ -3,7 +3,7 @@
 # For building from source, use Dockerfile.server.build instead.
 # Base images are pinned by digest (multi-arch index). To update, run:
 #   docker buildx imagetools inspect <image:tag>
-FROM busybox:1.37@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec AS prep
+FROM busybox:1.38@sha256:a46257e06c82ad85242d0d38077d0a52d9896389ca60a1a59d3463db586e5fa4 AS prep
 # Create the data directory owned by the distroless "nonroot" user (uid 65532).
 RUN mkdir -p /var/lib/panoptes && chown 65532:65532 /var/lib/panoptes
 
