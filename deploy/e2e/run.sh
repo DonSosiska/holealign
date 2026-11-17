@@ -14,17 +14,18 @@ done
 export E2E_MATRIX_PORT="${E2E_MATRIX_PORT:-18008}"
 export E2E_SERVER_PORT="${E2E_SERVER_PORT:-18080}"
 export E2E_ADMIN_PORT="${E2E_ADMIN_PORT:-18081}"
+# Secrets are random per run; E2E_* overrides exist so a kept stack (E2E_KEEP=1) can be logged into.
 export E2E_REG_TOKEN
-E2E_REG_TOKEN="e2e-$(openssl rand -hex 8)"
+E2E_REG_TOKEN="${E2E_REG_TOKEN:-e2e-$(openssl rand -hex 8)}"
 export PANOPTES_ADMIN_PASSWORD
-PANOPTES_ADMIN_PASSWORD="$(openssl rand -hex 12)"
+PANOPTES_ADMIN_PASSWORD="${E2E_ADMIN_PASSWORD:-$(openssl rand -hex 12)}"
 WAIT_TIMEOUT="${E2E_WAIT_TIMEOUT:-180}"
 KEEP="${E2E_KEEP:-0}"
 HS="http://127.0.0.1:${E2E_MATRIX_PORT}"
 SRV="http://127.0.0.1:${E2E_SERVER_PORT}"
 ADMIN="http://127.0.0.1:${E2E_ADMIN_PORT}"   # admin web UI listener (the agent API port serves no UI)
 BOT_PASS="$(openssl rand -hex 12)"
-OBS_PASS="$(openssl rand -hex 12)"
+OBS_PASS="${E2E_OBSERVER_PASSWORD:-$(openssl rand -hex 12)}"
 
 export E2E_TMP; E2E_TMP="$(mktemp -d)"
 export E2E_FEEDS_UPDATE=true
