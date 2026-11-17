@@ -30,6 +30,7 @@ Contents: [Repository layout](#repository-layout) - [Building](#building) - [Tes
 | `internal/server/health/` | Silence, feed and pipeline alerts; delivery-problem recorder |
 | `internal/server/feeds/` | Vulnerability DB updater |
 | `internal/server/rulesfeed/` | Signed central rules feed: bundle build/open, ed25519 signing, poller, persisted bundle |
+| `internal/server/rulesbot/` | `rules candidates` / `rules draft`: CVE selection (OSV, KEV, EPSS, CVSS v3) and LLM rule drafting for the rules repository bot (see [rules-feed.md](rules-feed.md#repository-bot)) |
 | `internal/server/store/` | SQLite store and migrations |
 | `internal/server/web/` | Admin web UI: templates, static files, auth |
 | `internal/server/config/`, `clientip/`, `core/` | Server configuration, client address handling, interfaces between components |

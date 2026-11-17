@@ -241,3 +241,72 @@ higher than the installed one) and installs into `data_dir/rules-feed/`. A runni
 
 `rules status` prints the installed `seq`, the source, the rule and test counts, the last install and
 poll times and the last error.
+
+## Repository bot
+
+Two commands help the rules repository's CI bot find and draft rules. Neither needs a server
+configuration or database, and neither sends host data anywhere (there is none): only advisory and
+candidate fields go to OSV, KEV, EPSS and the LLM provider.
+
+### `rules candidates`
+
+Selects CVEs worth a rule that the repository does not cover yet and prints a JSON array.
+
+```sh
+panoptes-server rules candidates -rules rules -packages packages.txt -max 20 -out candidates.json
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `-rules <dir>` | | existing rules; a CVE is covered when a rule lists it (or an alias) in `vulns` for a matching package |
+| `-packages <file>` | required | source package names, one per line, `#` comments |
+| `-ecosystems <list>` | `Debian:12,Ubuntu:24.04:LTS,Alpine:v3.20` | comma-separated OSV ecosystems (spaces and empty items ignored); Debian and Ubuntu give type `deb`, Alpine `apk`, `Red Hat` `rpm` |
+| `-kev <url\|file>` | CISA KEV JSON URL | known exploited vulnerabilities |
+| `-epss <url>` | `https://api.first.org/data/v1/epss?cve=` | EPSS API; the CVE list is appended, 100 per request |
+| `-since` | `30d` | only vulnerabilities modified in this window (KEV entries always count) |
+| `-max` | `20` | cap on the result |
+| `-out <file>` | stdout | |
+| `-osv-url` | `https://api.osv.dev` | OSV base URL (mirrors, tests) |
+
+For every package and ecosystem it queries OSV `/v1/querybatch` (no version, paginated) and fetches
+`/v1/vulns/{id}` for vulnerabilities that are in KEV or were modified in the window. A candidate needs
+a CVE id (or CVE alias) and either to be in KEV or to be rated High or Critical: the CVSS v3 base
+score is computed from the vector; a CVSS v4 vector is not computed, the record's qualitative
+`database_specific.severity` is used if present, otherwise the record is skipped. Sorting: KEV first,
+then EPSS, then CVSS. A CVE appearing for the same package in several ecosystems is listed once (the
+first ecosystem wins). Each entry: `vuln, aliases, package, binary_packages, type, ecosystem,
+severity, cvss, epss, kev, published`. Limits: 2000 HTTP requests per run, 8 MiB per response, 30 s
+timeouts, `User-Agent: panoptes-rules-bot`. Failures for single packages are logged and skipped;
+exit 1 when every OSV query fails or KEV cannot be read.
+
+### `rules draft`
+
+Writes one rule and its tests for one candidate and prints a Markdown pull request body.
+
+```sh
+panoptes-server rules draft -candidate-file candidates.json -index 0 \
+  -rules rules -tests tests -out-rules rules -out-tests tests > pr-body.md
+```
+
+Flags: `-candidate <json>` or `-candidate-file <file> -index N`; `-rules`, `-tests` (existing rules
+and tests: few-shot examples and ID collision); `-out-rules`, `-out-tests` (default: `-rules`,
+`-tests`); `-provider`, `-model`, `-base-url` (defaults from `PANOPTES_LLM_PROVIDER`,
+`PANOPTES_LLM_MODEL`, `PANOPTES_LLM_BASE_URL`; key from `PANOPTES_LLM_API_KEY` or
+`ANTHROPIC_API_KEY`; provider `anthropic` is assumed when only a key is set); `-max-attempts`
+(default 2); `-osv-url`.
+
+The model sees the same prompt as the server drafter (fact catalog, CEL environment, untrusted-data
+delimiters, sanitising) plus a repository variant that asks for `{rule, tests}` with at least one
+`exploitable` and one non-exploitable case (the exploitable case is not needed when `exploitable_if`
+is `false`). Cleaning is as in the server: `vulns` are the candidate and its aliases, packages are
+exact selectors for `binary_packages` with the candidate's type, the ID is `<VULN>-<source>`
+(refused when it exists), texts are capped, references must appear in the advisory, test facts must
+be catalog facts. The rule is written with `status: draft` and `source: llm:<model>`. It is checked
+with `Validate`, the bundle coverage rules and `RunTests` (evaluated as if `reviewed`, because drafts
+never lower verdicts at runtime); a failure is retried once with the messages (2 KB at most).
+Nothing is written unless everything passes.
+
+A reviewer checks the pull request and sets `status: reviewed`; CI validates the bundle only then.
+
+Exit codes: 0 success; 1 other error (usage, provider or network error); 2 no valid draft or the
+model refused (nothing written); 3 a rule with that ID already exists.

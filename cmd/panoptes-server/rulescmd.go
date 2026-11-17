@@ -26,6 +26,11 @@ const rulesUsage = `usage: panoptes-server rules <command>
                                         check the signature and the complete bundle
   import [-sig file] <tarball>          install a bundle offline (needs rules.feed.trusted_keys)
   status                                show the installed rules feed bundle
+  candidates -packages <file> [-rules dir] [-max N] [-out file]
+                                        list CVEs worth a rule that the repository does not cover (JSON)
+  draft  -candidate <json> -rules <dir> -tests <dir>
+                                        draft a rule and tests with an LLM; prints a PR body
+                                        (exit 2: no valid draft, 3: rule ID exists)
 `
 
 // rulesCmd implements "panoptes-server rules ...". keygen, build, sign and verify need neither the
@@ -45,6 +50,10 @@ func rulesCmd(cfgPath string, args []string, stdout, stderr io.Writer) int {
 		err = rulesSign(args[1:], stdout, stderr)
 	case "verify":
 		err = rulesVerify(args[1:], stdout, stderr)
+	case "candidates":
+		err = rulesCandidates(args[1:], stdout, stderr)
+	case "draft":
+		err = rulesDraft(args[1:], stdout, stderr)
 	case "import":
 		err = rulesImport(cfgPath, args[1:], stdout, stderr)
 	case "status":
@@ -58,6 +67,10 @@ func rulesCmd(cfgPath string, args []string, stdout, stderr io.Writer) int {
 			return 0
 		}
 		fmt.Fprintln(stderr, "error:", err)
+		var ce *codedError
+		if errors.As(err, &ce) {
+			return ce.code
+		}
 		return 1
 	}
 	return 0

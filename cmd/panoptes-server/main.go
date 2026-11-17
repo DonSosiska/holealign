@@ -76,7 +76,7 @@ commands:
   token list                  list enrollment tokens
   token revoke <name>         revoke an enrollment token
   user set-password <user>    set (or create) a web user; password is read from stdin
-  rules keygen|build|sign|verify|import|status
+  rules keygen|build|sign|verify|import|status|candidates|draft
                               central rules feed tooling (see 'rules' for details)
 `)
 		fs.PrintDefaults()

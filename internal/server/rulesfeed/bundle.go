@@ -252,6 +252,12 @@ func sortedKeys(m map[string]bool) []string {
 	return out
 }
 
+// CoverageProblems reports the rules that lack an exploitable or a non-exploitable test case (the
+// same check Build applies), so authoring tools can check before a pull request.
+func CoverageProblems(rs []model.Rule, tests []rules.RuleTests) []string {
+	return coverageProblems(rs, tests)
+}
+
 // coverageProblems reports rules without a test for "exploitable" and for a non-exploitable verdict.
 func coverageProblems(rs []model.Rule, tests []rules.RuleTests) []string {
 	by := map[string][]rules.TestCase{}
