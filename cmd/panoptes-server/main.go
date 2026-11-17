@@ -332,7 +332,7 @@ var factDescriptions = map[string]string{
 	"os.libc":           "glibc or musl",
 	"kernel.modules":    "names of loaded kernel modules (/proc/modules)",
 	"kernel.sysctl":     "selected sysctl values, keys like user.max_user_namespaces",
-	"services.active":   "running systemd service unit names without .service",
+	"services.active":   "running services: systemd unit names without .service (e.g. php8.2-fpm, apache2, ssh); without systemd, daemon names from /proc (sshd gives ssh and sshd, apache2/httpd give both, php-fpm8.2 gives php-fpm)",
 	"sockets.listening": "listening sockets: proto, addr, port, process",
 	"sockets.ports":     "distinct listening ports",
 	"sshd.config":       "effective sshd config from 'sshd -T', lowercase keys",
@@ -341,7 +341,7 @@ var factDescriptions = map[string]string{
 	"nginx.http2":       "nginx accepts HTTP/2",
 	"apache.modules":    "apachectl -M module names, e.g. proxy_module",
 	"apache.http2":      "mod_http2 loaded and h2/h2c enabled in Protocols",
-	"php.sapi":          "installed PHP SAPIs: cli, fpm, apache2handler",
+	"php.sapi":          "installed PHP SAPIs, exact values: cli, php-fpm, apache2handler",
 	"php.ini":           "selected php.ini values (allow_url_include, disable_functions, ...)",
 	"docker.containers": "running containers: name, image, image_id, ports, privileged",
 }
