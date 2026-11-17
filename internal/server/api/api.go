@@ -35,6 +35,12 @@ const (
 	defaultBurst             = 3
 	maxHostname              = 253
 	maxLabels                = 32
+
+	// Per-target field limits (a target violating them is skipped, not the whole inventory).
+	maxTargetName       = 512
+	maxImageID          = 128
+	maxContainers       = 200
+	maxContainerNameLen = 256
 )
 
 var (
@@ -60,8 +66,11 @@ type Deps struct {
 	InventoryBurst    int           // per host bucket size, default 3
 	CheckinInterval   time.Duration // per host: one token refilled per interval, default 20s
 	CheckinBurst      int           // per host bucket size, default 3
-	EnrollPerMinute   int           // per client IP, default 10
+	EnrollPerMinute   int           // invalid enrollment attempts per client (IPv4 / IPv6 /64), default 10
+	EnrollOKPerMinute int           // successful-token enrollments per client, default 600
 	BadAuthPerMinute  int           // failed Bearer auth per client IP, default 30
+	// InvalidInventoryPerMinute caps inventory uploads per host that fail validation, default 6.
+	InvalidInventoryPerMinute int
 	// ClientIP overrides how the client address is derived (e.g. from X-Forwarded-For behind a
 	// trusted reverse proxy). Default: the TCP peer address.
 	ClientIP func(*http.Request) string
@@ -69,11 +78,13 @@ type Deps struct {
 
 type server struct {
 	Deps
-	log       *slog.Logger
+	log          *slog.Logger
 	checkinLim   *tokenBucketLimiter
 	inventoryLim *tokenBucketLimiter
-	enrollLim *ipLimiter
-	authLim   *ipLimiter
+	enrollLim    *ipLimiter // charged by invalid enrollment requests only
+	enrollOK     *ipLimiter // generous cap for requests with a valid token
+	authLim      *ipLimiter
+	badInvLim    *tokenBucketLimiter // per host, charged by inventory uploads failing validation
 }
 
 func orDefault[T int | time.Duration](v, def T) T {
@@ -100,14 +111,17 @@ func NewMux(d Deps) *http.ServeMux {
 	d.InventoryBurst = orDefault(d.InventoryBurst, defaultBurst)
 	d.CheckinBurst = orDefault(d.CheckinBurst, defaultBurst)
 	d.EnrollPerMinute = orDefault(d.EnrollPerMinute, 10)
+	d.EnrollOKPerMinute = orDefault(d.EnrollOKPerMinute, 600)
 	d.BadAuthPerMinute = orDefault(d.BadAuthPerMinute, 30)
+	d.InvalidInventoryPerMinute = orDefault(d.InvalidInventoryPerMinute, 6)
 	if d.ClientIP == nil {
 		d.ClientIP = remoteIP
 	}
 	s := &server{Deps: d, log: d.Logger,
 		checkinLim:   newTokenBucketLimiter(d.CheckinInterval, d.CheckinBurst),
 		inventoryLim: newTokenBucketLimiter(d.InventoryInterval, d.InventoryBurst),
-		enrollLim: newIPLimiter(d.EnrollPerMinute), authLim: newIPLimiter(d.BadAuthPerMinute)}
+		enrollLim:    newIPLimiter(d.EnrollPerMinute), enrollOK: newIPLimiter(d.EnrollOKPerMinute), authLim: newIPLimiter(d.BadAuthPerMinute),
+		badInvLim: newTokenBucketLimiter(time.Minute/time.Duration(max(d.InvalidInventoryPerMinute, 1)), max(d.InvalidInventoryPerMinute, 1))}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -154,6 +168,10 @@ func writeErr(w http.ResponseWriter, code int, msg string) {
 
 // decodeBody reads a JSON body of at most max bytes. It writes the error response itself.
 func decodeBody(w http.ResponseWriter, r *http.Request, max int64, v any) bool {
+	if r.ContentLength > max { // declared size: refuse before reading anything
+		writeErr(w, http.StatusRequestEntityTooLarge, "request body too large")
+		return false
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, max)
 	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
 		var mbe *http.MaxBytesError
@@ -161,6 +179,21 @@ func decodeBody(w http.ResponseWriter, r *http.Request, max int64, v any) bool {
 			writeErr(w, http.StatusRequestEntityTooLarge, "request body too large")
 		} else {
 			writeErr(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		}
+		return false
+	}
+	return true
+}
+
+// decodeBodyQuiet is decodeBody with a caller-supplied error reporter.
+func decodeBodyQuiet(w http.ResponseWriter, r *http.Request, max int64, v any, fail func(code int, msg string)) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, max)
+	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
+		var mbe *http.MaxBytesError
+		if errors.As(err, &mbe) {
+			fail(http.StatusRequestEntityTooLarge, "request body too large")
+		} else {
+			fail(http.StatusBadRequest, "invalid JSON: "+err.Error())
 		}
 		return false
 	}
@@ -245,26 +278,36 @@ func validLabels(ls []string) error {
 
 // --- handlers --------------------------------------------------------------
 
-func (s *server) handleEnroll(w http.ResponseWriter, r *http.Request) {
+// enrollBad answers an invalid enrollment request. Only these consume the per-client budget, so
+// agents with valid tokens (e.g. a whole fleet behind one NAT or IPv6 /64) are never throttled by it.
+func (s *server) enrollBad(w http.ResponseWriter, r *http.Request, code int, msg string) {
 	if !s.enrollLim.allow(s.ClientIP(r), s.Now()) {
-		tooMany(w, time.Minute, "too many enrollment requests")
+		tooMany(w, time.Minute, "too many invalid enrollment requests")
 		return
 	}
+	writeErr(w, code, msg)
+}
+
+func (s *server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	var req model.EnrollRequest
-	if !decodeBody(w, r, 1<<20, &req) {
+	if r.ContentLength > 1<<20 {
+		s.enrollBad(w, r, http.StatusRequestEntityTooLarge, "request body too large")
+		return
+	}
+	if !decodeBodyQuiet(w, r, 1<<20, &req, func(code int, msg string) { s.enrollBad(w, r, code, msg) }) {
 		return
 	}
 	// Validate everything that needs no database before touching it.
 	if req.Token == "" {
-		writeErr(w, http.StatusUnauthorized, "invalid enrollment token")
+		s.enrollBad(w, r, http.StatusUnauthorized, "invalid enrollment token")
 		return
 	}
 	if !machineIDRe.MatchString(req.MachineID) {
-		writeErr(w, http.StatusBadRequest, "machine_id must match ^[0-9a-f]{32,64}$")
+		s.enrollBad(w, r, http.StatusBadRequest, "machine_id must match ^[0-9a-f]{32,64}$")
 		return
 	}
 	if err := validLabels(req.Labels); err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
+		s.enrollBad(w, r, http.StatusBadRequest, err.Error())
 		return
 	}
 	req.Hostname = cleanText(req.Hostname, maxHostname)
@@ -272,11 +315,16 @@ func (s *server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 
 	tok, err := s.Store.UseEnrollTokenInfo(r.Context(), store.HashSecret(req.Token), s.Now())
 	if errors.Is(err, store.ErrNotFound) {
-		writeErr(w, http.StatusUnauthorized, "invalid enrollment token")
+		s.enrollBad(w, r, http.StatusUnauthorized, "invalid enrollment token")
 		return
 	}
 	if err != nil {
 		s.internal(w, "enroll token lookup", err)
+		return
+	}
+	// Valid token: separate, generous per-client cap (bounds DB work from one client).
+	if !s.enrollOK.allow(s.ClientIP(r), s.Now()) {
+		tooMany(w, time.Minute, "too many enrollment requests")
 		return
 	}
 	prevHash := ""
@@ -372,14 +420,30 @@ func (c *capReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
+// invalidInventory answers a rejected inventory upload and charges the host's invalid-upload budget.
+func (s *server) invalidInventory(w http.ResponseWriter, hostID string, code int, v any) {
+	s.badInvLim.take(hostID, s.Now())
+	writeJSON(w, code, v)
+}
+
 func (s *server) handleInventory(w http.ResponseWriter, r *http.Request) {
 	host := hostFrom(r.Context())
+	// Cheap pre-limiter: a host that keeps sending uploads failing validation is refused before
+	// its body is read at all.
+	if wait := s.badInvLim.peek(host.ID, s.Now()); wait > 0 {
+		tooMany(w, wait, "too many invalid inventory uploads")
+		return
+	}
+	if r.ContentLength > MaxInventoryBytes { // declared size, before reading anything
+		s.invalidInventory(w, host.ID, http.StatusRequestEntityTooLarge, map[string]string{"error": "inventory too large (max 64 MiB)"})
+		return
+	}
 	body := io.Reader(http.MaxBytesReader(w, r.Body, MaxInventoryBytes)) // compressed size cap
 	switch enc := strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Encoding"))); enc {
 	case "gzip", "x-gzip":
 		gz, err := gzip.NewReader(body)
 		if err != nil {
-			writeErr(w, http.StatusBadRequest, "invalid gzip body")
+			s.invalidInventory(w, host.ID, http.StatusBadRequest, map[string]string{"error": "invalid gzip body"})
 			return
 		}
 		defer gz.Close()
@@ -387,7 +451,7 @@ func (s *server) handleInventory(w http.ResponseWriter, r *http.Request) {
 	case "", "identity":
 		body = &capReader{r: body, left: MaxInventoryBytes}
 	default:
-		writeErr(w, http.StatusUnsupportedMediaType, "unsupported Content-Encoding")
+		s.invalidInventory(w, host.ID, http.StatusUnsupportedMediaType, map[string]string{"error": "unsupported Content-Encoding"})
 		return
 	}
 	var p model.InventoryPayload
@@ -395,124 +459,239 @@ func (s *server) handleInventory(w http.ResponseWriter, r *http.Request) {
 		var mbe *http.MaxBytesError
 		switch {
 		case errors.Is(err, errTooLarge), errors.As(err, &mbe):
-			writeErr(w, http.StatusRequestEntityTooLarge, "inventory too large (max 64 MiB decompressed)")
+			s.invalidInventory(w, host.ID, http.StatusRequestEntityTooLarge, map[string]string{"error": "inventory too large (max 64 MiB decompressed)"})
 		default:
-			writeErr(w, http.StatusBadRequest, "invalid inventory: "+err.Error())
+			s.invalidInventory(w, host.ID, http.StatusBadRequest, map[string]string{"error": "invalid inventory: " + err.Error()})
 		}
 		return
 	}
-	if code, err := validateInventory(&p); err != nil {
-		writeErr(w, code, err.Error())
+	// An identical inventory is answered before validation and the limiter and spends no token:
+	// nothing changes.
+	if host.InventoryHash != "" && host.InventoryHash == p.Hash {
+		resp := map[string]any{"status": "accepted"} // unchanged: no re-matching
+		if sk, err := s.Store.ListSkippedTargets(r.Context(), host.ID); err == nil && len(sk) > 0 {
+			resp["skipped"] = sk
+		}
+		writeJSON(w, http.StatusAccepted, resp)
 		return
 	}
-	// An identical inventory is answered before the limiter and spends no token: nothing changes.
-	if host.InventoryHash != "" && host.InventoryHash == p.Hash {
-		writeJSON(w, http.StatusAccepted, map[string]string{"status": "accepted"}) // unchanged: no re-matching
+	valid, skipped, err := validateInventory(&p)
+	if err != nil {
+		s.invalidInventory(w, host.ID, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if len(valid) == 0 && len(skipped) > 0 && allFormat(skipped) {
+		s.invalidInventory(w, host.ID, http.StatusUnsupportedMediaType, map[string]any{
+			"error": "no target is a CycloneDX JSON document (bomFormat \"CycloneDX\")", "skipped": skipped})
 		return
 	}
 	if wait := s.inventoryLim.take(host.ID, s.Now()); wait > 0 {
 		tooMany(w, wait, "inventory rate limit: burst "+strconv.Itoa(s.InventoryBurst)+", one per "+s.InventoryInterval.String())
 		return
 	}
-	if err := s.Store.ReplaceInventory(r.Context(), host.ID, p); err != nil {
+	sk := make([]store.SkippedTarget, len(skipped))
+	for i, k := range skipped {
+		sk[i] = k.SkippedTarget
+	}
+	p.Targets = valid
+	if err := s.Store.ReplaceInventorySkipped(r.Context(), host.ID, p, sk); err != nil {
 		s.inventoryLim.refund(host.ID)
 		s.internal(w, "store inventory", err)
 		return
 	}
-	s.log.Info("inventory stored", "host", host.ID, "targets", len(p.Targets), "hash", p.Hash)
+	s.log.Info("inventory stored", "host", host.ID, "targets", len(valid), "skipped", len(skipped), "hash", p.Hash)
+	for _, k := range skipped {
+		s.log.Warn("inventory target skipped", "host", host.ID, "target", k.Name, "reason", k.Reason)
+	}
 	if s.Pipeline != nil {
 		s.Pipeline.Trigger(host.ID)
 	}
-	writeJSON(w, http.StatusAccepted, map[string]string{"status": "accepted"})
+	resp := map[string]any{"status": "accepted"}
+	if len(sk) > 0 {
+		resp["skipped"] = sk
+	}
+	writeJSON(w, http.StatusAccepted, resp)
 }
 
-func validateInventory(p *model.InventoryPayload) (int, error) {
-	bad := http.StatusBadRequest
+// skippedTarget is a refused target; format marks "not a (valid) CycloneDX document".
+type skippedTarget struct {
+	store.SkippedTarget
+	format bool
+}
+
+func allFormat(sk []skippedTarget) bool {
+	for _, k := range sk {
+		if !k.format {
+			return false
+		}
+	}
+	return true
+}
+
+// validateInventory validates the payload as a whole (400) and every target on its own: invalid or
+// oversized targets are returned as skipped, the valid ones are kept, so one bad target (e.g. a
+// huge container image) never blinds the whole host.
+func validateInventory(p *model.InventoryPayload) (valid []model.InventoryTarget, skipped []skippedTarget, err error) {
 	if p.Hash == "" {
-		return bad, errors.New("hash is required")
+		return nil, nil, errors.New("hash is required")
+	}
+	if len(p.Hash) > 256 {
+		return nil, nil, errors.New("hash too long")
 	}
 	if len(p.Targets) > maxTargets {
-		return bad, fmt.Errorf("too many targets (max %d)", maxTargets)
+		return nil, nil, fmt.Errorf("too many targets (max %d)", maxTargets)
 	}
 	seen := map[string]bool{}
 	for i, t := range p.Targets {
-		if t.Kind != model.TargetHost && t.Kind != model.TargetContainerImage {
-			return bad, fmt.Errorf("target %d: unknown kind %q", i, t.Kind)
-		}
-		if t.Name == "" {
-			return bad, fmt.Errorf("target %d: name is required", i)
-		}
-		if len(t.SBOM) == 0 || string(t.SBOM) == "null" {
-			return bad, fmt.Errorf("target %d: sbom is required", i)
-		}
-		if _, err := countComponents(t.SBOM, MaxComponents); err != nil {
-			if errors.Is(err, errTooManyComponents) {
-				return http.StatusRequestEntityTooLarge, fmt.Errorf("target %d: more than %d components", i, MaxComponents)
+		skip := func(format bool, reason string) {
+			name := cleanText(t.Name, 64)
+			if name == "" {
+				name = fmt.Sprintf("(target %d)", i)
 			}
-			return bad, fmt.Errorf("target %d: invalid sbom: %v", i, err)
+			kind := model.TargetKind(cleanText(string(t.Kind), 32))
+			if kind != model.TargetHost && kind != model.TargetContainerImage {
+				kind = "invalid"
+			}
+			skipped = append(skipped, skippedTarget{SkippedTarget: store.SkippedTarget{Kind: kind, Name: name, Reason: reason}, format: format})
+		}
+		switch {
+		case t.Kind != model.TargetHost && t.Kind != model.TargetContainerImage:
+			skip(false, fmt.Sprintf("unknown kind %q", cleanText(string(t.Kind), 32)))
+			continue
+		case t.Name == "":
+			skip(false, "name is required")
+			continue
+		case len(t.Name) > maxTargetName:
+			skip(false, fmt.Sprintf("name longer than %d bytes", maxTargetName))
+			continue
+		case len(t.ImageID) > maxImageID:
+			skip(false, fmt.Sprintf("image_id longer than %d bytes", maxImageID))
+			continue
+		case len(t.Containers) > maxContainers:
+			skip(false, fmt.Sprintf("more than %d containers", maxContainers))
+			continue
+		case len(t.SBOM) == 0 || string(t.SBOM) == "null":
+			skip(true, "sbom is required")
+			continue
+		}
+		longName := false
+		for _, c := range t.Containers {
+			if len(c) > maxContainerNameLen {
+				longName = true
+			}
+		}
+		if longName {
+			skip(false, fmt.Sprintf("container name longer than %d bytes", maxContainerNameLen))
+			continue
 		}
 		k := string(t.Kind) + "\x00" + t.Name
 		if seen[k] {
-			return bad, fmt.Errorf("target %d: duplicate %s %q", i, t.Kind, t.Name)
+			skip(false, "duplicate target")
+			continue
 		}
-		seen[k] = true
-	}
-	return 0, nil
-}
-
-var errTooManyComponents = errors.New("too many components")
-
-type cdxComp struct {
-	Components []cdxComp `json:"components"`
-}
-
-// countComponents streams the CycloneDX document and counts (nested) components, stopping as soon
-// as limit is exceeded, so no huge component slice is ever built.
-func countComponents(sbom []byte, limit int) (int, error) {
-	dec := json.NewDecoder(bytes.NewReader(sbom))
-	if t, err := dec.Token(); err != nil || t != json.Delim('{') {
-		return 0, errors.New("sbom must be a JSON object")
-	}
-	total := 0
-	for dec.More() {
-		kt, err := dec.Token()
-		if err != nil {
-			return 0, err
-		}
-		if kt != "components" {
-			var skip json.RawMessage
-			if err := dec.Decode(&skip); err != nil {
-				return 0, err
+		if _, err := countComponents(t.SBOM, MaxComponents); err != nil {
+			switch {
+			case errors.Is(err, errTooManyComponents):
+				skip(false, fmt.Sprintf("more than %d components", MaxComponents))
+			default:
+				skip(true, "invalid sbom: "+err.Error())
 			}
 			continue
 		}
-		if t, err := dec.Token(); err != nil || t != json.Delim('[') {
-			if err != nil {
-				return 0, err
-			}
-			continue // null or non-array: nothing to count
-		}
-		for dec.More() {
-			var c cdxComp
-			if err := dec.Decode(&c); err != nil {
-				return 0, err
-			}
-			total += 1 + nested(c)
-			if total > limit {
-				return total, errTooManyComponents
-			}
-		}
-		if _, err := dec.Token(); err != nil {
-			return 0, err
-		}
+		seen[k] = true
+		valid = append(valid, t)
 	}
-	return total, nil
+	return valid, skipped, nil
 }
 
-func nested(c cdxComp) int {
-	n := 0
-	for _, k := range c.Components {
-		n += 1 + nested(k)
+var (
+	errTooManyComponents = errors.New("too many components")
+	errNotCycloneDX      = errors.New(`not a CycloneDX JSON document (top-level "bomFormat" must be exactly "CycloneDX")`)
+)
+
+// countComponents streams the whole document once and counts every object in an array under a
+// key named exactly "components" (at any depth), stopping as soon as limit is exceeded, so no huge
+// component slice is ever built. The document must be a JSON object with top-level
+// "bomFormat": "CycloneDX" (exact, case-sensitive). Keys that equal "components" or "bomFormat"
+// only case-insensitively are rejected: a lenient downstream decoder (Grype/Syft) could otherwise
+// parse components that this counter never saw.
+func countComponents(sbom []byte, limit int) (int, error) {
+	type frame struct {
+		obj       bool
+		expectKey bool
+		key       string
+		comps     bool // array that is the value of a "components" key
 	}
-	return n
+	dec := json.NewDecoder(bytes.NewReader(sbom))
+	var stack []frame
+	total, formats, badFormat, done := 0, 0, false, false
+	for {
+		t, err := dec.Token()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return 0, err
+		}
+		if done {
+			return 0, errors.New("trailing data after the JSON document")
+		}
+		if len(stack) == 0 && t != json.Delim('{') {
+			return 0, errors.New("sbom must be a JSON object")
+		}
+		var top *frame
+		if n := len(stack); n > 0 {
+			top = &stack[n-1]
+		}
+		if _, isDelim := t.(json.Delim); top != nil && top.obj && top.expectKey && !isDelim {
+			k, _ := t.(string)
+			for _, name := range []string{"components", "bomFormat"} {
+				if k != name && strings.EqualFold(k, name) {
+					return 0, fmt.Errorf("ambiguous key %q (only the exact spelling %q is accepted)", k, name)
+				}
+			}
+			top.key, top.expectKey = k, false
+			continue
+		}
+		switch d := t.(type) {
+		case json.Delim:
+			if d == '{' || d == '[' {
+				if top != nil && !top.obj && top.comps && d == '{' {
+					if total++; total > limit {
+						return total, errTooManyComponents
+					}
+				}
+				if len(stack) == 1 && top.key == "bomFormat" {
+					badFormat = true
+				}
+				stack = append(stack, frame{obj: d == '{', expectKey: d == '{',
+					comps: d == '[' && top != nil && top.obj && top.key == "components"})
+				continue
+			}
+			stack = stack[:len(stack)-1]
+			if len(stack) == 0 {
+				done = true
+			} else if p := &stack[len(stack)-1]; p.obj {
+				p.expectKey = true
+			}
+		default:
+			if top != nil && top.obj {
+				if len(stack) == 1 && top.key == "bomFormat" {
+					if v, ok := t.(string); ok && v == "CycloneDX" {
+						formats++
+					} else {
+						badFormat = true
+					}
+				}
+				top.expectKey = true
+			}
+		}
+	}
+	if !done {
+		return 0, errors.New("incomplete JSON document")
+	}
+	if formats == 0 || badFormat {
+		return total, errNotCycloneDX
+	}
+	return total, nil
 }

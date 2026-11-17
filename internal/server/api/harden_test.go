@@ -132,6 +132,8 @@ func TestBadEnrollDoesNotWrite(t *testing.T) {
 	}
 }
 
+var cdxMin = json.RawMessage(`{"bomFormat":"CycloneDX"}`)
+
 func sbomWithComponents(n int) json.RawMessage {
 	var b strings.Builder
 	b.WriteString(`{"bomFormat":"CycloneDX","components":[`)
@@ -156,14 +158,16 @@ func TestComponentCap(t *testing.T) {
 	if c := post("ok", MaxComponents); c != 202 {
 		t.Fatalf("at cap: %d", c)
 	}
-	if c := post("big", MaxComponents+1); c != 413 {
+	// an oversized target is skipped (202 + skipped list), not a payload-wide 413
+	if c := post("big", MaxComponents+1); c != 202 {
 		t.Fatalf("over cap: %d", c)
 	}
 	// nested components count too
-	nested := json.RawMessage(`{"components":[{"components":[` + strings.Repeat(`{"name":"x"},`, MaxComponents) + `{"name":"y"}]}]}`)
+	nested := json.RawMessage(`{"bomFormat":"CycloneDX","components":[{"components":[` + strings.Repeat(`{"name":"x"},`, MaxComponents) + `{"name":"y"}]}]}`)
 	js, _ := json.Marshal(model.InventoryPayload{Hash: "nest", Targets: []model.InventoryTarget{{Kind: model.TargetHost, Name: "host", SBOM: nested}}})
-	if resp, _ := e.do(t, "POST", "/api/v1/inventory", er.AgentKey, js, nil); resp.StatusCode != 413 {
-		t.Fatalf("nested: %d", resp.StatusCode)
+	resp, body := e.do(t, "POST", "/api/v1/inventory", er.AgentKey, js, nil)
+	if resp.StatusCode != 202 || !strings.Contains(string(body), "more than 50000 components") {
+		t.Fatalf("nested: %d %s", resp.StatusCode, body)
 	}
 }
 
@@ -175,7 +179,7 @@ func TestInventoryRateLimitAndDuplicateHash(t *testing.T) {
 	})
 	er := e.enroll(t, "m")
 	inv := func(hash string) (int, string) {
-		js, _ := json.Marshal(model.InventoryPayload{Hash: hash, Targets: []model.InventoryTarget{{Kind: model.TargetHost, Name: "host", SBOM: json.RawMessage(`{}`)}}})
+		js, _ := json.Marshal(model.InventoryPayload{Hash: hash, Targets: []model.InventoryTarget{{Kind: model.TargetHost, Name: "host", SBOM: cdxMin}}})
 		resp, _ := e.do(t, "POST", "/api/v1/inventory", er.AgentKey, js, nil)
 		return resp.StatusCode, resp.Header.Get("Retry-After")
 	}
@@ -219,7 +223,7 @@ func TestIdenticalInventorySpendsNoToken(t *testing.T) {
 	})
 	er := e.enroll(t, "m")
 	inv := func(hash string) int {
-		js, _ := json.Marshal(model.InventoryPayload{Hash: hash, Targets: []model.InventoryTarget{{Kind: model.TargetHost, Name: "host", SBOM: json.RawMessage(`{}`)}}})
+		js, _ := json.Marshal(model.InventoryPayload{Hash: hash, Targets: []model.InventoryTarget{{Kind: model.TargetHost, Name: "host", SBOM: cdxMin}}})
 		resp, _ := e.do(t, "POST", "/api/v1/inventory", er.AgentKey, js, nil)
 		return resp.StatusCode
 	}

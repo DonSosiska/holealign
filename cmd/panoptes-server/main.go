@@ -2,7 +2,7 @@
 //
 //	panoptes-server [-config file] [serve]
 //	panoptes-server [-config file] token create <name> [-max-hosts N] [-expires 72h] [-labels a,b] | token list | token revoke <name>
-//	panoptes-server [-config file] host list | host allow-reenroll <id|hostname> | host delete <id|hostname>
+//	panoptes-server [-config file] host list | host allow-reenroll <id|hostname> [-ttl 1h] | host delete <id|hostname>
 //	panoptes-server [-config file] user set-password <user>   (password on stdin)
 //	panoptes-server -version
 package main
@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"regexp"
 	"runtime/debug"
 	"sort"
 	"strings"
@@ -65,7 +66,9 @@ commands:
   token create <name> [-max-hosts N] [-expires 72h] [-labels a,b]
                               create an enrollment token (printed once); labels are authoritative
   host list                   list enrolled hosts
-  host allow-reenroll <host>  allow ONE re-enrollment of a host without its old key (id or hostname)
+  host allow-reenroll <host> [-ttl 1h]
+                              allow ONE re-enrollment of a host without its old key (id or hostname),
+                              valid for the TTL (default 1h, max 168h)
   host delete <host>          delete a host and its findings
   token list                  list enrollment tokens
   token revoke <name>         revoke an enrollment token
@@ -358,7 +361,16 @@ func serve(cfg *config.Config) error {
 	})
 	pipe := pipeline.New(st, grypeDB, comp.Evaluator, comp.Notifier, comp.Drafter,
 		pipeline.Options{PublicURL: cfg.PublicURL, Logger: log, UnknownGrace: unknownGrace(cfg),
-			OnRun: mon.ReportRun, OnPoison: mon.ReportPoison})
+			OnRun: mon.ReportRun, OnPoison: mon.ReportPoison,
+			// skipped/failed targets and host limits reach the health loop as a pipeline_error alert
+			OnProblem: func(hostID, target, reason string) {
+				if target == "" {
+					target = "host limit"
+				}
+				mon.ReportPoison(hostID, target+" ("+reason+")")
+			},
+			MaxFindingsPerHost: cfg.Limits.FindingsPerHost,
+			MatchBudgetPerHour: time.Duration(cfg.Limits.MatchSecondsPerHostHour) * time.Second})
 	trig.p = pipe
 	for _, start := range comp.Start {
 		func() {
@@ -367,6 +379,7 @@ func serve(cfg *config.Config) error {
 		}()
 	}
 	pipe.StartNotifyLoop(ctx, 5*time.Minute)
+	pruneDone := startRetention(ctx, st, cfg, log)
 	monDone := mon.Start(ctx, time.Minute)
 
 	apiMux := api.NewMux(api.Deps{Store: st, Evaluator: comp.Evaluator, Pipeline: pipe, Logger: log, ClientIP: clientIP})
@@ -433,6 +446,7 @@ func serve(cfg *config.Config) error {
 	serving.Wait()
 	<-feedsDone
 	<-monDone
+	<-pruneDone
 	pipe.Shutdown()
 	if serveErr != nil {
 		return fmt.Errorf("listen: %w", serveErr)
@@ -493,7 +507,7 @@ func tokenCmd(cfg *config.Config, args []string, stdout, stderr io.Writer) error
 	if len(args) == 0 {
 		return errors.New("usage: token create <name> [-max-hosts N] [-expires 72h] [-labels a,b] | token list | token revoke <name>")
 	}
-	if err := os.MkdirAll(cfg.DataDir, 0o750); err != nil {
+	if err := prepareCLI(cfg); err != nil {
 		return err
 	}
 	st, err := openStore(cfg)
@@ -567,7 +581,7 @@ func userCmd(cfg *config.Config, args []string, stdin io.Reader, stdout, stderr 
 	if len(pw) < minAdminPassword {
 		return fmt.Errorf("password must be at least %d characters", minAdminPassword)
 	}
-	if err := os.MkdirAll(cfg.DataDir, 0o750); err != nil {
+	if err := prepareCLI(cfg); err != nil {
 		return err
 	}
 	st, err := openStore(cfg)
@@ -594,6 +608,12 @@ func userCmd(cfg *config.Config, args []string, stdin io.Reader, stdout, stderr 
 	return nil
 }
 
+// tokenNameRe restricts token names (they appear in logs, the CLI and the web UI).
+var tokenNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+
+// maxReenrollTTL caps `host allow-reenroll -ttl`.
+const maxReenrollTTL = 7 * 24 * time.Hour
+
 func tokenCreate(ctx context.Context, st store.Store, args []string, stdout, stderr io.Writer) error {
 	const usage = "usage: token create <name> [-max-hosts N] [-expires 72h] [-labels prod,web]"
 	fs := flag.NewFlagSet("token create", flag.ContinueOnError)
@@ -615,6 +635,9 @@ func tokenCreate(ctx context.Context, st store.Store, args []string, stdout, std
 	}
 	if strings.TrimSpace(name) == "" {
 		return errors.New(usage)
+	}
+	if !tokenNameRe.MatchString(name) {
+		return fmt.Errorf("invalid token name %q (must match %s)", name, tokenNameRe)
 	}
 	if *maxHosts < 0 || *expires < 0 {
 		return errors.New("-max-hosts and -expires must not be negative")
@@ -649,11 +672,35 @@ func tokenCreate(ctx context.Context, st store.Store, args []string, stdout, std
 }
 
 func hostCmd(cfg *config.Config, args []string, stdout io.Writer) error {
-	const usage = "usage: host list | host allow-reenroll <id|hostname> | host delete <id|hostname>"
+	const usage = "usage: host list | host allow-reenroll <id|hostname> [-ttl 1h] | host delete <id|hostname>"
 	if len(args) == 0 {
 		return errors.New(usage)
 	}
-	if err := os.MkdirAll(cfg.DataDir, 0o750); err != nil {
+	// host selector and flags (flags may follow the selector: allow-reenroll <host> -ttl 2h)
+	ttl := time.Hour
+	sel, rest := "", args[1:]
+	if len(rest) > 0 && !strings.HasPrefix(rest[0], "-") {
+		sel, rest = rest[0], rest[1:]
+	}
+	if args[0] == "allow-reenroll" {
+		fs := flag.NewFlagSet("host allow-reenroll", flag.ContinueOnError)
+		fs.SetOutput(io.Discard)
+		fs.DurationVar(&ttl, "ttl", time.Hour, "how long the re-enrollment stays allowed")
+		if err := fs.Parse(rest); err != nil {
+			return errors.New(usage)
+		}
+		rest = fs.Args()
+		if sel == "" && len(rest) > 0 {
+			sel, rest = rest[0], rest[1:]
+		}
+		if ttl <= 0 || ttl > maxReenrollTTL {
+			return fmt.Errorf("-ttl must be between 1s and %s", maxReenrollTTL)
+		}
+	}
+	if len(rest) > 0 {
+		return errors.New(usage)
+	}
+	if err := prepareCLI(cfg); err != nil {
 		return err
 	}
 	st, err := openStore(cfg)
@@ -667,25 +714,25 @@ func hostCmd(cfg *config.Config, args []string, stdout io.Writer) error {
 		return err
 	}
 	find := func() (store.HostAdmin, error) {
-		if len(args) != 2 {
+		if sel == "" {
 			return store.HostAdmin{}, errors.New(usage)
 		}
 		var hit []store.HostAdmin
 		for _, h := range hosts {
-			if h.ID == args[1] {
+			if h.ID == sel {
 				return h, nil
 			}
-			if h.Hostname == args[1] {
+			if h.Hostname == sel {
 				hit = append(hit, h)
 			}
 		}
 		switch len(hit) {
 		case 0:
-			return store.HostAdmin{}, fmt.Errorf("no host %q", args[1])
+			return store.HostAdmin{}, fmt.Errorf("no host %q", sel)
 		case 1:
 			return hit[0], nil
 		}
-		return store.HostAdmin{}, fmt.Errorf("hostname %q is ambiguous (%d hosts); use the host id", args[1], len(hit))
+		return store.HostAdmin{}, fmt.Errorf("hostname %q is ambiguous (%d hosts); use the host id", sel, len(hit))
 	}
 	switch args[0] {
 	case "list":
@@ -698,7 +745,7 @@ func hostCmd(cfg *config.Config, args []string, stdout io.Writer) error {
 			}
 			re := "-"
 			if h.ReenrollAllowed {
-				re = "allowed"
+				re = "allowed until " + h.ReenrollUntil.Format(time.RFC3339)
 			}
 			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", h.ID, h.Hostname, strings.Join(h.Labels, ","), last, h.TokenName, re)
 		}
@@ -708,10 +755,11 @@ func hostCmd(cfg *config.Config, args []string, stdout io.Writer) error {
 		if err != nil {
 			return err
 		}
-		if err := st.SetReenrollAllowed(ctx, h.ID, true); err != nil {
+		until := time.Now().Add(ttl)
+		if err := st.SetReenrollAllowedUntil(ctx, h.ID, until); err != nil {
 			return err
 		}
-		fmt.Fprintf(stdout, "host %s (%s) may re-enroll once without its previous key\n", h.ID, h.Hostname)
+		fmt.Fprintf(stdout, "host %s (%s) may re-enroll once without its previous key until %s\n", h.ID, h.Hostname, until.Format(time.RFC3339))
 	case "delete":
 		h, err := find()
 		if err != nil {

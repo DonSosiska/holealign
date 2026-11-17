@@ -75,4 +75,13 @@ func TestMatchWithoutDB(t *testing.T) {
 	}
 }
 
+func TestPackageCap(t *testing.T) {
+	if err := checkPackageCap(MaxPackages); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkPackageCap(MaxPackages + 1); !errors.Is(err, ErrTooManyPackages) {
+		t.Fatalf("want ErrTooManyPackages, got %v", err)
+	}
+}
+
 func ptr[T any](v T) *T { return &v }

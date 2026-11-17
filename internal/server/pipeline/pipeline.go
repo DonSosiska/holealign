@@ -2,6 +2,7 @@
 package pipeline
 
 import (
+	"container/list"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -23,6 +24,9 @@ import (
 
 // DefaultRunTimeout bounds one pipeline run.
 const DefaultRunTimeout = 10 * time.Minute
+
+// DefaultTargetTimeout bounds the matching of one target; a slower target is isolated like a failure.
+const DefaultTargetTimeout = 5 * time.Minute
 
 // Matcher finds vulnerabilities in one CycloneDX SBOM. Implemented by match.Grype; faked in tests.
 // Returned findings need only the matcher-derived fields; the pipeline fills host/target/verdict.
@@ -47,6 +51,19 @@ type Options struct {
 	// target's matching panicked and the target was flagged. Both must not block.
 	OnRun    func(hostID string, err error)
 	OnPoison func(hostID, target string)
+	// OnProblem is called (not blocking) for every target that was skipped by the API (oversized,
+	// invalid), failed or timed out in matching, and for host-level limits (findings cap, match
+	// time budget); target is "" for the latter. Wire it to the health monitor.
+	OnProblem func(hostID, target, reason string)
+
+	// TargetTimeout bounds one target's matching (default DefaultTargetTimeout).
+	TargetTimeout time.Duration
+	// MaxFindingsPerHost caps the open findings stored per host (0 = unlimited); the lowest
+	// severities are dropped first.
+	MaxFindingsPerHost int
+	// MatchBudgetPerHour is the cumulative matcher time one host may use per rolling hour
+	// (0 = unlimited). A host over budget has its runs deferred.
+	MatchBudgetPerHour time.Duration
 }
 
 // Pipeline recomputes findings for hosts. Trigger is non-blocking and coalesces per host.
@@ -61,11 +78,73 @@ type Pipeline struct {
 
 	baseCtx context.Context
 	cancel  context.CancelFunc
-	sem     chan struct{}
+	sem     *fifoSem
 	wg      sync.WaitGroup
 
-	mu    sync.Mutex
-	state map[string]*hostState
+	mu       sync.Mutex
+	state    map[string]*hostState
+	usage    map[string][]matchUse  // per host matcher time in the last hour
+	deferred map[string]*time.Timer // hosts whose runs wait for their time budget
+}
+
+type matchUse struct {
+	at  time.Time
+	dur time.Duration
+}
+
+// fifoSem is a counting semaphore that grants slots strictly in arrival order. A host that has
+// just finished a run and asks again queues behind the hosts already waiting, so two heavy hosts
+// cannot monopolise the matcher slots.
+type fifoSem struct {
+	mu   sync.Mutex
+	free int
+	q    *list.List // of chan struct{}
+}
+
+func newFifoSem(n int) *fifoSem { return &fifoSem{free: n, q: list.New()} }
+
+func (f *fifoSem) acquire(ctx context.Context) error {
+	f.mu.Lock()
+	if f.free > 0 && f.q.Len() == 0 {
+		f.free--
+		f.mu.Unlock()
+		return nil
+	}
+	ch := make(chan struct{})
+	el := f.q.PushBack(ch)
+	f.mu.Unlock()
+	select {
+	case <-ch:
+		return nil
+	case <-ctx.Done():
+		f.mu.Lock()
+		select {
+		case <-ch: // granted concurrently: hand the slot on
+			f.mu.Unlock()
+			f.release()
+		default:
+			f.q.Remove(el)
+			f.mu.Unlock()
+		}
+		return ctx.Err()
+	}
+}
+
+func (f *fifoSem) release() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if el := f.q.Front(); el != nil {
+		f.q.Remove(el)
+		close(el.Value.(chan struct{}))
+		return
+	}
+	f.free++
+}
+
+func (f *fifoSem) waiting() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.q.Len()
 }
 
 type hostState struct{ running, dirty bool }
@@ -84,11 +163,14 @@ func New(st store.Store, m Matcher, ev core.RuleEvaluator, n core.Notifier, d co
 	if opts.RunTimeout <= 0 {
 		opts.RunTimeout = DefaultRunTimeout
 	}
+	if opts.TargetTimeout <= 0 {
+		opts.TargetTimeout = DefaultTargetTimeout
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Pipeline{
 		st: st, matcher: m, eval: ev, notifier: n, drafter: d, opts: opts, log: opts.Logger,
-		baseCtx: ctx, cancel: cancel, sem: make(chan struct{}, opts.Concurrency),
-		state: map[string]*hostState{},
+		baseCtx: ctx, cancel: cancel, sem: newFifoSem(opts.Concurrency),
+		state: map[string]*hostState{}, usage: map[string][]matchUse{}, deferred: map[string]*time.Timer{},
 	}
 }
 
@@ -121,8 +203,15 @@ func (p *Pipeline) Trigger(hostID string) {
 			}
 		}()
 		for {
-			p.runLimited(hostID)
+			wait := p.runLimited(hostID)
 			p.mu.Lock()
+			if wait > 0 { // over the match-time budget: run again when budget frees up
+				s.running, s.dirty = false, false
+				delete(p.state, hostID)
+				p.deferLocked(hostID, wait)
+				p.mu.Unlock()
+				return
+			}
 			if s.dirty && p.baseCtx.Err() == nil {
 				s.dirty = false
 				p.mu.Unlock()
@@ -136,14 +225,92 @@ func (p *Pipeline) Trigger(hostID string) {
 	}()
 }
 
-func (p *Pipeline) runLimited(hostID string) {
-	select {
-	case p.sem <- struct{}{}:
-		defer func() { <-p.sem }()
-	case <-p.baseCtx.Done():
+// deferLocked schedules a Trigger for hostID after wait (p.mu held). One timer per host.
+func (p *Pipeline) deferLocked(hostID string, wait time.Duration) {
+	if p.baseCtx.Err() != nil {
 		return
 	}
-	// A host has at most one goroutine (Trigger coalesces), so it holds at most one slot.
+	if t := p.deferred[hostID]; t != nil {
+		t.Stop()
+	}
+	p.deferred[hostID] = time.AfterFunc(wait, func() {
+		p.mu.Lock()
+		delete(p.deferred, hostID)
+		p.mu.Unlock()
+		if p.baseCtx.Err() == nil {
+			p.Trigger(hostID)
+		}
+	})
+}
+
+// budgetWait returns how long a run of hostID must wait because its matcher time in the last hour
+// exhausted the budget (0 = may run).
+func (p *Pipeline) budgetWait(hostID string, now time.Time) time.Duration {
+	b := p.opts.MatchBudgetPerHour
+	if b <= 0 {
+		return 0
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	use := p.usage[hostID][:0:0]
+	var total time.Duration
+	for _, u := range p.usage[hostID] {
+		if now.Sub(u.at) < time.Hour {
+			use = append(use, u)
+			total += u.dur
+		}
+	}
+	if len(use) == 0 {
+		delete(p.usage, hostID)
+	} else {
+		p.usage[hostID] = use
+	}
+	if total < b {
+		return 0
+	}
+	// wait until enough old usage expires to drop below the budget
+	over := total - b
+	for _, u := range use {
+		over -= u.dur
+		if over < 0 {
+			return u.at.Add(time.Hour).Sub(now) + time.Second
+		}
+	}
+	return time.Hour
+}
+
+func (p *Pipeline) addUsage(hostID string, d time.Duration, now time.Time) {
+	if p.opts.MatchBudgetPerHour <= 0 || d <= 0 {
+		return
+	}
+	p.mu.Lock()
+	p.usage[hostID] = append(p.usage[hostID], matchUse{at: now, dur: d})
+	p.mu.Unlock()
+}
+
+func (p *Pipeline) problem(hostID, target, reason string) {
+	if p.opts.OnProblem == nil {
+		return
+	}
+	defer p.recoverLog("OnProblem")
+	p.opts.OnProblem(hostID, target, reason)
+}
+
+// runLimited runs one pipeline pass for hostID under the matcher slot semaphore. It returns a
+// positive duration when the run was deferred because the host used up its match-time budget.
+func (p *Pipeline) runLimited(hostID string) (deferFor time.Duration) {
+	if wait := p.budgetWait(hostID, p.opts.Now()); wait > 0 {
+		p.log.Warn("host exceeded its matcher time budget; run deferred", "host", hostID,
+			"budget", p.opts.MatchBudgetPerHour, "retry_in", wait.Round(time.Second))
+		p.problem(hostID, "", fmt.Sprintf("matcher time budget %s/hour exceeded; runs deferred %s", p.opts.MatchBudgetPerHour, wait.Round(time.Second)))
+		return wait
+	}
+	if err := p.sem.acquire(p.baseCtx); err != nil {
+		return 0
+	}
+	defer p.sem.release()
+	// A host has at most one goroutine (Trigger coalesces), so it holds at most one slot. A
+	// follow-up run queues behind every host already waiting (FIFO), never straight back in.
 	ctx, cancel := context.WithTimeout(p.baseCtx, p.opts.RunTimeout)
 	defer cancel()
 	var runErr error
@@ -162,6 +329,7 @@ func (p *Pipeline) runLimited(hostID string) {
 	if runErr = p.Run(ctx, hostID); runErr != nil && !errors.Is(runErr, context.Canceled) {
 		p.log.Error("pipeline run failed", "host", hostID, "err", runErr)
 	}
+	return 0
 }
 
 // poisonKey is the kv key flagging a target whose matching panicked.
@@ -250,6 +418,12 @@ func (p *Pipeline) Wait() { p.wg.Wait() }
 // Shutdown cancels in-flight runs and waits for them.
 func (p *Pipeline) Shutdown() {
 	p.cancel()
+	p.mu.Lock()
+	for id, t := range p.deferred {
+		t.Stop()
+		delete(p.deferred, id)
+	}
+	p.mu.Unlock()
 	p.wg.Wait()
 }
 
@@ -257,8 +431,10 @@ type fkey struct{ target, pkg, ver, vuln string }
 
 func keyOf(f model.Finding) fkey { return fkey{f.Target, f.PackageName, f.PackageVer, f.VulnID} }
 
-// Run recomputes the findings of one host synchronously. If matching fails for any target
-// (e.g. no vuln DB yet) nothing is changed.
+// Run recomputes the findings of one host synchronously. A target whose matching fails, times out
+// or was refused at upload keeps its previous findings and is reported (OnProblem) while the other
+// targets are processed; if no target could be matched at all (e.g. no vuln DB yet) nothing is
+// changed and the run fails.
 func (p *Pipeline) Run(ctx context.Context, hostID string) error {
 	host, err := p.st.GetHost(ctx, hostID)
 	if err != nil {
@@ -289,6 +465,16 @@ func (p *Pipeline) Run(ctx context.Context, hostID string) error {
 			}
 		}
 	}
+	// Targets the API refused (oversized, invalid): keep their previous findings and report them.
+	if skipped, err := p.st.ListSkippedTargets(ctx, hostID); err == nil {
+		for _, k := range skipped {
+			carryOver(k.Name)
+			p.log.Warn("target skipped at upload; previous findings kept", "host", hostID, "target", k.Name, "reason", k.Reason)
+			p.problem(hostID, k.Name, "skipped at upload: "+k.Reason)
+		}
+	}
+	var failed []string // "target: error" of isolated failures
+	matched := 0
 	for _, t := range targets {
 		if len(t.SBOM) == 0 {
 			continue
@@ -299,7 +485,11 @@ func (p *Pipeline) Run(ctx context.Context, hostID string) error {
 			carryOver(t.Name)
 			continue
 		}
-		fs, err, panicked := p.matchSafe(ctx, t, host.OS)
+		tctx, tcancel := context.WithTimeout(ctx, p.opts.TargetTimeout)
+		t0 := time.Now()
+		fs, err, panicked := p.matchSafe(tctx, t, host.OS)
+		tcancel()
+		p.addUsage(hostID, time.Since(t0), p.opts.Now())
 		if panicked {
 			if err := p.st.KVSet(ctx, pk, "panic", p.opts.Now()); err != nil {
 				return fmt.Errorf("record poison flag: %w", err)
@@ -312,8 +502,19 @@ func (p *Pipeline) Run(ctx context.Context, hostID string) error {
 			continue
 		}
 		if err != nil {
-			return fmt.Errorf("match %s %q: %w", t.Kind, t.Name, err)
+			if ctx.Err() != nil { // the whole run was cancelled or timed out: nothing is isolated
+				return fmt.Errorf("match %s %q: %w", t.Kind, t.Name, ctx.Err())
+			}
+			// A failing or too slow target must not blind the others: keep its previous
+			// findings, record the error and go on.
+			msg := fmt.Sprintf("%s %q: %v", t.Kind, t.Name, err)
+			failed = append(failed, msg)
+			p.log.Error("target matching failed; previous findings kept", "host", hostID, "target", t.Name, "err", err)
+			p.problem(hostID, t.Name, "matching failed: "+err.Error())
+			carryOver(t.Name)
+			continue
 		}
+		matched++
 		for _, f := range fs {
 			f.HostID, f.Target, f.TargetKind = hostID, t.Name, t.Kind
 			if seen[keyOf(f)] {
@@ -323,6 +524,11 @@ func (p *Pipeline) Run(ctx context.Context, hostID string) error {
 			found = append(found, f)
 		}
 	}
+	if len(failed) > 0 && matched == 0 {
+		// Nothing could be matched at all (e.g. no vuln DB yet): change nothing, report the run as failed.
+		return fmt.Errorf("match %s", strings.Join(failed, "; "))
+	}
+	found = p.capFindings(hostID, found)
 
 	// 2. evaluate
 	hc := core.HostContext{Host: host, Facts: host.Facts}
@@ -367,6 +573,31 @@ func (p *Pipeline) Run(ctx context.Context, hostID string) error {
 		return nil
 	}
 	return p.deliver(ctx, events, now)
+}
+
+var sevRank = map[string]int{"critical": 5, "high": 4, "medium": 3, "low": 2, "negligible": 1}
+
+// capFindings keeps at most MaxFindingsPerHost findings, dropping the lowest severity first
+// (KEV and higher CVSS survive longer).
+func (p *Pipeline) capFindings(hostID string, found []model.Finding) []model.Finding {
+	max := p.opts.MaxFindingsPerHost
+	if max <= 0 || len(found) <= max {
+		return found
+	}
+	sort.SliceStable(found, func(i, j int) bool {
+		a, b := found[i], found[j]
+		if a.KEV != b.KEV {
+			return a.KEV
+		}
+		if ra, rb := sevRank[strings.ToLower(a.Severity)], sevRank[strings.ToLower(b.Severity)]; ra != rb {
+			return ra > rb
+		}
+		return a.CVSS > b.CVSS
+	})
+	dropped := len(found) - max
+	p.log.Warn("host exceeds the open findings cap; lowest-severity findings dropped", "host", hostID, "cap", max, "dropped", dropped)
+	p.problem(hostID, "", fmt.Sprintf("findings cap %d exceeded: %d lowest-severity findings dropped", max, dropped))
+	return found[:max]
 }
 
 func (p *Pipeline) buildEvents(ctx context.Context, now time.Time, host model.Host, prev map[fkey]model.Finding, res store.ApplyResult, rules map[fkey]*model.Rule) ([]model.Event, error) {
