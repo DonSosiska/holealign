@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"cel.dev/cel-go/cel"
+	celast "cel.dev/cel-go/common/ast"
 	"cel.dev/cel-go/common/types"
 	"cel.dev/cel-go/common/types/ref"
 	"cel.dev/cel-go/common/types/traits"
@@ -105,29 +106,36 @@ func hasDotOptIndex(src string) bool {
 // compileBool compiles an expression, checks that it yields bool and returns
 // the program together with the facts it references (from the checked AST).
 func compileBool(src string) (cel.Program, []factRef, error) {
+	p, refs, _, err := compileBoolAST(src)
+	return p, refs, err
+}
+
+// compileBoolAST is compileBool that also returns the checked expression tree.
+func compileBoolAST(src string) (cel.Program, []factRef, celast.Expr, error) {
 	env, err := celEnv()
 	if err != nil {
-		return nil, nil, fmt.Errorf("cel environment: %w", err)
+		return nil, nil, nil, fmt.Errorf("cel environment: %w", err)
 	}
 	if hasDotOptIndex(src) {
-		return nil, nil, errors.New(`the ".?[" optional-index syntax is not supported; use m[?"key"]`)
+		return nil, nil, nil, errors.New(`the ".?[" optional-index syntax is not supported; use m[?"key"]`)
 	}
 	ast, iss := env.Compile(src)
 	if iss != nil && iss.Err() != nil {
-		return nil, nil, iss.Err()
+		return nil, nil, nil, iss.Err()
 	}
 	if t := ast.OutputType(); !t.IsExactType(cel.BoolType) {
-		return nil, nil, fmt.Errorf("expression must return bool, got %s", t)
+		return nil, nil, nil, fmt.Errorf("expression must return bool, got %s", t)
 	}
-	refs, err := astFactRefs(ast.NativeRep().Expr())
+	root := ast.NativeRep().Expr()
+	refs, err := astFactRefs(root)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	p, err := env.Program(ast,
 		cel.CostLimit(costLimit),
 		cel.InterruptCheckFrequency(interruptFrequency),
 	)
-	return p, refs, err
+	return p, refs, root, err
 }
 
 // normalize converts JSON-decoded values into forms that behave naturally in CEL:

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"unicode"
 
+	"golang.org/x/text/unicode/norm"
+
 	"panoptes/internal/model"
 )
 
@@ -143,7 +145,9 @@ func buildSystemPrompt(catalog []FactSpec) string {
 	return strings.Replace(s, "{{EXAMPLES}}", strings.TrimRight(eb.String(), "\n"), 1)
 }
 
-var tagRe = regexp.MustCompile(`(?i)<\s*/?\s*untrusted_[a-z_]*\s*>?`)
+// tagRe matches anything that looks like an XML/HTML tag, comment, doctype or
+// processing instruction (and half-written untrusted_* delimiters).
+var tagRe = regexp.MustCompile(`<[/!?|]?[A-Za-z_][^>]{0,64}>|<[!?][^>]{0,64}>|(?i)<\s*/?\s*untrusted_[a-z_]*\s*>?`)
 
 func stripTags(s string) string {
 	for i := 0; i < 5; i++ {
@@ -160,9 +164,11 @@ func isBad(r rune) bool {
 	return unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || r == '\u2028' || r == '\u2029'
 }
 
-// cleanText removes control characters and newlines (replaced by a space), our
-// delimiter tags, and caps the result at max runes.
+// cleanText NFKC-normalises (so full-width or compatibility look-alikes of "<"
+// become real ones), removes control characters and newlines (replaced by a
+// space), tag-like constructs, and caps the result at max runes.
 func cleanText(s string, max int) string {
+	s = norm.NFKC.String(strings.ToValidUTF8(s, " "))
 	s = strings.Map(func(r rune) rune {
 		if isBad(r) {
 			return ' '
@@ -178,14 +184,22 @@ func cleanText(s string, max int) string {
 
 const fieldCap = 256
 
+// sanitizeAdvisory normalises and de-tags advisory text and prefixes every line
+// with "> " so that it reads as quoted data, never as a prompt structure.
 func sanitizeAdvisory(s string) string {
+	s = norm.NFKC.String(strings.ToValidUTF8(s, " "))
 	s = strings.Map(func(r rune) rune {
 		if r != '\n' && r != '\t' && isBad(r) {
 			return ' '
 		}
 		return r
 	}, s)
-	return stripTags(s)
+	s = stripTags(s)
+	lines := strings.Split(strings.ReplaceAll(s, "\r", "\n"), "\n")
+	for i, l := range lines {
+		lines[i] = "> " + l
+	}
+	return strings.Join(lines, "\n")
 }
 
 func buildUserPrompt(f model.Finding, source string, siblings []model.PackageSelector, distro, advisory string) string {
@@ -257,7 +271,7 @@ func buildRetryPrompt(orig, _ string, problems error) string {
 			return ' '
 		}
 		return r
-	}, stripTags(problems.Error()))
+	}, stripTags(norm.NFKC.String(strings.ToValidUTF8(problems.Error(), " "))))
 	if len(msg) > maxRetryErrBytes {
 		msg = strings.ToValidUTF8(msg[:maxRetryErrBytes], "")
 	}

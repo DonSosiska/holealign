@@ -25,10 +25,17 @@ const (
 	kvFailedPfx = "llm.failed."
 	kvCallsPfx  = "llm.calls."
 	kvCoolPfx   = "llm.cooldown."
+	kvHostPfx   = "llm.enqhost." // + day + "." + host: persisted per-host enqueue counter
+	kvEnqPfx    = "llm.enq."     // + day: persisted global enqueue counter
 
 	cooldownTTL          = 6 * time.Hour
 	completeTimeout      = 120 * time.Second
 	maxEnqueuePerHostDay = 100
+	maxEnqueuePerDay     = 1000
+	retryAfterOtherHost  = 24 * time.Hour
+	maxSelectors         = 50
+	maxTitleChars        = 200
+	maxExplanationChars  = 600
 	maxRetryErrBytes     = 2048
 	maxFixChars          = 300
 )
@@ -61,8 +68,6 @@ type Drafter struct {
 	mu       sync.Mutex
 	inflight map[string]bool
 	limitLog string // day for which the limit message was logged
-	hostDay  string
-	hostCnt  map[string]int
 }
 
 // NewDrafter fills defaults.
@@ -79,7 +84,7 @@ func NewDrafter(d Deps) *Drafter {
 	if d.Now == nil {
 		d.Now = time.Now
 	}
-	return &Drafter{d: d, queue: make(chan model.Finding, queueSize), inflight: map[string]bool{}, hostCnt: map[string]int{}}
+	return &Drafter{d: d, queue: make(chan model.Finding, queueSize), inflight: map[string]bool{}}
 }
 
 func keyOf(f model.Finding) string { return f.VulnID + "|" + SourceOf(f) }
@@ -169,8 +174,20 @@ func (d *Drafter) Start(ctx context.Context) {
 	}()
 }
 
-// Enqueue never blocks. Duplicate queued/in-flight findings are ignored.
-func (d *Drafter) Enqueue(_ context.Context, f model.Finding) {
+// kvCount reads a persisted counter (0 when absent or unreadable).
+func (d *Drafter) kvCount(ctx context.Context, key string) int {
+	v, err := d.d.Store.KVGet(ctx, key)
+	if err != nil {
+		return 0
+	}
+	n, _ := strconv.Atoi(v)
+	return n
+}
+
+// Enqueue never blocks. Duplicate queued/in-flight findings are ignored. The
+// per-host and global daily enqueue counters are persisted in the kv store, so
+// a restart does not reset them.
+func (d *Drafter) Enqueue(ctx context.Context, f model.Finding) {
 	if d.d.Provider == nil {
 		return
 	}
@@ -180,23 +197,33 @@ func (d *Drafter) Enqueue(_ context.Context, f model.Finding) {
 	if d.inflight[k] {
 		return
 	}
-	day := d.d.Now().UTC().Format("2006-01-02")
-	if d.hostDay != day {
-		d.hostDay, d.hostCnt = day, map[string]int{}
-	}
+	now := d.d.Now()
+	day := now.UTC().Format("2006-01-02")
+	hostKey := kvHostPfx + day + "." + f.HostID
 	// Findings always carry a host; the empty ID only occurs in tests.
-	if f.HostID != "" && d.hostCnt[f.HostID] >= maxEnqueuePerHostDay {
+	if f.HostID != "" && d.kvCount(ctx, hostKey) >= maxEnqueuePerHostDay {
 		d.d.Logger.Debug("llm: per-host daily enqueue cap reached", "host", f.HostID)
+		return
+	}
+	if d.kvCount(ctx, kvEnqPfx+day) >= maxEnqueuePerDay {
+		d.d.Logger.Debug("llm: global daily enqueue cap reached")
 		return
 	}
 	select {
 	case d.queue <- f:
 		d.inflight[k] = true
 		if f.HostID != "" {
-			d.hostCnt[f.HostID]++
+			d.bump(ctx, hostKey, now)
 		}
+		d.bump(ctx, kvEnqPfx+day, now)
 	default:
 		d.d.Logger.Debug("llm: queue full, dropping", "key", k)
+	}
+}
+
+func (d *Drafter) bump(ctx context.Context, key string, now time.Time) {
+	if err := d.d.Store.KVSet(ctx, key, strconv.Itoa(d.kvCount(ctx, key)+1), now); err != nil {
+		d.d.Logger.Warn("llm: counter update failed", "err", err)
 	}
 }
 
@@ -219,6 +246,16 @@ func (d *Drafter) handle(ctx context.Context, f model.Finding) {
 	id := RuleID(f.VulnID, SourceOf(f))
 	now := d.d.Now()
 
+	// A generated ID that equals a shipped (file) rule or any existing rule ID
+	// must never cost an LLM call (the draft could not be stored anyway).
+	if d.d.Rules != nil {
+		for _, r := range d.d.Rules() {
+			if r.ID == id {
+				return
+			}
+		}
+	}
+
 	if _, err := d.d.Store.GetRule(ctx, id); err == nil {
 		return // exists (including rejected)
 	} else if !errors.Is(err, store.ErrNotFound) {
@@ -232,8 +269,13 @@ func (d *Drafter) handle(ctx context.Context, f model.Finding) {
 		return
 	}
 	if v, err := d.d.Store.KVGet(ctx, kvFailedPfx+key); err == nil {
-		if t, perr := time.Parse(time.RFC3339, v); perr == nil && now.Sub(t) < failedTTL {
-			return
+		if t, host, perr := parseFailed(v); perr == nil {
+			age := now.Sub(t)
+			// A failure caused by one host's content blocks retries for 7 days
+			// only for that host; another host may retry after 24 hours.
+			if age < failedTTL && (host == f.HostID || age < retryAfterOtherHost) {
+				return
+			}
 		}
 	}
 
@@ -261,9 +303,16 @@ func (d *Drafter) handle(ctx context.Context, f model.Finding) {
 	source := SourceOf(f)
 	all := []model.Finding{f}
 	if d.d.Siblings != nil {
-		all = append(all, d.d.Siblings(ctx, f.VulnID, source)...)
+		// Only the triggering host's findings: other hosts' package names are
+		// attacker-influenceable and must not shape this host's rule.
+		for _, sf := range d.d.Siblings(ctx, f.VulnID, source) {
+			if sf.HostID == f.HostID {
+				all = append(all, sf)
+			}
+		}
 	}
 	siblings := siblingPackages(all)
+	siblings = capSelectors(siblings, model.PackageSelector{Name: f.PackageName, Type: f.PackageType}, maxSelectors)
 	system := buildSystemPrompt(d.d.FactCatalog)
 	user := buildUserPrompt(f, source, siblings, distro, advisory) +
 		"\n\nIf you declare fact_requests, every name must start with \"" + rules.FactRequestPrefix(id) + "\" followed by a short id."
@@ -284,7 +333,7 @@ func (d *Drafter) handle(ctx context.Context, f model.Finding) {
 		if err != nil {
 			if errors.Is(err, ErrRefused) {
 				log.Warn("llm: model refused")
-				d.markFailed(ctx, key, now)
+				d.markFailed(ctx, key, f.HostID, "refused", now)
 			} else {
 				// API/network error: cool this key down so a failing provider is not hammered.
 				log.Warn("llm: completion failed", "err", err)
@@ -313,13 +362,28 @@ func (d *Drafter) handle(ctx context.Context, f model.Finding) {
 		}
 		return
 	}
-	d.markFailed(ctx, key, now)
+	d.markFailed(ctx, key, f.HostID, "validation", now)
 }
 
-func (d *Drafter) markFailed(ctx context.Context, key string, now time.Time) {
-	if err := d.d.Store.KVSet(ctx, kvFailedPfx+key, now.UTC().Format(time.RFC3339), now); err != nil {
+// markFailed records a content-caused failure (validation or refusal) as
+// "<RFC3339>|<kind>|<host>". Provider/API errors are never recorded here: they
+// only set the short per-key cooldown.
+func (d *Drafter) markFailed(ctx context.Context, key, host, kind string, now time.Time) {
+	v := now.UTC().Format(time.RFC3339) + "|" + kind + "|" + host
+	if err := d.d.Store.KVSet(ctx, kvFailedPfx+key, v, now); err != nil {
 		d.d.Logger.Warn("llm: recording failure", "err", err)
 	}
+}
+
+// parseFailed reads a failure marker (a bare timestamp from older versions has no host).
+func parseFailed(v string) (time.Time, string, error) {
+	parts := strings.SplitN(v, "|", 3)
+	t, err := time.Parse(time.RFC3339, parts[0])
+	host := ""
+	if len(parts) == 3 {
+		host = parts[2]
+	}
+	return t, host, err
 }
 
 func (d *Drafter) underLimit(ctx context.Context, now time.Time, log *slog.Logger) bool {
@@ -410,6 +474,8 @@ func (d *Drafter) parse(reply string, f model.Finding, siblings []model.PackageS
 	if len(r.Packages) == 0 {
 		return r, errors.New("no package selectors for the finding")
 	}
+	r.Title = cleanText(r.Title, maxTitleChars)
+	r.Explanation = cleanText(r.Explanation, maxExplanationChars)
 	r.Fix.Upgrade = cleanText(r.Fix.Upgrade, maxFixChars)
 	r.Fix.Mitigation = cleanText(r.Fix.Mitigation, maxFixChars)
 	for i := range r.FactRequests {
@@ -418,6 +484,23 @@ func (d *Drafter) parse(reply string, f model.Finding, siblings []model.PackageS
 		}
 	}
 	return r, nil
+}
+
+// capSelectors keeps at most n selectors, always including own.
+func capSelectors(sels []model.PackageSelector, own model.PackageSelector, n int) []model.PackageSelector {
+	if len(sels) <= n {
+		return sels
+	}
+	out := []model.PackageSelector{own}
+	for _, s := range sels {
+		if len(out) >= n {
+			break
+		}
+		if s != own {
+			out = append(out, s)
+		}
+	}
+	return normalizeSelectors(out)
 }
 
 // normalizeSelectors drops exact duplicate package selectors and sorts the rest

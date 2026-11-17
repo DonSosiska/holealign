@@ -1,12 +1,18 @@
 package rules
 
 import (
+	"encoding/json"
 	"fmt"
 	"path"
 	"regexp"
 	"strings"
 
 	"panoptes/internal/model"
+)
+
+const (
+	maxPackageSelectors = 50
+	maxRuleJSONBytes    = 32 << 10
 )
 
 var ruleIDRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
@@ -83,6 +89,12 @@ func Validate(r model.Rule) error {
 
 	if len(r.Packages) == 0 {
 		add("at least one package selector is required")
+	}
+	if len(r.Packages) > maxPackageSelectors {
+		add("at most %d package selectors per rule (got %d)", maxPackageSelectors, len(r.Packages))
+	}
+	if b, err := json.Marshal(r); err != nil || len(b) > maxRuleJSONBytes {
+		add("rule is larger than %d bytes as JSON", maxRuleJSONBytes)
 	}
 	for i, s := range r.Packages {
 		if s.Name == "" {

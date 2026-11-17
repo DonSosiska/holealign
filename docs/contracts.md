@@ -164,7 +164,9 @@ Command execution rules for collectors: fixed argv (no shell), 10 s timeout, std
   `gshadow*`, `passwd-`, `sudoers*`, `ssh/ssh_host_*`, `ssl/private`, `letsencrypt`, `pki`, `panoptes`,
   `krb5.keytab`, `*.key`, `*.pem`, `*.p12`, `*.pfx`, `*.jks`, `*.keystore`, `.htpasswd`, `*secret*`,
   `*credential*`, `*token*`, `NetworkManager`, `wireguard`, `openvpn`, `ppp`, `security`, `polkit-1`,
-  `ipsec*`, `strongswan*`, `cloud`, `mysql/debian.cnf`, `*.env`. The server enforces the same list.
+  `ipsec*`, `strongswan*`, `cloud`, `mysql/debian.cnf`, `*.env`. The server policy for rule `fact_requests` is
+  stricter than the agent's (see section 4); the agent never relies on it and re-checks its own denylist on the
+  resolved physical paths.
 - Only regular, world-readable (`mode & 0o004`) files are read; files are opened with
   `O_NOFOLLOW|O_NONBLOCK|O_CLOEXEC` (Linux: `openat2` `RESOLVE_NO_SYMLINKS|RESOLVE_BENEATH`, fallback to an
   `openat` component walk), the mode is checked on the open fd. Files with a NUL byte or `-----BEGIN ` in the
@@ -185,13 +187,26 @@ A DB rule with the same `id` as a file rule overrides it, except a DB `draft`, w
 file rule (the file rule is kept and a problem is reported). Rule ids match `^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`.
 
 `fact_requests` policy (enforced by `Validate`): at most 5 per rule; name `file.match:<ruleID-sanitized>.<id>`
-(`[a-z0-9._-]`, at most 64 chars after the prefix; ruleID lowercased, other characters become `-`); `path` absolute,
-clean, under `/etc/`, `/opt/*/conf/`, `/opt/*/etc/` or `/usr/local/etc/`, without `[`, `]`, `\`, and unable to match
-a denylist of secret locations (`shadow*`, `sudoers*`, `ssh/ssh_host_*`, `ssl/private`, `*.key`, `*.pem`, `*secret*`,
-`*credential*`, `*token*`, `panoptes`, ...; see `rules.FileMatchPathAllowed`); `pattern` at most 256 chars, valid RE2,
-not match-all (must not match the empty string nor almost any single character). Only `reviewed` rules'
-fact requests are sent to agents; drafts are inert. Evaluation reasons never contain `file.match` values, only
-`file.match:<id>=<N> matching lines`.
+(`[a-z0-9._-]`, at most 64 chars after the prefix; ruleID lowercased, other characters become `-`).
+- `path` (`rules.FileMatchPathAllowed`): absolute, clean, under `/etc/`, `/opt/<app>/conf/`, `/opt/<app>/etc/` or
+  `/usr/local/etc/`, without `[`, `]`, `\`. Wildcards (`*`, `?`) are allowed **only in the final component**, which
+  must have a literal prefix or suffix of at least 3 characters. Every directory component is literal and is checked
+  exactly against the agent's denylist; the literal parts of the final component are checked against it as
+  substrings, and a final component containing `key`, `secret`, `token`, `shadow`, `passwd`, `credential`, `.pem`,
+  `.p12`, `.pfx`, `.jks`, `.env`, `htpasswd` (also `keystore`, `sudoers`, `keytab`) is rejected. In addition the
+  server rejects an explicit list of credential-bearing locations (`/etc/kubernetes`, `/etc/rancher`, `/etc/fstab`,
+  `/etc/exim4/passwd.client`, `/etc/postfix/sasl_passwd*`, `/etc/samba/smbpasswd`, `/etc/pgbouncer`,
+  `/etc/wpa_supplicant`, `/etc/environment`, `/etc/default`, `/etc/sysconfig`, `/etc/aws`, `/etc/gcloud`,
+  `/etc/vault*`, `/etc/consul*`, `/etc/nomad*`, `/etc/ansible`, `/etc/ldap`, `/etc/dovecot`, `/etc/docker`,
+  `/etc/cron*`, `/etc/redis`, `/etc/mysql`, `/etc/postgresql`, `/etc/krb5*`, `/etc/letsencrypt`, `/etc/ssl`,
+  `/etc/pki`, ... see `rules/filematch.go`). The server policy is stricter than the agent's; the agent re-checks its
+  own denylist on resolved paths and does not rely on the server.
+- `pattern` (at most 256 chars, valid RE2, repeat counts at most 100): must contain a **mandatory literal** of at
+  least 4 characters (a literal every match must contain: parts under `?`/`*` quantifiers do not count; in an
+  alternation every branch must have one; case-insensitive literals are fine), must not match the empty string, and
+  must match at most 3 of ~45 diverse probe lines (words, digits, punctuation, typical config lines).
+- Only `reviewed` rules' fact requests are sent to agents; drafts are inert. Evaluation reasons never contain
+  `file.match` values, only `file.match:<id>=<N> matching lines`.
 
 ```yaml
 id: CVE-2024-6387
@@ -242,14 +257,22 @@ The legacy spelling `m.?["k"]` is rejected by `Validate` (use `m[?"key"]`). Fact
 3. `not_affected_if` set and true → `affected_not_exploitable`.
 4. `exploitable_if` true → `exploitable`, else `affected_not_exploitable`.
 5. Expression error → `conditions_unknown`, reason contains the error.
-6. Draft guard (applied to the result of steps 3–4; only when `status` is `draft` and the verdict is
-   `exploitable` or `affected_not_exploitable`). Referenced facts are determined from the checked CEL AST
-   (`facts["literal"]` index/select); names in string literals or only listed in `facts` do not count. A draft is
-   *grounded* only if its expressions reference at least one fact that is not `<x>.installed`.
-   - Ungrounded draft: always `conditions_unknown`, reason `LLM draft suggests <verdict>: <explanation[:200]>`.
-   - Grounded draft: `exploitable` is allowed (reason prefixed `LLM draft (unreviewed): `);
-     `affected_not_exploitable` is allowed only if the finding is not KEV and its severity is not Critical;
-     otherwise `conditions_unknown`, reason `LLM draft suggests not exploitable (unreviewed; KEV/Critical need review): <explanation[:200]>`.
+6. Draft guard (applied to the result of steps 3-4; only when `status` is `draft`). A draft never lowers a verdict:
+   - Any outcome other than `exploitable` (that is `affected_not_exploitable`, from `not_affected_if` or
+     `exploitable_if` false) becomes `conditions_unknown`, at every severity, reason
+     `LLM draft suggests not exploitable (unreviewed): <explanation[:200]>`. Only `reviewed` rules can yield
+     `affected_not_exploitable`.
+   - `exploitable` is kept (reason prefixed `LLM draft (unreviewed): `) only if the draft is *grounded*, otherwise it
+     becomes `conditions_unknown`, reason `LLM draft: condition does not depend on host facts`. Grounded means
+     (a) syntactically, the checked CEL AST of `exploitable_if`/`not_affected_if` references at least one fact that is
+     not `<x>.installed` (names in string literals or only listed in `facts` do not count), and (b) semantically,
+     `exploitable_if` is fact-dependent: at compile time the expression is evaluated (at most 256 evaluations, the
+     usual cost limit) against synthetic activations in which every referenced fact is varied over type-appropriate
+     values (missing, empty, typical, the literals it is compared with, +-1 for numbers; maps and lists with the
+     referenced keys/elements present and absent) while `pkg` (taken from the rule's package selectors) and `host`
+     are held constant. If the result never takes both values true and false (errors are ignored), e.g.
+     `facts["os.id"] == facts["os.id"]`, `x != "" || true`, `size(l) >= 0`, `true || ...`, `c ? true : true`, the rule
+     is fact-independent. The result is computed once per compiled rule.
    `reviewed` rules are never affected. `Evaluation.Rule`/`RuleStatus` remain set.
 
 `Evaluation.Reason` is short, human readable, mentions the deciding facts and their values
