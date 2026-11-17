@@ -347,7 +347,12 @@ rule changes, the server (re)computes findings for affected hosts:
    target whose matching panicked is flagged (`kv poison.<host>.<target-hash>`) and skipped until a new inventory arrives.
    A target whose matching fails or exceeds its own 5 min timeout is isolated the same way (previous findings carried over,
    error recorded, `Options.OnProblem` -> health `pipeline_error`) and the other targets are still processed; the run fails
-   only when no target could be matched at all. At most 2 hosts match concurrently, slots are granted FIFO, so a host that
+   only when no target could be matched at all. A missing vulnerability DB (`match.ErrNoDB`, e.g. right after start) is
+   not a target problem: the run changes nothing, does not poison the target, does not count as a failed run and raises
+   no `pipeline_error`; the host is remembered and re-run when the DB is loaded (`feeds.Updater.OnUpdated` fires after the
+   initial load as well, with `feeds.update` true or false). The built-in local agent waits for the DB (max 2 min) before
+   its first upload. A run that completes with no skipped/failed/poisoned target clears the host's entry in
+   `health.pipeline_errors`. Wording: "matching failed" for ordinary errors, "crashed" only for recovered panics. At most 2 hosts match concurrently, slots are granted FIFO, so a host that
    just finished queues behind hosts already waiting. Per host: matcher time is budgeted per rolling hour
    (`limits.match_seconds_per_host_hour`; over budget -> runs deferred, WARN + hook) and open findings are capped
    (`limits.findings_per_host`; lowest severity dropped first, WARN + hook).

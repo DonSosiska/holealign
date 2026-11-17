@@ -129,3 +129,35 @@ func TestUpdaterSurvivesPanic(t *testing.T) {
 		t.Fatal("updater did not stop")
 	}
 }
+
+// A DB that becomes usable on the initial load must trigger the re-run even when Reload does not
+// report a change, with and without updates (hosts postponed for lack of a DB wait for it).
+func TestInitialLoadTriggersRerun(t *testing.T) {
+	for _, update := range []bool{false, true} {
+		db := &fakeDB{changed: false}
+		var mu sync.Mutex
+		called := 0
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		u := &Updater{DB: db, Store: newStore(t), Interval: time.Hour, Update: update,
+			OnUpdated: func(context.Context) { mu.Lock(); called++; mu.Unlock() }}
+		go func() { u.Run(ctx); close(done) }()
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			mu.Lock()
+			n := called
+			mu.Unlock()
+			if n > 0 {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		cancel()
+		<-done
+		mu.Lock()
+		if called == 0 {
+			t.Fatalf("update=%v: OnUpdated not called after the initial load", update)
+		}
+		mu.Unlock()
+	}
+}

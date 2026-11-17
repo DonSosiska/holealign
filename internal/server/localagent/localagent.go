@@ -44,6 +44,10 @@ const (
 	probeTimeout = 5 * time.Second
 	minBackoff   = 5 * time.Second
 	maxBackoff   = 5 * time.Minute
+
+	// DefaultReadyTimeout caps how long the first inventory upload waits for the vulnerability DB.
+	DefaultReadyTimeout = 2 * time.Minute
+	readyPoll           = 500 * time.Millisecond
 )
 
 // ErrConflict is returned when a host with this machine's id already exists and the server
@@ -66,6 +70,13 @@ type Options struct {
 	Hostname string
 	// MinBackoff/MaxBackoff override the restart backoff (tests).
 	MinBackoff, MaxBackoff time.Duration
+	// Ready, if set, reports whether the vulnerability DB is loaded. The runner (and so the first
+	// inventory upload) starts only once it returns true, or after ReadyTimeout.
+	Ready func() bool
+	// ReadyTimeout caps the wait for Ready (default DefaultReadyTimeout).
+	ReadyTimeout time.Duration
+	// ReadyPoll is the polling interval for Ready (default 500 ms; tests).
+	ReadyPoll time.Duration
 	// OnRun is called each time the runner is about to start (tests).
 	OnRun func()
 }
@@ -200,6 +211,7 @@ func (a *Agent) run(ctx context.Context) error {
 	if a.o.OnRun != nil {
 		a.o.OnRun()
 	}
+	a.waitReady(ctx)
 	client := transport.NewWithHTTP(BaseURL, "", NewHTTPClient(a.o.Handler))
 	r := runner.NewWithClient(cfg, a.o.Version, a.log, src, client)
 	a.log.Info("local agent running", "source", kind, "checkin_interval", cfg.CheckinInterval.String(),
@@ -208,6 +220,39 @@ func (a *Agent) run(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+// waitReady delays the first upload until the vulnerability DB is loaded (capped), so that a
+// normal start does not match against a missing DB. A server without readiness info does not wait.
+func (a *Agent) waitReady(ctx context.Context) {
+	if a.o.Ready == nil || a.o.Ready() {
+		return
+	}
+	limit, poll := a.o.ReadyTimeout, a.o.ReadyPoll
+	if limit <= 0 {
+		limit = DefaultReadyTimeout
+	}
+	if poll <= 0 {
+		poll = readyPoll
+	}
+	a.log.Info("waiting for the vulnerability DB before the first inventory upload", "max_wait", limit.String())
+	deadline := time.NewTimer(limit)
+	defer deadline.Stop()
+	t := time.NewTicker(poll)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-deadline.C:
+			a.log.Warn("vulnerability DB still not loaded; uploading the inventory anyway (it is re-matched when the DB is ready)")
+			return
+		case <-t.C:
+			if a.o.Ready() {
+				return
+			}
+		}
+	}
 }
 
 // selectSource implements local_agent.source.

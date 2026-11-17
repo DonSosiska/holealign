@@ -72,7 +72,8 @@ type Monitor struct {
 	mu       sync.Mutex
 	failures map[string]int       // consecutive failed runs per host
 	lastErr  map[string]string    // last error per failing host
-	poisoned map[string]poisonRec // hosts with a poisoned target
+	poisoned map[string]poisonRec // hosts with a target whose matching panicked
+	problems map[string]poisonRec // hosts with a skipped / failed target or a host limit
 	pending  map[string]bool      // hosts whose pipeline alert is due
 	feedErrN int                  // consecutive checks with a feed error
 
@@ -81,7 +82,7 @@ type Monitor struct {
 }
 
 type poisonRec struct {
-	target string
+	target string // for problems: the full detail text
 	at     time.Time
 }
 
@@ -102,7 +103,7 @@ func New(st store.Store, n core.Notifier, opts Options) *Monitor {
 	return &Monitor{
 		st: st, n: n, opts: opts, log: opts.Logger, start: opts.Now(),
 		failures: map[string]int{}, lastErr: map[string]string{},
-		poisoned: map[string]poisonRec{}, pending: map[string]bool{},
+		poisoned: map[string]poisonRec{}, problems: map[string]poisonRec{}, pending: map[string]bool{},
 	}
 }
 
@@ -121,6 +122,32 @@ func (m *Monitor) ReportRun(hostID string, err error) {
 	if m.failures[hostID] >= FailuresBeforeAlert {
 		m.pending[hostID] = true
 	}
+}
+
+// ReportProblem records a target that was skipped or failed in matching, or a host limit (target
+// "" ); wire to pipeline.Options.OnProblem. It is shown until a later clean run (ReportClean).
+func (m *Monitor) ReportProblem(hostID, target, reason string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	d := oneLine(reason, 300)
+	if target != "" {
+		d = "target " + oneLine(target, 100) + ": " + d
+	}
+	m.problems[hostID] = poisonRec{target: d, at: m.opts.Now()}
+	m.pending[hostID] = true
+}
+
+// ReportClean records that a pipeline run for the host completed without any skipped, failed or
+// poisoned target (wire to pipeline.Options.OnClean): earlier problems are resolved and leave the
+// dashboard banner at the next check.
+func (m *Monitor) ReportClean(hostID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.poisoned, hostID)
+	delete(m.problems, hostID)
+	delete(m.failures, hostID)
+	delete(m.lastErr, hostID)
+	delete(m.pending, hostID)
 }
 
 // ReportPoison records a poisoned target (wire to pipeline.Options.OnPoison).
@@ -143,12 +170,14 @@ func (m *Monitor) forgetLocked(id string) bool {
 	_, a := m.failures[id]
 	_, b := m.lastErr[id]
 	_, c := m.poisoned[id]
+	_, e := m.problems[id]
 	_, d := m.pending[id]
 	delete(m.failures, id)
 	delete(m.lastErr, id)
 	delete(m.poisoned, id)
+	delete(m.problems, id)
 	delete(m.pending, id)
-	return a || b || c || d
+	return a || b || c || d || e
 }
 
 // pruneMissing forgets hosts that no longer exist in the store.
@@ -174,6 +203,11 @@ func (m *Monitor) pruneMissing(ctx context.Context) {
 		}
 	}
 	for id := range m.poisoned {
+		if _, ok := live[id]; !ok {
+			gone = append(gone, id)
+		}
+	}
+	for id := range m.problems {
 		if _, ok := live[id]; !ok {
 			gone = append(gone, id)
 		}
@@ -551,6 +585,11 @@ func (m *Monitor) checkPipeline(ctx context.Context) error {
 			delete(m.poisoned, id)
 		}
 	}
+	for id, p := range m.problems {
+		if now.Sub(p.at) > PipelineAlertEvery {
+			delete(m.problems, id)
+		}
+	}
 	active := map[string]string{}
 	for id, n := range m.failures {
 		if n >= FailuresBeforeAlert {
@@ -559,6 +598,13 @@ func (m *Monitor) checkPipeline(ctx context.Context) error {
 	}
 	for id, p := range m.poisoned {
 		d := "matching a target crashed; target skipped until a new inventory arrives: " + p.target
+		if cur, ok := active[id]; ok {
+			d = cur + "; " + d
+		}
+		active[id] = d
+	}
+	for id, p := range m.problems {
+		d := p.target
 		if cur, ok := active[id]; ok {
 			d = cur + "; " + d
 		}

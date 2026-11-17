@@ -425,3 +425,42 @@ func TestDataDirIsNeverScanned(t *testing.T) {
 		}
 	}
 }
+
+func TestWaitsForDBReadiness(t *testing.T) {
+	e := newEnv(t)
+	var ready atomic.Bool
+	a := e.agent(&fakeSource{machineID: machineA}, func(o *Options) {
+		o.Ready = ready.Load
+		o.ReadyPoll = 5 * time.Millisecond
+		o.ReadyTimeout = 30 * time.Second
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := a.Start(ctx)
+	defer func() { cancel(); <-done }()
+
+	time.Sleep(300 * time.Millisecond)
+	if hs, _ := e.st.ListHosts(ctx); len(hs) == 1 && hs[0].InventoryHash != "" {
+		t.Fatal("inventory uploaded before the DB was ready")
+	}
+	ready.Store(true)
+	eventually(t, "inventory after readiness", func() bool {
+		hs, _ := e.st.ListHosts(ctx)
+		return len(hs) == 1 && hs[0].InventoryHash == "h1"
+	})
+}
+
+func TestReadinessWaitIsCapped(t *testing.T) {
+	e := newEnv(t)
+	a := e.agent(&fakeSource{machineID: machineA}, func(o *Options) {
+		o.Ready = func() bool { return false }
+		o.ReadyPoll = 5 * time.Millisecond
+		o.ReadyTimeout = 100 * time.Millisecond
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := a.Start(ctx)
+	defer func() { cancel(); <-done }()
+	eventually(t, "inventory after the cap", func() bool {
+		hs, _ := e.st.ListHosts(ctx)
+		return len(hs) == 1 && hs[0].InventoryHash == "h1"
+	})
+}

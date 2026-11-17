@@ -55,9 +55,11 @@ func (u *Updater) Run(ctx context.Context) {
 
 	// Serve from the on-disk DB immediately so matching works while a download is running.
 	u.guard("initial load", func() {
+		was := u.DB.Ready()
 		if changed, err := u.DB.Reload(ctx, false); err != nil {
 			u.Log.Warn("no local grype db yet", "err", err)
-		} else if changed && u.OnUpdated != nil {
+		} else if (changed || !was) && u.OnUpdated != nil {
+			// also when the DB just became usable: hosts whose runs were postponed wait for it
 			u.OnUpdated(ctx)
 		}
 	})
@@ -81,6 +83,7 @@ func (u *Updater) Run(ctx context.Context) {
 
 func (u *Updater) once(ctx context.Context) {
 	now := u.Now().UTC().Format(time.RFC3339)
+	was := u.DB.Ready()
 	changed, err := u.DB.Reload(ctx, true)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -92,7 +95,7 @@ func (u *Updater) once(ctx context.Context) {
 	}
 	u.kv(ctx, KVCheckedAt, now)
 	u.kv(ctx, KVLastError, "")
-	if changed {
+	if changed || !was {
 		u.kv(ctx, KVUpdatedAt, now)
 		if u.OnUpdated != nil {
 			u.OnUpdated(ctx)

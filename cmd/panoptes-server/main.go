@@ -364,14 +364,9 @@ func serve(cfg *config.Config) error {
 	})
 	pipe := pipeline.New(st, grypeDB, comp.Evaluator, comp.Notifier, comp.Drafter,
 		pipeline.Options{PublicURL: cfg.PublicURL, Logger: log, UnknownGrace: unknownGrace(cfg),
-			OnRun: mon.ReportRun, OnPoison: mon.ReportPoison,
+			OnRun: mon.ReportRun, OnPoison: mon.ReportPoison, OnClean: mon.ReportClean,
 			// skipped/failed targets and host limits reach the health loop as a pipeline_error alert
-			OnProblem: func(hostID, target, reason string) {
-				if target == "" {
-					target = "host limit"
-				}
-				mon.ReportPoison(hostID, target+" ("+reason+")")
-			},
+			OnProblem:          mon.ReportProblem,
 			MaxFindingsPerHost: cfg.Limits.FindingsPerHost,
 			MatchBudgetPerHour: time.Duration(cfg.Limits.MatchSecondsPerHostHour) * time.Second})
 	trig.p = pipe
@@ -433,7 +428,7 @@ func serve(cfg *config.Config) error {
 	}
 
 	// Agentless mode: the built-in agent monitors this host through the API handler in memory.
-	localDone := startLocalAgent(ctx, cfg, st, apiMux, log)
+	localDone := startLocalAgent(ctx, cfg, st, apiMux, log, grypeDB.Ready)
 
 	var serveErr error
 	select {
@@ -467,14 +462,14 @@ func serve(cfg *config.Config) error {
 
 // startLocalAgent starts the built-in local agent when local_agent.enabled is set. The returned
 // channel is closed when it has stopped (immediately when disabled).
-func startLocalAgent(ctx context.Context, cfg *config.Config, st store.Store, apiHandler http.Handler, log *slog.Logger) <-chan struct{} {
+func startLocalAgent(ctx context.Context, cfg *config.Config, st store.Store, apiHandler http.Handler, log *slog.Logger, ready func() bool) <-chan struct{} {
 	if !cfg.LocalAgent.Enabled {
 		done := make(chan struct{})
 		close(done)
 		return done
 	}
 	return localagent.New(localagent.Options{
-		Config: cfg.LocalAgent, DataDir: cfg.DataDir, Store: st, Handler: apiHandler, Version: version, Log: log,
+		Config: cfg.LocalAgent, DataDir: cfg.DataDir, Store: st, Handler: apiHandler, Version: version, Log: log, Ready: ready,
 	}).Start(ctx)
 }
 

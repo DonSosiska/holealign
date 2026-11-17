@@ -625,3 +625,33 @@ func TestMassSilenceVictimNamedInLabelRoomViaMatrix(t *testing.T) {
 		t.Fatalf("web room: %q", got["!web:x"])
 	}
 }
+
+func TestProblemWordingAndCleanClearsBanner(t *testing.T) {
+	e := newEnv(t, Options{AgentSilentAfter: time.Hour})
+	h := e.host("web1")
+	e.m.ReportProblem(h.ID, "host", "matching failed: boom")
+	evs := e.check()
+	if len(evs) != 1 || strings.Contains(evs[0].Detail, "crashed") || !strings.Contains(evs[0].Detail, "matching failed: boom") {
+		t.Fatalf("problem event: %+v", evs)
+	}
+	if v, _ := e.st.KVGet(e.ctx, KVPipelineErrors); !strings.Contains(v, "web1") || strings.Contains(v, "crashed") {
+		t.Fatalf("banner=%q", v)
+	}
+	e.m.ReportClean(h.ID)
+	e.check()
+	if v, _ := e.st.KVGet(e.ctx, KVPipelineErrors); v != "" {
+		t.Fatalf("banner not cleared by a clean run: %q", v)
+	}
+
+	// a panic keeps the "crashed" wording
+	e.m.ReportPoison(h.ID, "image:x")
+	e.check()
+	if v, _ := e.st.KVGet(e.ctx, KVPipelineErrors); !strings.Contains(v, "crashed") {
+		t.Fatalf("banner=%q", v)
+	}
+	e.m.ReportClean(h.ID)
+	e.check()
+	if v, _ := e.st.KVGet(e.ctx, KVPipelineErrors); v != "" {
+		t.Fatalf("poison banner not cleared: %q", v)
+	}
+}

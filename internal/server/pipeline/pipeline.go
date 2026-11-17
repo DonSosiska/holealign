@@ -18,6 +18,7 @@ import (
 
 	"github.com/DonSosiska/panoptes/internal/model"
 	"github.com/DonSosiska/panoptes/internal/server/core"
+	"github.com/DonSosiska/panoptes/internal/server/match"
 	"github.com/DonSosiska/panoptes/internal/server/notify"
 	"github.com/DonSosiska/panoptes/internal/server/store"
 )
@@ -51,6 +52,9 @@ type Options struct {
 	// target's matching panicked and the target was flagged. Both must not block.
 	OnRun    func(hostID string, err error)
 	OnPoison func(hostID, target string)
+	// OnClean is called (not blocking) when a run for hostID completed with no skipped, failed,
+	// poisoned or limited target: every earlier problem of the host is resolved (clears the banner).
+	OnClean func(hostID string)
 	// OnProblem is called (not blocking) for every target that was skipped by the API (oversized,
 	// invalid), failed or timed out in matching, and for host-level limits (findings cap, match
 	// time budget); target is "" for the latter. Wire it to the health monitor.
@@ -82,6 +86,7 @@ type Pipeline struct {
 	wg      sync.WaitGroup
 
 	mu       sync.Mutex
+	waitDB   map[string]bool // hosts whose last run was postponed because the vuln DB was not loaded
 	state    map[string]*hostState
 	usage    map[string][]matchUse  // per host matcher time in the last hour
 	deferred map[string]*time.Timer // hosts whose runs wait for their time budget
@@ -170,7 +175,7 @@ func New(st store.Store, m Matcher, ev core.RuleEvaluator, n core.Notifier, d co
 	return &Pipeline{
 		st: st, matcher: m, eval: ev, notifier: n, drafter: d, opts: opts, log: opts.Logger,
 		baseCtx: ctx, cancel: cancel, sem: newFifoSem(opts.Concurrency),
-		state: map[string]*hostState{}, usage: map[string][]matchUse{}, deferred: map[string]*time.Timer{},
+		waitDB: map[string]bool{}, state: map[string]*hostState{}, usage: map[string][]matchUse{}, deferred: map[string]*time.Timer{},
 	}
 }
 
@@ -288,6 +293,35 @@ func (p *Pipeline) addUsage(hostID string, d time.Duration, now time.Time) {
 	p.mu.Unlock()
 }
 
+// WaitingForDB lists the hosts whose last run was postponed because no vulnerability DB was
+// loaded yet. They are re-run by TriggerAll / DBReady.
+func (p *Pipeline) WaitingForDB() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	var out []string
+	for id := range p.waitDB {
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// DBReady re-runs every host whose run was postponed for lack of a vulnerability DB. Call it
+// after the DB became available (TriggerAll covers it as well).
+func (p *Pipeline) DBReady() {
+	for _, id := range p.WaitingForDB() {
+		p.Trigger(id)
+	}
+}
+
+func (p *Pipeline) clean(hostID string) {
+	if p.opts.OnClean == nil {
+		return
+	}
+	defer p.recoverLog("OnClean")
+	p.opts.OnClean(hostID)
+}
+
 func (p *Pipeline) problem(hostID, target, reason string) {
 	if p.opts.OnProblem == nil {
 		return
@@ -319,7 +353,18 @@ func (p *Pipeline) runLimited(hostID string) (deferFor time.Duration) {
 			p.log.Error("pipeline run panicked; run marked failed", "host", hostID, "panic", r, "stack", string(debug.Stack()))
 			runErr = fmt.Errorf("panic: %v", r)
 		}
-		if p.opts.OnRun != nil && !errors.Is(runErr, context.Canceled) {
+		p.mu.Lock()
+		if errors.Is(runErr, match.ErrNoDB) {
+			p.waitDB[hostID] = true
+		} else {
+			delete(p.waitDB, hostID)
+		}
+		p.mu.Unlock()
+		// A missing vulnerability DB is a transient, server-wide condition: not a failed run of
+		// this host (no failure count, no alert). The host is re-run once the DB is loaded.
+		if errors.Is(runErr, match.ErrNoDB) {
+			p.log.Info("vulnerability DB not loaded yet; run postponed until it is", "host", hostID)
+		} else if p.opts.OnRun != nil && !errors.Is(runErr, context.Canceled) {
 			func() {
 				defer p.recoverLog("OnRun")
 				p.opts.OnRun(hostID, runErr)
@@ -433,8 +478,9 @@ func keyOf(f model.Finding) fkey { return fkey{f.Target, f.PackageName, f.Packag
 
 // Run recomputes the findings of one host synchronously. A target whose matching fails, times out
 // or was refused at upload keeps its previous findings and is reported (OnProblem) while the other
-// targets are processed; if no target could be matched at all (e.g. no vuln DB yet) nothing is
-// changed and the run fails.
+// targets are processed; if no target could be matched at all nothing is changed and the run fails.
+// A missing vulnerability DB (match.ErrNoDB) is not a target problem: the run returns an error
+// wrapping it, changes nothing and reports nothing; it is repeated once the DB is loaded.
 func (p *Pipeline) Run(ctx context.Context, hostID string) error {
 	host, err := p.st.GetHost(ctx, hostID)
 	if err != nil {
@@ -474,6 +520,10 @@ func (p *Pipeline) Run(ctx context.Context, hostID string) error {
 		}
 	}
 	var failed []string // "target: error" of isolated failures
+	unclean := false    // some target was skipped, failed, poisoned or limited
+	if skipped, err := p.st.ListSkippedTargets(ctx, hostID); err == nil && len(skipped) > 0 {
+		unclean = true
+	}
 	matched := 0
 	for _, t := range targets {
 		if len(t.SBOM) == 0 {
@@ -483,6 +533,7 @@ func (p *Pipeline) Run(ctx context.Context, hostID string) error {
 		if v, err := p.st.KVGet(ctx, pk); err == nil && v != "" {
 			p.log.Debug("skipping poisoned target", "host", hostID, "target", t.Name)
 			carryOver(t.Name)
+			unclean = true
 			continue
 		}
 		tctx, tcancel := context.WithTimeout(ctx, p.opts.TargetTimeout)
@@ -499,9 +550,15 @@ func (p *Pipeline) Run(ctx context.Context, hostID string) error {
 				p.opts.OnPoison(hostID, t.Name)
 			}
 			carryOver(t.Name)
+			unclean = true
 			continue
 		}
 		if err != nil {
+			if errors.Is(err, match.ErrNoDB) {
+				// Server-wide and transient: not this target's fault. Change nothing; the run is
+				// repeated when the DB is loaded.
+				return fmt.Errorf("match %s %q: %w", t.Kind, t.Name, err)
+			}
 			if ctx.Err() != nil { // the whole run was cancelled or timed out: nothing is isolated
 				return fmt.Errorf("match %s %q: %w", t.Kind, t.Name, ctx.Err())
 			}
@@ -512,6 +569,7 @@ func (p *Pipeline) Run(ctx context.Context, hostID string) error {
 			p.log.Error("target matching failed; previous findings kept", "host", hostID, "target", t.Name, "err", err)
 			p.problem(hostID, t.Name, "matching failed: "+err.Error())
 			carryOver(t.Name)
+			unclean = true
 			continue
 		}
 		matched++
@@ -525,10 +583,14 @@ func (p *Pipeline) Run(ctx context.Context, hostID string) error {
 		}
 	}
 	if len(failed) > 0 && matched == 0 {
-		// Nothing could be matched at all (e.g. no vuln DB yet): change nothing, report the run as failed.
+		// Nothing could be matched at all (e.g. every matcher call failed): change nothing, report the run as failed.
 		return fmt.Errorf("match %s", strings.Join(failed, "; "))
 	}
+	before := len(found)
 	found = p.capFindings(hostID, found)
+	if len(found) != before {
+		unclean = true
+	}
 
 	// 2. evaluate
 	hc := core.HostContext{Host: host, Facts: host.Facts}
@@ -555,6 +617,10 @@ func (p *Pipeline) Run(ctx context.Context, hostID string) error {
 	res, err := p.st.ApplyHostFindings(ctx, hostID, found, now)
 	if err != nil {
 		return fmt.Errorf("store findings: %w", err)
+	}
+
+	if !unclean {
+		p.clean(hostID)
 	}
 
 	// 4. rule drafting for findings nobody has a rule for
