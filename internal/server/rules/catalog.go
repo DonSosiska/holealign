@@ -58,6 +58,7 @@ var factCatalog = map[string]FactType{
 	"sudo.version":      TString,
 
 	"agent.inventory_error": TString,     // last inventory scan error, truncated to 200 chars
+	"agent.collector_error": TString,     // last error the root collector answered with, truncated to 200 chars
 	"agent.skipped":         TStringList, // collectors skipped because a config tree was not root-owned/writable
 }
 

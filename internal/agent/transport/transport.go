@@ -302,6 +302,9 @@ func errMsg(data []byte) string {
 
 const credentialsFile = "credentials.json"
 
+// CredentialsPath is the credentials file inside state_dir.
+func CredentialsPath(stateDir string) string { return filepath.Join(stateDir, credentialsFile) }
+
 // LoadCredentials reads state_dir/credentials.json. The error wraps os.ErrNotExist if absent.
 func LoadCredentials(stateDir string) (Credentials, error) {
 	var c Credentials

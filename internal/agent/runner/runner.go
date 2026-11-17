@@ -3,12 +3,14 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"panoptes/internal/agent/config"
 	"panoptes/internal/agent/hostdata"
@@ -26,6 +28,7 @@ const (
 	maxNextCheckin  = time.Hour
 	maxScanBackoff  = 6 * time.Hour
 	inventoryErrKey = "agent.inventory_error"
+	collectorErrKey = "agent.collector_error"
 )
 
 // clampNextCheckin converts the server's NextCheckinSeconds into a delay within
@@ -80,6 +83,10 @@ type Runner struct {
 	lastInvAt    time.Time
 
 	lastWantInv time.Time // last time a server WantInventory request was honoured
+
+	lastInfo         hostdata.HostInfo // last OS info the collector gave
+	haveInfo         bool
+	tokenForgetTried bool // forget_enroll_token was attempted (once per process)
 
 	scanFailures int
 	scanRetryAt  time.Time
@@ -283,15 +290,50 @@ func (r *Runner) enroll(ctx context.Context) error {
 }
 
 func (r *Runner) checkinAndUpload(ctx context.Context, forceInventory bool) (time.Duration, error) {
+	// A collector that answers with an error must not stop the check-in (a malicious server
+	// could otherwise silence the agent by sending requests that break the collector): the
+	// check-in goes out with the facts still known plus agent.collector_error. An unreachable
+	// collector socket still skips the cycle.
+	collectorErr := ""
 	rawFacts, err := r.src.Facts(ctx, r.factRequests)
+	if err != nil && len(r.factRequests) > 0 && requestRejected(err) {
+		r.log.Warn("collector rejected the stored fact requests; dropping them and retrying once", "err", err)
+		r.factRequests = nil
+		rawFacts, err = r.src.Facts(ctx, nil)
+	}
 	if err != nil {
-		return r.interval(), fmt.Errorf("collect facts: %w", err)
+		if ctx.Err() != nil || errors.Is(err, hostdata.ErrUnavailable) {
+			return r.interval(), fmt.Errorf("collect facts: %w", err)
+		}
+		r.log.Warn("collecting facts failed; checking in with the facts still known", "err", err)
+		collectorErr = err.Error()
+		rawFacts = nil
 	}
 	info, err := r.src.Info(ctx)
-	if err != nil {
+	switch {
+	case err == nil:
+		r.lastInfo, r.haveInfo = info, true
+	case ctx.Err() != nil || errors.Is(err, hostdata.ErrUnavailable) || !r.haveInfo:
 		return r.interval(), fmt.Errorf("host info: %w", err)
+	default:
+		r.log.Warn("host info failed; using the previous value", "err", err)
+		if collectorErr == "" {
+			collectorErr = err.Error()
+		}
+		info = r.lastInfo
 	}
 	cur := NormalizeFacts(rawFacts)
+	if collectorErr != "" {
+		if r.lastFacts != nil {
+			cur = NormalizeFacts(r.lastFacts) // copy: keep what the server knows
+		}
+		delete(cur, collectorErrKey)
+		msg := strings.ToValidUTF8(collectorErr, "")
+		if len(msg) > 200 {
+			msg = strings.ToValidUTF8(msg[:200], "")
+		}
+		cur[collectorErrKey] = msg
+	}
 	if r.lastScanErr != "" {
 		cur[inventoryErrKey] = r.lastScanErr
 	}
@@ -326,7 +368,8 @@ func (r *Runner) checkinAndUpload(ctx context.Context, forceInventory bool) (tim
 	}
 	r.lastFacts = cur
 	r.wantFull = resp.WantFullFacts
-	r.factRequests = resp.FactRequests
+	r.factRequests = r.acceptFactRequests(resp.FactRequests)
+	r.forgetEnrollToken(ctx)
 	r.log.Debug("checkin ok", "facts", len(cur), "want_inventory", resp.WantInventory, "fact_requests", len(resp.FactRequests))
 	next := clampNextCheckin(resp.NextCheckinSeconds, r.interval())
 
@@ -411,4 +454,92 @@ func (r *Runner) sendInventory(ctx context.Context, payload *model.InventoryPayl
 	r.lastInvAt = time.Now()
 	r.log.Info("inventory uploaded", "targets", len(payload.Targets), "hash", payload.Hash, "took", time.Since(start).Round(time.Millisecond))
 	return nil
+}
+
+// Limits of the fact requests the sender passes on to the root collector. The server is not
+// trusted: anything else is dropped before it is stored or sent.
+const (
+	maxFactRequests    = 20
+	maxFactRequestName = 128
+	maxFactRequestPath = 512
+	maxFactRequestPat  = 512
+	factRequestPrefix  = "file.match:"
+)
+
+func cleanText(s string) bool { return utf8.ValidString(s) && !strings.ContainsRune(s, 0) }
+
+// sanitizeFactRequests keeps the well-formed file.match requests (at most 20, unique names)
+// and returns them rebuilt with only the path and pattern parameters, plus how many were
+// dropped. The request line to the collector is capped at hostdata.MaxRequestBytes, so the
+// list is also shortened until it fits.
+func sanitizeFactRequests(in []model.FactRequest) (out []model.FactRequest, dropped int) {
+	seen := map[string]bool{}
+	for _, q := range in {
+		path, pat := q.Params["path"], q.Params["pattern"]
+		ok := q.Collector == "file.match" &&
+			strings.HasPrefix(q.Name, factRequestPrefix) && len(q.Name) > len(factRequestPrefix) &&
+			len(q.Name) <= maxFactRequestName && cleanText(q.Name) && !seen[q.Name] &&
+			strings.HasPrefix(path, "/") && len(path) <= maxFactRequestPath && cleanText(path) &&
+			pat != "" && len(pat) <= maxFactRequestPat && cleanText(pat) &&
+			len(out) < maxFactRequests
+		if !ok {
+			dropped++
+			continue
+		}
+		seen[q.Name] = true
+		out = append(out, model.FactRequest{Name: q.Name, Collector: q.Collector,
+			Params: map[string]string{"path": path, "pattern": pat}})
+	}
+	for len(out) > 0 {
+		line, err := json.Marshal(hostdata.Request{Op: hostdata.OpFacts, FactRequests: out})
+		if err == nil && len(line)+1 <= hostdata.MaxRequestBytes {
+			break
+		}
+		out = out[:len(out)-1]
+		dropped++
+	}
+	return out, dropped
+}
+
+func (r *Runner) acceptFactRequests(in []model.FactRequest) []model.FactRequest {
+	out, dropped := sanitizeFactRequests(in)
+	if dropped > 0 {
+		r.log.Warn("ignored malformed or excessive fact requests from the server", "dropped", dropped, "kept", len(out))
+	}
+	return out
+}
+
+// requestRejected reports whether the collector refused the request itself (too large or
+// unparsable), so that retrying the same request cannot succeed.
+func requestRejected(err error) bool {
+	m := err.Error()
+	return strings.Contains(m, "request too large") || strings.Contains(m, "bad request")
+}
+
+// forgetEnrollToken asks (once per process) for enroll_token to be removed from the config
+// file after enrollment and a first successful check-in: the token is only needed to enroll.
+// With a collector the root collector does it; in mode all the process itself when it is root.
+// A host that lost its credentials must be enrolled again with a fresh token.
+func (r *Runner) forgetEnrollToken(ctx context.Context) {
+	if r.tokenForgetTried || r.cfg.EnrollToken == "" || r.creds.AgentKey == "" {
+		return
+	}
+	r.tokenForgetTried = true
+	f, ok := r.src.(hostdata.EnrollTokenForgetter)
+	if !ok {
+		return
+	}
+	if err := f.ForgetEnrollToken(ctx); err != nil {
+		r.log.Warn("could not remove enroll_token from the config file; remove it manually", "err", err)
+		return
+	}
+	r.cfg.EnrollToken = ""
+	r.log.Info("enroll_token removed from the config file")
+}
+
+// CheckPermissions logs a warning for secret-bearing files readable beyond the expected modes.
+func CheckPermissions(cfg config.Config, log *slog.Logger) {
+	for _, w := range config.PermissionWarnings(cfg, transport.CredentialsPath(cfg.StateDir)) {
+		log.Warn(w)
+	}
 }

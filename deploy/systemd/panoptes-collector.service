@@ -61,9 +61,33 @@ CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_DAC_OVERRIDE CAP_SYS_PTRACE
 AmbientCapabilities=
 SystemCallFilter=@system-service
 SystemCallFilter=~@privileged @resources @mount
+# A denied system call returns EPERM instead of killing the process with SIGSYS (the default
+# action). Reasons: the Go runtime calls prlimit64 (@resources) at start and ignores a failure;
+# the collector chowns its socket (@chown is part of @privileged), which Listen() skips when the
+# socket already has the right group/mode (Group=panoptes + UMask=0007) and tolerates EPERM
+# otherwise; openat2 is missing from the @file-system set of older systemd versions and the file.match
+# opener falls back to openat on ENOSYS/EPERM. Do not remove this line without testing on a real
+# host: a killed collector means no facts at all.
+SystemCallErrorNumber=EPERM
 # NOTE: child processes (sshd -T, nginx -T, php -i, apachectl, systemctl, ...) inherit
 # these limits. Verify on a real host that every collector still works
 # (run `panoptes-agent -print-facts` under `systemd-run` with the same properties).
+#
+# NOTE (nginx, UNVERIFIED here, check on a real host): `nginx -T` parses the whole config and, like
+# `nginx -t`, opens every access_log/error_log named in it for WRITING and creates its temp
+# directories (client_body_temp, proxy_temp, ...). With ProtectSystem=strict that can fail with
+# "Read-only file system" and then prints no dump, so nginx.directives would be missing. The agent
+# already passes `-q -e /dev/null` (nginx >= 1.19.5), which only replaces the compile-time default
+# error log. It does NOT use `-g 'pid ...; error_log ...;'`: `pid` is a non-repeatable directive and
+# fails with "directive is duplicate" on configs that set their own. If the dump is missing, check
+# `panoptes-agent -print-facts` under systemd-run with these properties and add the directories
+# named in the errors, e.g. ReadWritePaths=-/var/log/nginx -/var/lib/nginx -/var/cache/nginx
+# (this widens the root collector's write access, so add only what is needed).
+
+# `forget_enroll_token` rewrites /etc/panoptes/agent.yaml (temp file + rename in the same
+# directory) to blank the enrollment token after the first successful check-in. The leading "-"
+# ignores a missing directory.
+ReadWritePaths=-/etc/panoptes
 
 # Resource limits: scans must not disturb the host.
 Nice=10

@@ -284,14 +284,15 @@ func TestCollectSkipsUntrustedTrees(t *testing.T) {
 	}
 	f := collect(t.Context(), env, nil)
 	skipped, _ := f["agent.skipped"].([]string)
-	want := []string{"nginx: /etc/nginx/conf.d writable by gid 33", "php: /etc/php/*/cli/conf.d writable by gid 33",
-		"sshd: /etc/ssh/sshd_config/conf.d writable by gid 33"}
+	want := []string{"apache: /etc/apache2/conf.d writable by gid 33", "nginx: /etc/nginx/conf.d writable by gid 33",
+		"php: /etc/php/*/cli/conf.d writable by gid 33", "sshd: /etc/ssh/sshd_config/conf.d writable by gid 33",
+		"sudo: /etc/sudo.conf/conf.d writable by gid 33"}
 	if !reflect.DeepEqual(skipped, want) {
 		t.Errorf("agent.skipped = %q, want %q", skipped, want)
 	}
 	for _, c := range ran {
 		switch c {
-		case "nginx -T", "nginx -V", "sshd -T", "php -i", "php -v":
+		case "nginx -T", "nginx -T -q -e /dev/null", "nginx -V", "sshd -T", "php -i", "php -v", "apachectl -M", "httpd -M", "apache2ctl -M", "sudo -V":
 			t.Errorf("command %q must not run from an untrusted tree", c)
 		}
 	}

@@ -12,7 +12,16 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func safeOpen(physical string) (fs.File, error) { return openNoFollow(physical) }
+// safeOpen opens a resolved physical path (no symlinks) after checking that every ancestor
+// directory is traversable by "other" (the file would not be readable by an unprivileged user
+// otherwise). The ancestors are inspected with lstat, so a directory swapped for a symlink
+// fails the check.
+func safeOpen(physical string) (fs.File, error) {
+	if err := ancestorsTraversable(physical, os.Lstat); err != nil {
+		return nil, err
+	}
+	return openNoFollow(physical)
+}
 
 // openNoFollow opens an absolute, already symlink-resolved path with
 // O_NOFOLLOW semantics for every component. It prefers openat2 with

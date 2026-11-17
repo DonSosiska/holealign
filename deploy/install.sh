@@ -18,7 +18,10 @@
 #                     (see `panoptes-agent -print-server-pin`). Repeatable.
 #   --skip-signature-check  install without verifying the release signature (not recommended).
 #                     Without this flag the install aborts if cosign is not installed.
-#   --version VER     release to install, e.g. 1.2.3 or v1.2.3 (default: latest).
+#   --version VER     release to install, e.g. 1.2.3 or v1.2.3 (default: latest; the tag is resolved
+#                     first and printed). The cosign identity is pinned to exactly this tag.
+#   --min-version X.Y.Z  refuse to install a release older than this (default: no minimum).
+#   --allow-downgrade install a release older than the one that is installed (refused by default).
 #   --binary PATH     install this local panoptes-agent binary instead of downloading (air-gapped).
 #   --force           overwrite an existing /etc/panoptes/agent.yaml.
 #                     With --uninstall, also remove the config and state.
@@ -30,7 +33,9 @@
 #   PANOPTES_REPO     GitHub repository to download from (default: OWNER/panoptes).
 #   PANOPTES_ENROLL_TOKEN  enrollment token (alternative to --token-file).
 #
-# The token is written to the config file only and is never printed.
+# The token is written to the config file only and is never printed. The root collector removes
+# it from the file after the first successful check-in (a host that lost its credentials then
+# needs a fresh token).
 # The systemd units below are identical to deploy/systemd/panoptes-agent.service and
 # panoptes-collector.service (a test compares them). Keep them in sync.
 #
@@ -38,8 +43,8 @@
 # /run/panoptes/collector.sock; panoptes-agent (user "panoptes") talks to the server.
 #
 # Release verification: checksums.txt is verified with cosign (keyless Sigstore signature
-# made by this repository's release workflow) before any checksum is trusted. Without
-# cosign, install the .deb/.rpm (verify them as described in the README) or pass
+# made by this repository's release workflow for exactly the tag being installed) before any
+# checksum is trusted. Without cosign, install the .deb/.rpm (verify them as described in the README) or pass
 # --skip-signature-check.
 
 set -eu
@@ -54,6 +59,8 @@ LABELS=""
 CA_FILE=""
 PINS=""
 SKIP_SIG=0
+MIN_VERSION=""
+ALLOW_DOWNGRADE=0
 BINARY_SRC=""
 FORCE=0
 UNINSTALL=0
@@ -80,7 +87,7 @@ log() {
 }
 
 usage() {
-    sed -n '2,43p' "$0" 2>/dev/null | sed 's/^# \{0,1\}//' || true
+    sed -n '2,49p' "$0" 2>/dev/null | sed 's/^# \{0,1\}//' || true
 }
 
 # --- argument parsing -------------------------------------------------------
@@ -113,6 +120,11 @@ while [ $# -gt 0 ]; do
         --version)
             [ $# -ge 2 ] || die "--version needs a value"
             VERSION="$2"; shift 2 ;;
+        --min-version)
+            [ $# -ge 2 ] || die "--min-version needs a value"
+            MIN_VERSION="${2#v}"; shift 2 ;;
+        --allow-downgrade)
+            ALLOW_DOWNGRADE=1; shift ;;
         --binary)
             [ $# -ge 2 ] || die "--binary needs a path"
             BINARY_SRC="$2"; shift 2 ;;
@@ -133,6 +145,45 @@ printf '%s\n' "$REPO" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' || die "PAN
 [ "$(uname -s)" = "Linux" ] || die "only Linux is supported"
 command -v systemctl >/dev/null 2>&1 || die "systemd (systemctl) is required"
 
+# --- helpers ----------------------------------------------------------------
+
+# ver_cmp A B prints -1, 0 or 1 (numeric, dot separated; a suffix such as -rc1 is ignored).
+ver_cmp() {
+    awk -v a="$1" -v b="$2" 'BEGIN {
+        n = split(a, x, "."); m = split(b, y, "."); k = (n > m) ? n : m
+        for (i = 1; i <= k; i++) {
+            xi = x[i] + 0; yi = y[i] + 0
+            if (xi < yi) { print -1; exit }
+            if (xi > yi) { print 1; exit }
+        }
+        print 0
+    }'
+}
+
+is_version() {
+    printf '%s\n' "$1" | grep -Eq '^[0-9]+(\.[0-9]+){0,2}([-+][A-Za-z0-9.+-]*)?$'
+}
+
+# svc_user_ok succeeds when SVC_USER is a plain system account: uid 100-999 and no login shell.
+# A pre-existing "panoptes" that is a real user (or a low static system id) must not be taken
+# over: the collector shares its group and the sender runs as it.
+svc_user_ok() {
+    _uid="$(id -u "$SVC_USER" 2>/dev/null)" || return 1
+    case "$_uid" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    { [ "$_uid" -ge 100 ] && [ "$_uid" -lt 1000 ]; } || return 1
+    _shell="$(getent passwd "$SVC_USER" 2>/dev/null | cut -d: -f7)"
+    case "$_shell" in
+        ''|*/nologin|*/false) return 0 ;;
+    esac
+    return 1
+}
+
+svc_user_die() {
+    die "the existing user '$SVC_USER' is not a plain system account (uid $(id -u "$SVC_USER" 2>/dev/null), shell '$(getent passwd "$SVC_USER" 2>/dev/null | cut -d: -f7)'); expected a uid between 100 and 999 and a nologin shell. Remove or rename that user, or fix it, and run this again."
+}
+
 # --- uninstall --------------------------------------------------------------
 
 if [ "$UNINSTALL" -eq 1 ]; then
@@ -147,7 +198,11 @@ if [ "$UNINSTALL" -eq 1 ]; then
         rm -rf "${STATE_DIR:?}"
         rmdir "$CONF_DIR" 2>/dev/null || true
         if id "$SVC_USER" >/dev/null 2>&1; then
-            userdel "$SVC_USER" >/dev/null 2>&1 || true
+            if svc_user_ok; then
+                userdel "$SVC_USER" >/dev/null 2>&1 || true
+            else
+                log "not removing user $SVC_USER: it is not a plain system account"
+            fi
         fi
     else
         log "kept $CONF_FILE and $STATE_DIR (use --uninstall --force to remove them)"
@@ -217,6 +272,9 @@ fi
 case "$VERSION" in
     *[!A-Za-z0-9._-]*) die "--version has an invalid format" ;;
 esac
+if [ -n "$MIN_VERSION" ]; then
+    is_version "$MIN_VERSION" || die "--min-version must look like 1.2.3"
+fi
 
 case "$(uname -m)" in
     x86_64|amd64)  ARCH="amd64" ;;
@@ -287,8 +345,9 @@ verify_signature() {
   or pass --skip-signature-check to accept the unverified download (not recommended)."
     fi
     log "verifying the release signature with cosign"
+    # exact identity (no regexp): the workflow run for THIS tag, not any v* tag
     cosign verify-blob --certificate "$TMP/checksums.txt.pem" --signature "$TMP/checksums.txt.sig" \
-        --certificate-identity-regexp "^https://github.com/${REPO}/\.github/workflows/release\.yml@refs/tags/v" \
+        --certificate-identity "https://github.com/${REPO}/.github/workflows/release.yml@refs/tags/${TAG}" \
         --certificate-oidc-issuer https://token.actions.githubusercontent.com \
         "$TMP/checksums.txt" || die "release signature verification FAILED; refusing to install"
     log "release signature verified"
@@ -297,7 +356,9 @@ verify_signature() {
 # --- service user -----------------------------------------------------------
 
 # The sender runs as this unprivileged user; the collector (root) shares its group for the socket.
-if ! id "$SVC_USER" >/dev/null 2>&1; then
+if id "$SVC_USER" >/dev/null 2>&1; then
+    svc_user_ok || svc_user_die
+else
     log "creating system user $SVC_USER"
     useradd --system --no-create-home --shell /usr/sbin/nologin "$SVC_USER" \
         || die "cannot create the system user $SVC_USER"
@@ -308,8 +369,36 @@ fi
 TMP="$(mktemp -d)"
 trap 'rm -rf "${TMP:?}"' EXIT INT TERM
 
+# version of the binary that is installed now (empty when none or not a release number)
+INSTALLED_VER=""
+if [ -x "$BIN_PATH" ]; then
+    INSTALLED_VER="$("$BIN_PATH" -version 2>/dev/null | head -n 1 | tr -d ' \t\r')" || INSTALLED_VER=""
+    INSTALLED_VER="${INSTALLED_VER#v}"
+    is_version "$INSTALLED_VER" || INSTALLED_VER=""
+fi
+
+# check_version_policy VER: --min-version and the downgrade guard.
+check_version_policy() {
+    _v="${1#v}"
+    if ! is_version "$_v"; then
+        [ -z "$MIN_VERSION" ] || die "cannot compare the version '$1' with --min-version $MIN_VERSION"
+        return 0
+    fi
+    if [ -n "$MIN_VERSION" ] && [ "$(ver_cmp "$_v" "$MIN_VERSION")" = "-1" ]; then
+        die "version $_v is older than --min-version $MIN_VERSION; refusing to install"
+    fi
+    if [ -n "$INSTALLED_VER" ] && [ "$ALLOW_DOWNGRADE" -eq 0 ] && [ "$(ver_cmp "$_v" "$INSTALLED_VER")" = "-1" ]; then
+        die "version $_v is older than the installed $INSTALLED_VER; refusing to downgrade (use --allow-downgrade)"
+    fi
+}
+
 if [ -n "$BINARY_SRC" ]; then
     [ -f "$BINARY_SRC" ] || die "--binary: file not found: $BINARY_SRC"
+    if [ -n "$MIN_VERSION" ] || [ -n "$INSTALLED_VER" ]; then
+        # the operator supplied this file and it is executed as root right after the install anyway
+        SRC_VER="$("$BINARY_SRC" -version 2>/dev/null | head -n 1 | tr -d ' \t\r')" || SRC_VER=""
+        check_version_policy "$SRC_VER"
+    fi
     log "installing local binary"
     install -o root -g root -m 0755 "$BINARY_SRC" "$BIN_PATH"
 else
@@ -329,6 +418,8 @@ else
         *) die "no release found for '$VERSION' in $REPO" ;;
     esac
     VER="${TAG#v}"
+    log "release to install: $TAG"
+    check_version_policy "$VER"
     ASSET="panoptes-agent_${VER}_linux_${ARCH}.tar.gz"
     BASE="https://github.com/$REPO/releases/download/$TAG"
 
@@ -476,9 +567,33 @@ CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_DAC_OVERRIDE CAP_SYS_PTRACE
 AmbientCapabilities=
 SystemCallFilter=@system-service
 SystemCallFilter=~@privileged @resources @mount
+# A denied system call returns EPERM instead of killing the process with SIGSYS (the default
+# action). Reasons: the Go runtime calls prlimit64 (@resources) at start and ignores a failure;
+# the collector chowns its socket (@chown is part of @privileged), which Listen() skips when the
+# socket already has the right group/mode (Group=panoptes + UMask=0007) and tolerates EPERM
+# otherwise; openat2 is missing from the @file-system set of older systemd versions and the file.match
+# opener falls back to openat on ENOSYS/EPERM. Do not remove this line without testing on a real
+# host: a killed collector means no facts at all.
+SystemCallErrorNumber=EPERM
 # NOTE: child processes (sshd -T, nginx -T, php -i, apachectl, systemctl, ...) inherit
 # these limits. Verify on a real host that every collector still works
 # (run `panoptes-agent -print-facts` under `systemd-run` with the same properties).
+#
+# NOTE (nginx, UNVERIFIED here, check on a real host): `nginx -T` parses the whole config and, like
+# `nginx -t`, opens every access_log/error_log named in it for WRITING and creates its temp
+# directories (client_body_temp, proxy_temp, ...). With ProtectSystem=strict that can fail with
+# "Read-only file system" and then prints no dump, so nginx.directives would be missing. The agent
+# already passes `-q -e /dev/null` (nginx >= 1.19.5), which only replaces the compile-time default
+# error log. It does NOT use `-g 'pid ...; error_log ...;'`: `pid` is a non-repeatable directive and
+# fails with "directive is duplicate" on configs that set their own. If the dump is missing, check
+# `panoptes-agent -print-facts` under systemd-run with these properties and add the directories
+# named in the errors, e.g. ReadWritePaths=-/var/log/nginx -/var/lib/nginx -/var/cache/nginx
+# (this widens the root collector's write access, so add only what is needed).
+
+# `forget_enroll_token` rewrites /etc/panoptes/agent.yaml (temp file + rename in the same
+# directory) to blank the enrollment token after the first successful check-in. The leading "-"
+# ignores a missing directory.
+ReadWritePaths=-/etc/panoptes
 
 # Resource limits: scans must not disturb the host.
 Nice=10
@@ -538,6 +653,9 @@ SystemCallArchitectures=native
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 SystemCallFilter=@system-service
 SystemCallFilter=~@privileged @resources @mount
+# EPERM instead of SIGSYS for denied calls: the Go runtime calls prlimit64 (@resources) at start
+# and ignores the failure; with the default kill action a single denied call would crash the sender.
+SystemCallErrorNumber=EPERM
 
 Nice=10
 CPUQuota=25%

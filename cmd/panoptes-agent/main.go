@@ -86,6 +86,8 @@ func run() int {
 		return printServerPin(ctx, cfg)
 	}
 
+	runner.CheckPermissions(cfg, log)
+
 	if *mode == modeCollector {
 		if *once {
 			log.Error("-once is not supported with -mode collector")

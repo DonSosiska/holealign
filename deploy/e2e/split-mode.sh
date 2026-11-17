@@ -91,6 +91,17 @@ grep -q '"targets"' /tmp/fakeserver/inventory.json || fail "inventory has no tar
 grep -q '"machine_id"' /tmp/fakeserver/enroll.json || fail "enroll has no machine_id"
 ok "checkin carries os and sockets facts (port 8099 seen through /proc/1/net); inventory has targets; enroll has machine_id"
 
+# the root collector blanks the enrollment token after the first successful check-in
+i=0
+while ! grep -q '^enroll_token: ""$' /etc/panoptes/agent.yaml; do
+    i=$((i + 1)); [ "$i" -lt 50 ] || { cat /etc/panoptes/agent.yaml; cat /tmp/collector.log; fail "enroll_token was not removed from agent.yaml"; }
+    sleep 0.2
+done
+! grep -q pt_split_test /etc/panoptes/agent.yaml || fail "the enrollment token is still in agent.yaml"
+grep -q '^server_url: http://127.0.0.1:8099$' /etc/panoptes/agent.yaml || fail "agent.yaml lost its other content"
+[ "$(stat -c '%a %U:%G' /etc/panoptes/agent.yaml)" = "640 root:panoptes" ] || fail "agent.yaml perms changed: $(stat -c '%a %U:%G' /etc/panoptes/agent.yaml)"
+ok "enroll_token removed from agent.yaml (content, mode and owner kept)"
+
 [ "$(stat -c '%U' /var/lib/panoptes-agent/credentials.json)" = "panoptes" ] || fail "credentials not owned by panoptes"
 ok "credentials stored by the sender in its own state dir"
 
