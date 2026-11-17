@@ -368,11 +368,17 @@ func TestTreeTrusted(t *testing.T) {
 		t.Fatal(err)
 	}
 	err := treeTrusted([]string{root})
-	if err == nil || !strings.Contains(err.Error(), "f1.conf") {
-		t.Errorf("writable file not reported: %v", err)
+	if err == nil {
+		t.Fatal("tree with a world-writable file must be rejected")
 	}
-	if ownerIsRoot() && !strings.Contains(err.Error(), "writable by") {
-		t.Errorf("err = %v", err)
+	if ownerIsRoot() {
+		// Root-owned temp tree: the writable file itself must be the reason.
+		if !strings.Contains(err.Error(), "f1.conf") || !strings.Contains(err.Error(), "writable by") {
+			t.Errorf("writable file not reported: %v", err)
+		}
+	} else if !strings.Contains(err.Error(), "f1.conf") && !strings.Contains(err.Error(), "owned by uid") {
+		// Non-root CI runners (Linux): the walk fails closed earlier, on the non-root owner.
+		t.Errorf("unexpected rejection reason: %v", err)
 	}
 }
 
