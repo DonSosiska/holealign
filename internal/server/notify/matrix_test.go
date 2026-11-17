@@ -382,12 +382,19 @@ func TestRouting(t *testing.T) {
 	}
 }
 
-func TestNoRoomSkipsEvent(t *testing.T) {
+func TestNoRoomIsAnError(t *testing.T) {
 	hs := newFakeHS(t, nil)
 	m := newTestMatrix(t, hs, Config{Routes: []Route{{Label: "prod", Rooms: []string{"!p:x"}}}}, nil)
-	err := m.Notify(context.Background(), []model.Event{testEvent(model.EventExploitable, "CVE-1", "h", "dev")})
-	if err != nil {
-		t.Errorf("Notify: %v", err)
+	err := m.Notify(context.Background(), []model.Event{
+		testEvent(model.EventExploitable, "CVE-1", "h", "dev"),
+		testEvent(model.EventResolved, "CVE-2", "h", "dev"),
+	})
+	var de *DeliveryError
+	if !errors.As(err, &de) || !strings.Contains(err.Error(), "no Matrix room") {
+		t.Fatalf("Notify: %v, want a DeliveryError naming the missing room", err)
+	}
+	if len(de.Failed) != 1 || de.Failed[0] != 0 {
+		t.Errorf("Failed = %v, want only the exploitable event [0]", de.Failed)
 	}
 	if n := len(hs.requests()); n != 0 {
 		t.Errorf("requests = %d, want 0", n)

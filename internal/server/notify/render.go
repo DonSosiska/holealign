@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"html"
 	"net/url"
+	"regexp"
 	"slices"
 	"strings"
 	"unicode"
@@ -27,12 +28,29 @@ const (
 	maxFieldRunes = 300     // every untrusted field is cut to this many runes
 	maxBodyBytes  = 8 << 10 // plain and formatted bodies are each capped at this size
 	maxListItems  = 10      // distinct items per joined line
-	truncatedNote = "…(truncated)"
+
+	maxGroupEvents   = 50 // events rendered per group; the rest is summarised as a count
+	maxFixedVersions = 5  // fixed versions listed per package
+	maxDetailLines   = 60 // lines of a health event's detail (aggregated silence lists 50 hosts)
+	truncatedNote    = "…(truncated)"
 )
 
 // cl neutralises an untrusted plain-text value: control characters and bidi overrides are
 // dropped (newlines and tabs become spaces) and the result is cut to maxFieldRunes runes.
 func cl(s string) string {
+	return strings.ReplaceAll(clBase(s), "@", "@\u200b")
+}
+
+// zwsp after the "@" of every "@room" (any case) in text that must keep its other "@" characters.
+var atRoom = regexp.MustCompile(`(?i)@room`)
+
+func neutralRoom(s string) string {
+	return atRoom.ReplaceAllStringFunc(s, func(m string) string { return "@\u200b" + m[1:] })
+}
+
+// clBase is cl without the mention neutralisation (for values such as shell commands that must
+// stay copy-pasteable; the caller applies neutralRoom).
+func clBase(s string) string {
 	var b strings.Builder
 	n := 0
 	for _, r := range s {
@@ -66,19 +84,19 @@ func sanitize(ev model.Event) model.Event {
 	f := &ev.Finding
 	f.VulnID, f.Target, f.PackageName, f.PackageVer = cl(f.VulnID), cl(f.Target), cl(f.PackageName), cl(f.PackageVer)
 	f.PURL, f.VerdictReason, f.Severity = cl(f.PURL), cl(f.VerdictReason), cl(f.Severity)
-	f.FixedVersions = clAll(f.FixedVersions)
+	f.FixedVersions = clAll(f.FixedVersions[:min(len(f.FixedVersions), maxFixedVersions)])
 	ev.Host.Hostname = cl(ev.Host.Hostname)
 	if ev.Detail != "" { // multi-line: clean each line, keep the line structure
 		lines := strings.Split(ev.Detail, "\n")
 		for i, l := range lines {
 			lines[i] = cl(l)
 		}
-		if len(lines) > 25 {
-			lines = append(lines[:25], "…")
+		if len(lines) > maxDetailLines {
+			lines = append(lines[:maxDetailLines], "…")
 		}
 		ev.Detail = strings.Join(lines, "\n")
 	}
-	ev.FixCmd = cl(ev.FixCmd)
+	ev.FixCmd = neutralRoom(clBase(ev.FixCmd))
 	if ev.Rule != nil {
 		r := *ev.Rule
 		r.Title, r.Explanation = cl(r.Title), cl(r.Explanation)
@@ -123,13 +141,15 @@ func cutBytes(s string, max int) string {
 }
 
 // render joins the lines; whole lines are dropped (never cut mid-tag) once either body would
-// exceed maxBodyBytes, and a truncation note is appended.
+// exceed maxBodyBytes, and a truncation note is appended. The limit applies to the bodies as sent,
+// i.e. after HTML escaping, and also holds on the fallback path for one huge line.
 func (l *lineSet) render() (string, string) {
+	const budget = maxBodyBytes - 64 // room for the truncation note
 	pl, hl := 0, 0
 	keep := 0
 	for i := range l.plain {
 		p, h := len(l.plain[i])+1, len(l.html[i])+len("<br>")
-		if pl+p > maxBodyBytes-64 || hl+h > maxBodyBytes-64 {
+		if pl+p > budget || hl+h > budget {
 			break
 		}
 		pl, hl = pl+p, hl+h
@@ -138,13 +158,27 @@ func (l *lineSet) render() (string, string) {
 	plain, formatted := l.plain[:keep], l.html[:keep]
 	if keep < len(l.plain) {
 		if keep == 0 { // a single huge line: fall back to escaped truncated plain text
-			t := cutBytes(l.plain[0], maxBodyBytes/4)
+			t := fitEscaped(l.plain[0], budget)
 			plain, formatted = []string{t}, []string{esc(t)}
 		}
 		plain = append(slices.Clone(plain), truncatedNote)
 		formatted = append(slices.Clone(formatted), truncatedNote)
 	}
-	return strings.Join(plain, "\n"), strings.Join(formatted, "<br>")
+	p, h := strings.Join(plain, "\n"), strings.Join(formatted, "<br>")
+	if len(p) > maxBodyBytes || len(h) > maxBodyBytes { // cannot happen with the accounting above; never send more
+		t := fitEscaped(p, budget)
+		p, h = t+truncatedNote, esc(t)+truncatedNote
+	}
+	return p, h
+}
+
+// fitEscaped cuts s so that both s and its HTML-escaped form are at most max bytes.
+func fitEscaped(s string, max int) string {
+	t := cutBytes(s, max)
+	for len(esc(t)) > max && len(t) > 0 {
+		t = cutBytes(t, len(t)*3/4)
+	}
+	return t
 }
 
 // esc HTML-escapes a value that comes from a host, finding or rule.
@@ -157,11 +191,17 @@ func renderEvent(ev model.Event) (plain, formatted string) {
 
 // distinct returns the non-empty values of vals in first-seen order without duplicates.
 func distinct(vals []string) []string {
+	seen := make(map[string]struct{}, len(vals))
 	var out []string
 	for _, v := range vals {
-		if v != "" && !slices.Contains(out, v) {
-			out = append(out, v)
+		if v == "" {
+			continue
 		}
+		if _, dup := seen[v]; dup {
+			continue
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
 	}
 	return out
 }
@@ -170,8 +210,15 @@ func distinct(vals []string) []string {
 // that share kind, host, vulnerability and target. Values are merged as described in the
 // package documentation: packages listed, severity maxima, deduplicated reasons and fixes.
 func renderGroup(raw []model.Event) (string, string) {
+	extraEvents := 0
+	if len(raw) > maxGroupEvents {
+		extraEvents = len(raw) - maxGroupEvents
+		raw = raw[:maxGroupEvents]
+	}
 	evs := make([]model.Event, len(raw))
+	moreFixes := make([]int, len(raw))
 	for i, ev := range raw {
+		moreFixes[i] = max(0, len(ev.Finding.FixedVersions)-maxFixedVersions)
 		evs[i] = sanitize(ev)
 	}
 	g := group{evs: evs}
@@ -210,10 +257,13 @@ func renderGroup(raw []model.Event) (string, string) {
 
 	// Packages with their fix availability, deduplicated.
 	var pkgPlain, pkgHTML []string
-	for _, ev := range evs {
+	for i, ev := range evs {
 		name := ev.Finding.PackageName + " " + ev.Finding.PackageVer
 		if len(ev.Finding.FixedVersions) > 0 {
 			fixed := strings.Join(ev.Finding.FixedVersions, ", ")
+			if moreFixes[i] > 0 {
+				fixed += fmt.Sprintf(", +%d more", moreFixes[i])
+			}
 			pkgPlain = append(pkgPlain, name+" → fixed in "+fixed)
 			pkgHTML = append(pkgHTML, esc(name)+" → fixed in "+esc(fixed))
 		} else {
@@ -226,6 +276,11 @@ func renderGroup(raw []model.Event) (string, string) {
 		l.add("Package: "+pkgPlain[0], "Package: "+pkgHTML[0])
 	} else {
 		l.add("Packages: "+capJoin(pkgPlain, "; "), "Packages: "+capJoin(pkgHTML, "; "))
+	}
+
+	if extraEvents > 0 {
+		n := fmt.Sprintf("…and %d more events for this vulnerability not listed", extraEvents)
+		l.add(n, esc(n))
 	}
 
 	// Target.

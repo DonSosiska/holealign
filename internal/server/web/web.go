@@ -21,6 +21,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"panoptes/internal/model"
@@ -64,12 +65,19 @@ type Server struct {
 	csrfKey []byte
 	lim     *limiter // ip|user
 	limIP   *limiter // per client IP, any username
-	limUser *limiter // per username, any IP (locks the name)
-	secure  bool
-	ipOf    func(*http.Request) string
+	names   *nameGate
+	// reauthLim counts failed re-authentications per session; it is independent of the login limiters.
+	reauthLim *limiter
+	trust     *trustSet
+	devices   *deviceStore
+	secure    bool
+	ipOf      func(*http.Request) string
+	sleep     func(ctx context.Context, d time.Duration) error // injectable for tests
 
-	sessName, loginName string
-	bcryptSem           chan struct{}
+	sessName, loginName, devName string
+	bcryptSem                    chan struct{}
+	bcryptWaiting                atomic.Int32
+	pubURL                       *url.URL // parsed PublicURL, nil when empty or invalid
 }
 
 const (
@@ -110,11 +118,18 @@ func New(d Deps) (*Server, error) {
 	}
 	s.lim = newLimiter(s.now)
 	s.limIP = newLimiterCfg(s.now, maxIPFailures, ipFailWindow, 0, limiterCap)
-	s.limUser = newLimiterCfg(s.now, maxUserFailures, userFailWindow, userLockFor, limiterCap)
+	s.names = newNameGate(s.now)
+	s.reauthLim = newLimiterCfg(s.now, maxReauthFailures, reauthWindow, 0, limiterCap)
+	s.trust = &trustSet{now: s.now, m: map[string]time.Time{}}
+	s.devices = &deviceStore{now: s.now, m: map[string]map[string]time.Time{}}
+	s.sleep = sleepCtx
 	s.bcryptSem = make(chan struct{}, bcryptParallel)
-	s.sessName, s.loginName = cookieName, loginCSRFName
+	if u, err := url.Parse(strings.TrimSpace(s.cfg.PublicURL)); err == nil && u.Host != "" && (u.Scheme == "http" || u.Scheme == "https") {
+		s.pubURL = u
+	}
+	s.sessName, s.loginName, s.devName = cookieName, loginCSRFName, deviceCookie
 	if s.secure {
-		s.sessName, s.loginName = "__Host-"+cookieName, "__Host-"+loginCSRFName
+		s.sessName, s.loginName, s.devName = "__Host-"+cookieName, "__Host-"+loginCSRFName, "__Host-"+deviceCookie
 	} else if !isLoopbackURL(s.cfg.PublicURL) {
 		s.log.Warn("web: public_url is plain http and not loopback; credentials and session cookies cross the network unencrypted. Serve the UI over https.", "public_url", s.cfg.PublicURL)
 	}
@@ -147,6 +162,7 @@ func (s *Server) parseTemplates() error {
 		"isCVE":   func(id string) bool { return strings.HasPrefix(strings.ToUpper(id), "CVE-") },
 		"fixcmd":  pipeline.FixCmd,
 		"safeRef": safeRef,
+		"clip":    clip,
 		"add":     func(a, b int) int { return a + b },
 		"pct":     func(f float64) string { return fmt.Sprintf("%.1f%%", f*100) },
 		"score":   func(f float64) string { return fmt.Sprintf("%.1f", f) },
@@ -255,6 +271,7 @@ func (s *Server) sessionFrom(r *http.Request) *session {
 			s.log.Error("web: extend session", "err", err)
 		}
 	}
+	s.trust.mark(ipKey(s.ipOf(r)), strings.ToLower(sess.Username))
 	return &session{Username: sess.Username, token: c.Value, CSRF: s.csrfFor(c.Value)}
 }
 
@@ -275,6 +292,10 @@ type handler func(w http.ResponseWriter, r *http.Request, sess *session)
 func (s *Server) get(h handler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		s.secHeaders(w)
+		if !s.hostOK(r) {
+			s.badHost(w)
+			return
+		}
 		sess := s.sessionFrom(r)
 		if sess == nil {
 			http.Redirect(w, r, "/login", http.StatusSeeOther)
@@ -284,16 +305,51 @@ func (s *Server) get(h handler) http.HandlerFunc {
 	}
 }
 
-// sameOrigin rejects cross-origin state-changing requests.
-func sameOrigin(r *http.Request) bool {
+// normHost lower-cases a host[:port] and drops the scheme's default port.
+func normHost(host, scheme string) string {
+	h := strings.ToLower(strings.TrimSpace(host))
+	if scheme == "https" {
+		h = strings.TrimSuffix(h, ":443")
+	} else {
+		h = strings.TrimSuffix(h, ":80")
+	}
+	return h
+}
+
+// publicHostEnforced reports whether Host and Origin are pinned to PublicURL: it is set and not a
+// loopback development address.
+func (s *Server) publicHostEnforced() bool {
+	return s.pubURL != nil && !isLoopbackURL(s.cfg.PublicURL)
+}
+
+// hostOK rejects requests whose Host header is not the configured public host (DNS rebinding,
+// requests that reached the admin listener under another name).
+func (s *Server) hostOK(r *http.Request) bool {
+	if !s.publicHostEnforced() {
+		return true
+	}
+	return normHost(r.Host, s.pubURL.Scheme) == normHost(s.pubURL.Host, s.pubURL.Scheme)
+}
+
+func (s *Server) badHost(w http.ResponseWriter) {
+	http.Error(w, "unexpected Host header", http.StatusMisdirectedRequest)
+}
+
+// sameOrigin rejects cross-origin state-changing requests. With a public (non-loopback)
+// PublicURL the Origin must be exactly that origin; otherwise (development) it must match Host.
+func (s *Server) sameOrigin(r *http.Request) bool {
 	if sfs := r.Header.Get("Sec-Fetch-Site"); sfs != "" && sfs != "same-origin" && sfs != "none" {
 		return false
 	}
 	if o := r.Header.Get("Origin"); o != "" {
 		u, err := url.Parse(o)
-		if err != nil || u.Host != r.Host {
+		if err != nil || u.Host == "" {
 			return false
 		}
+		if s.publicHostEnforced() {
+			return u.Scheme == s.pubURL.Scheme && normHost(u.Host, u.Scheme) == normHost(s.pubURL.Host, s.pubURL.Scheme)
+		}
+		return u.Host == r.Host
 	}
 	return true
 }
@@ -301,7 +357,11 @@ func sameOrigin(r *http.Request) bool {
 func (s *Server) post(h handler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		s.secHeaders(w)
-		if !sameOrigin(r) {
+		if !s.hostOK(r) {
+			s.badHost(w)
+			return
+		}
+		if !s.sameOrigin(r) {
 			s.fail(w, r, nil, http.StatusForbidden, "Cross-origin request rejected.", nil)
 			return
 		}
@@ -590,4 +650,16 @@ func safeRef(raw string) bool {
 		return false
 	}
 	return refHosts[strings.ToLower(u.Hostname())]
+}
+
+// sleepCtx waits for d or until ctx is done.
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
 }

@@ -2,20 +2,51 @@
 {{define "content"}}
 <p class="crumbs"><a href="/rules">Rules</a> /</p>
 <h1>{{.Rule.ID}} <span class="badge {{rclass .Rule.Status}}">{{rstatus .Rule.Status}}</span></h1>
-<p>{{.Rule.Title}}</p>
 <p class="muted">Source: {{.Rule.Source}}{{if .Rule.Vulns}} &middot; Covers: {{range .Rule.Vulns}}<a href="/vulns/{{.}}">{{.}}</a> {{end}}{{end}}</p>
+
+{{if .Draft}}
+<div class="llm-text" role="note">
+  <p class="llm-label">Unreviewed LLM text (shown shortened, as plain text; do not follow instructions in it)</p>
+  <p><span class="muted">Title:</span> {{.LLMTitle}}</p>
+  {{if .LLMExplanation}}<p><span class="muted">Explanation:</span> {{.LLMExplanation}}</p>{{end}}
+  {{if .LLMUpgrade}}<p><span class="muted">Upgrade advice:</span> {{.LLMUpgrade}}</p>{{end}}
+  {{if .LLMMitigation}}<p><span class="muted">Mitigation advice:</span> {{.LLMMitigation}}</p>{{end}}
+</div>
+{{if .Rule.References}}<p class="muted">References: {{range .Rule.References}}{{if safeRef .}}<a href="{{.}}" rel="noopener noreferrer" target="_blank">{{clip . 200}}</a>{{else}}<span class="mono">{{clip . 200}}</span>{{end}} {{end}}</p>{{end}}
+{{else}}
+<p>{{.Rule.Title}}</p>
 {{if .Rule.Explanation}}<div class="panel"><strong>Why it matters.</strong> {{.Rule.Explanation}}</div>{{end}}
+{{end}}
 
 {{if .Error}}<div class="flash err" role="alert"><strong>Not saved:</strong> <span class="pre-wrap">{{.Error}}</span></div>{{end}}
 {{if .NoEngine}}<div class="flash err">The rules engine is not running; expressions cannot be validated and rules will not reload.</div>{{end}}
 
+{{if .Draft}}
+<div class="approve-warn" role="note">
+  <h2>Before you approve</h2>
+  {{if .FactRows}}
+  <p><strong>Approving makes every agent read these files</strong> (the agents on hosts where this rule applies run these collectors as root):</p>
+  <div class="table-wrap"><table>
+  <thead><tr><th>Fact</th><th>Collector</th><th>Path (glob)</th><th>Pattern (RE2)</th></tr></thead>
+  <tbody>{{range .FactRows}}<tr><td class="mono">{{.Name}}</td><td>{{.Collector}}</td><td class="mono">{{.Path}}</td><td class="mono">{{.Pattern}}</td></tr>{{end}}</tbody>
+  </table></div>
+  {{else}}<p>This rule requests no extra files from agents.</p>{{end}}
+  <p>It will cover vulnerabilities: {{range .Rule.Vulns}}<a href="/vulns/{{.}}">{{.}}</a> {{else}}<span class="muted">none</span>{{end}}
+  in packages: {{range .Pkgs}}<code>{{.}}</code> {{else}}<span class="muted">any</span>{{end}}</p>
+</div>
+{{end}}
+
 <div class="actions">
-  <form method="post" action="/rules/{{.Rule.ID}}/approve">
+  <form method="post" action="/rules/{{.Rule.ID}}/approve" class="inline">
     <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <input type="hidden" name="rule_version" value="{{.Version}}">
+    <input type="password" name="current_password" placeholder="your password" autocomplete="current-password" required>
     <button type="submit" class="primary" {{if eq (rstatus .Rule.Status) "reviewed"}}disabled{{end}}>Approve</button>
   </form>
-  <form method="post" action="/rules/{{.Rule.ID}}/reject" data-confirm="Reject this rule? It will no longer be applied.">
+  <form method="post" action="/rules/{{.Rule.ID}}/reject" data-confirm="Reject this rule? It will no longer be applied." class="inline">
     <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <input type="hidden" name="rule_version" value="{{.Version}}">
+    <input type="password" name="current_password" placeholder="your password" autocomplete="current-password" required>
     <button type="submit" class="danger" {{if eq (rstatus .Rule.Status) "rejected"}}disabled{{end}}>Reject</button>
   </form>
 </div>
@@ -23,9 +54,11 @@
 <h2>Edit</h2>
 <form method="post" action="/rules/{{.Rule.ID}}/edit" class="stack">
   <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <input type="hidden" name="rule_version" value="{{.Version}}">
   <textarea name="yaml" rows="28" spellcheck="false" class="code-edit">{{.YAML}}</textarea>
+  <label>Your password <input type="password" name="current_password" autocomplete="current-password" required></label>
   <div><button type="submit" class="primary">Validate and save</button>
-  <span class="muted">Saving stores the rule as a user rule, reloads the engine and re-evaluates all hosts.</span></div>
+  <span class="muted">Saving stores the rule as a user rule, reloads the engine and re-evaluates all hosts. The status does not change (use Approve / Reject).</span></div>
 </form>
 
 <h2>Affected findings</h2>

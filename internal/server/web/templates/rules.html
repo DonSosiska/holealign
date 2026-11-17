@@ -14,7 +14,7 @@
 <tbody>{{range .Rules}}
 <tr>
   <td><a href="/rules/{{.ID}}">{{.ID}}</a></td>
-  <td>{{.Title}}</td>
+  <td>{{if eq (rstatus .Status) "draft"}}<span class="muted">(LLM)</span> {{clip .Title 200}}{{else}}{{.Title}}{{end}}</td>
   <td><span class="badge {{rclass .Status}}">{{rstatus .Status}}</span></td>
   <td class="muted small">{{.Source}}</td>
   <td class="small">{{join .Vulns ", "}}</td>

@@ -2,8 +2,12 @@ package health
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -20,6 +24,8 @@ type fakeNotifier struct {
 	mu     sync.Mutex
 	events []model.Event
 	fail   bool
+	// failFn, when set, fails exactly the events it returns true for (the others are delivered).
+	failFn func(model.Event) bool
 }
 
 func (f *fakeNotifier) Notify(_ context.Context, evs []model.Event) error {
@@ -31,6 +37,23 @@ func (f *fakeNotifier) Notify(_ context.Context, evs []model.Event) error {
 			de.Failed = append(de.Failed, i)
 		}
 		return de
+	}
+	if f.failFn != nil {
+		var de *notify.DeliveryError
+		for i, ev := range evs {
+			if f.failFn(ev) {
+				if de == nil {
+					de = &notify.DeliveryError{Err: errors.New("room refused")}
+				}
+				de.Failed = append(de.Failed, i)
+				continue
+			}
+			f.events = append(f.events, ev)
+		}
+		if de != nil {
+			return de
+		}
+		return nil
 	}
 	f.events = append(f.events, evs...)
 	return nil
@@ -174,8 +197,8 @@ func TestMassSilenceAggregated(t *testing.T) {
 	}
 	e.now = e.now.Add(time.Hour)
 	evs := e.check()
-	if len(evs) != 1 {
-		t.Fatalf("want one aggregated event, got %d", len(evs))
+	if len(evs) != 2 { // the ops overview and the message for label prod
+		t.Fatalf("want an aggregated ops event plus one for the label, got %d: %s", len(evs), kinds(evs))
 	}
 	ev := evs[0]
 	if ev.Kind != model.EventAgentSilent || ev.Host.ID != "" || !ev.ServerLevel() {
@@ -184,8 +207,11 @@ func TestMassSilenceAggregated(t *testing.T) {
 	if !strings.HasPrefix(ev.Detail, "30 agents silent — server/network problem?") {
 		t.Fatalf("detail=%q", ev.Detail)
 	}
-	if got := strings.Count(ev.Detail, "• "); got != 20 || !strings.Contains(ev.Detail, "…and 10 more") {
+	if got := strings.Count(ev.Detail, "• "); got != 30 {
 		t.Fatalf("listed %d hostnames: %q", got, ev.Detail)
+	}
+	if lab := evs[1]; lab.ServerLevel() || len(lab.Host.Labels) != 1 || lab.Host.Labels[0] != "prod" {
+		t.Fatalf("label event: %+v", lab)
 	}
 	if evs := e.check(); len(evs) != 0 {
 		t.Fatalf("aggregated hosts alerted again: %v", kinds(evs))
@@ -196,8 +222,8 @@ func TestMassSilenceAggregated(t *testing.T) {
 		e.checkin(h)
 	}
 	evs = e.check()
-	if len(evs) != 1 || evs[0].Kind != model.EventAgentBack || evs[0].Host.ID != "" {
-		t.Fatalf("want one aggregated agent_back, got %v", kinds(evs))
+	if len(evs) != 2 || evs[0].Kind != model.EventAgentBack || evs[0].Host.ID != "" || evs[1].Kind != model.EventAgentBack {
+		t.Fatalf("want an aggregated agent_back plus the label's, got %v", kinds(evs))
 	}
 }
 
@@ -336,5 +362,266 @@ func TestHumanDuration(t *testing.T) {
 		if got := HumanDuration(in); got != want {
 			t.Errorf("%v: got %s want %s", in, got, want)
 		}
+	}
+}
+
+// --- round 2 -------------------------------------------------------------------------------------
+
+func (e *env) massSilence(n int, label func(i int) []string) []model.Host {
+	e.t.Helper()
+	var hs []model.Host
+	for i := 0; i < n; i++ {
+		h := e.host(fmt.Sprintf("h%03d", i), label(i)...)
+		hs = append(hs, h)
+	}
+	return hs
+}
+
+func (e *env) checkinAt(h model.Host, at time.Time) {
+	e.t.Helper()
+	if _, err := e.st.ApplyCheckin(e.ctx, h.ID, model.CheckinRequest{Hostname: h.Hostname, Labels: h.Labels, FactsComplete: true}, at); err != nil {
+		e.t.Fatal(err)
+	}
+}
+
+func TestMassSilenceStillReachesTheVictimsLabelRoom(t *testing.T) {
+	e := newEnv(t, Options{AgentSilentAfter: 30 * time.Minute, PublicURL: "https://p.example"})
+	var victim model.Host
+	hs := e.massSilence(20, func(i int) []string {
+		if i == 0 {
+			return []string{"pci"}
+		}
+		if i < 14 {
+			return []string{"web"}
+		}
+		return []string{"web", "healthy"}
+	})
+	victim = hs[0]
+	for i, h := range hs {
+		if i < 14 {
+			e.checkinAt(h, e.now.Add(-time.Duration(i)*time.Minute))
+		}
+	}
+	e.now = e.now.Add(time.Hour)
+	for _, h := range hs[14:] { // healthy hosts keep checking in
+		e.checkinAt(h, e.now)
+	}
+	evs := e.check()
+	var ops, pci, web *model.Event
+	for i := range evs {
+		switch {
+		case evs[i].ServerLevel():
+			ops = &evs[i]
+		case len(evs[i].Host.Labels) == 1 && evs[i].Host.Labels[0] == "pci":
+			pci = &evs[i]
+		case len(evs[i].Host.Labels) == 1 && evs[i].Host.Labels[0] == "web":
+			web = &evs[i]
+		}
+	}
+	if ops == nil || pci == nil || web == nil || len(evs) != 3 {
+		t.Fatalf("want ops + pci + web events, got %d", len(evs))
+	}
+	if !strings.Contains(pci.Detail, victim.Hostname) || !strings.Contains(pci.Detail, victim.ID) {
+		t.Fatalf("victim not named (with its ID) in the pci message: %q", pci.Detail)
+	}
+	if strings.Contains(web.Detail, victim.Hostname) {
+		t.Fatalf("host listed under a label it does not carry: %q", web.Detail)
+	}
+	if !strings.Contains(ops.Detail, "14 agents silent") || ops.WebURL != "https://p.example/hosts" {
+		t.Fatalf("ops: %q url=%q", ops.Detail, ops.WebURL)
+	}
+	if sent, _ := e.st.NotificationSent(e.ctx, hostDedupKey(victim.ID, model.EventAgentSilent)); !sent {
+		t.Fatal("victim not recorded although named in delivered messages")
+	}
+	if evs := e.check(); len(evs) != 0 {
+		t.Fatalf("repeated: %s", kinds(evs))
+	}
+}
+
+func TestMassSilenceListsNewestFirstAndRecordsOnlyNamedHosts(t *testing.T) {
+	e := newEnv(t, Options{AgentSilentAfter: 30 * time.Minute})
+	hs := e.massSilence(120, func(int) []string { return []string{"prod"} })
+	for i, h := range hs { // the higher the number, the more recent the last check-in
+		e.checkinAt(h, e.now.Add(-time.Duration(200-i)*time.Second))
+	}
+	e.now = e.now.Add(time.Hour)
+	e.n.failFn = func(ev model.Event) bool { return ev.ServerLevel() } // the ops room refuses
+	if err := e.m.Check(e.ctx); err == nil {
+		t.Fatal("a failed ops message must surface as an error")
+	}
+	evs := e.n.take()
+	if len(evs) != 1 || evs[0].ServerLevel() {
+		t.Fatalf("delivered: %s", kinds(evs))
+	}
+	lab := evs[0]
+	if strings.Count(lab.Detail, "• ") != maxSilentListed || !strings.Contains(lab.Detail, "…and 70 more") {
+		t.Fatalf("label message lists %d hosts: %.300q", strings.Count(lab.Detail, "• "), lab.Detail)
+	}
+	// newest check-in first, not by name: h119 leads, h000 is not listed
+	if i, j := strings.Index(lab.Detail, "h119"), strings.Index(lab.Detail, "h118"); i < 0 || j < 0 || i > j {
+		t.Fatalf("not newest first: %.300q", lab.Detail)
+	}
+	if strings.Contains(lab.Detail, "h000") {
+		t.Fatal("oldest host listed")
+	}
+	recorded := 0
+	for _, h := range hs {
+		if sent, _ := e.st.NotificationSent(e.ctx, hostDedupKey(h.ID, model.EventAgentSilent)); sent {
+			recorded++
+		}
+	}
+	if recorded != maxSilentListed {
+		t.Fatalf("recorded %d hosts, want exactly the %d named in delivered messages", recorded, maxSilentListed)
+	}
+	// nothing delivered at all: nothing recorded
+	e2 := newEnv(t, Options{AgentSilentAfter: 30 * time.Minute})
+	hs2 := e2.massSilence(20, func(int) []string { return []string{"a"} })
+	for _, h := range hs2 {
+		e2.checkinAt(h, e2.now)
+	}
+	e2.now = e2.now.Add(time.Hour)
+	e2.n.fail = true
+	_ = e2.m.Check(e2.ctx)
+	for _, h := range hs2 {
+		if sent, _ := e2.st.NotificationSent(e2.ctx, hostDedupKey(h.ID, model.EventAgentSilent)); sent {
+			t.Fatal("host recorded without any delivered message")
+		}
+	}
+	// the remaining 70 are announced on the next pass
+	e.n.failFn = nil
+	evs = e.check()
+	if len(evs) == 0 {
+		t.Fatal("hosts that were not named are never announced")
+	}
+	if !strings.Contains(evs[0].Detail, "70 agents silent") {
+		t.Fatalf("follow-up: %.200q", evs[0].Detail)
+	}
+}
+
+func TestUnlabelledHostsAreNotLost(t *testing.T) {
+	e := newEnv(t, Options{AgentSilentAfter: 30 * time.Minute})
+	hs := e.massSilence(10, func(int) []string { return nil })
+	for _, h := range hs {
+		e.checkinAt(h, e.now)
+	}
+	e.now = e.now.Add(time.Hour)
+	evs := e.check()
+	if len(evs) != 2 {
+		t.Fatalf("want ops + unlabelled group, got %s", kinds(evs))
+	}
+	if g := evs[1]; g.ServerLevel() || len(g.Host.Labels) != 0 || !strings.Contains(g.Detail, "h000") {
+		t.Fatalf("group event: %+v", g)
+	}
+}
+
+func TestPipelineDetailIsOneLineAndDeletedHostsForgotten(t *testing.T) {
+	e := newEnv(t, Options{})
+	h := e.host("web1")
+	boom := errors.New("grype failed\nsecond line \x1b[31m@room " + strings.Repeat("x", 1000))
+	for i := 0; i < 3; i++ {
+		e.m.ReportRun(h.ID, boom)
+	}
+	evs := e.check()
+	if len(evs) != 1 {
+		t.Fatalf("want one pipeline_error, got %d", len(evs))
+	}
+	if strings.ContainsAny(evs[0].Detail, "\n\x1b") || len([]rune(evs[0].Detail)) > 500 {
+		t.Fatalf("detail not cleaned: %q", evs[0].Detail)
+	}
+
+	// a deleted host disappears from the in-memory state
+	h2 := e.host("web2")
+	e.m.ReportRun(h2.ID, boom)
+	e.m.ReportPoison(h2.ID, "image:x")
+	if err := e.st.DeleteHost(e.ctx, h2.ID); err != nil {
+		t.Fatal(err)
+	}
+	e.check()
+	e.m.mu.Lock()
+	_, a := e.m.failures[h2.ID]
+	_, b := e.m.poisoned[h2.ID]
+	_, c := e.m.pending[h2.ID]
+	e.m.mu.Unlock()
+	if a || b || c {
+		t.Fatalf("state of the deleted host kept: %v %v %v", a, b, c)
+	}
+	e.m.ReportRun(h.ID, boom)
+	e.m.ForgetHost(h.ID)
+	e.m.mu.Lock()
+	n := len(e.m.failures) + len(e.m.lastErr) + len(e.m.poisoned) + len(e.m.pending)
+	e.m.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("ForgetHost left %d entries", n)
+	}
+}
+
+func TestNotifyProblemRecorder(t *testing.T) {
+	e := newEnv(t, Options{})
+	rec := NewProblemRecorder(e.st, nil)
+	rec("!r:s\n<b>", 403, model.EventExploitable, true)
+	rec("!r:s\n<b>", 403, model.EventExploitable, true) // same problem: one entry
+	for i := 0; i < 30; i++ {
+		rec(fmt.Sprintf("!room%d:s", i), 403, model.EventAgentSilent, true)
+	}
+	raw, err := e.st.KVGet(e.ctx, KVNotifyErrors)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ps []NotifyProblem
+	if err := json.Unmarshal([]byte(raw), &ps); err != nil || len(ps) != maxNotifyProblems {
+		t.Fatalf("stored %d problems (%v)", len(ps), err)
+	}
+	if ps[len(ps)-1].Room != "!room29:s" || strings.Contains(raw, "\\n") {
+		t.Fatalf("newest last, values cleaned: %s", raw)
+	}
+}
+
+// End to end through the real Matrix notifier: the victim is named in the room routed for its label.
+func TestMassSilenceVictimNamedInLabelRoomViaMatrix(t *testing.T) {
+	var mu sync.Mutex
+	got := map[string][]string{} // room -> bodies
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Body string `json:"body"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		parts := strings.Split(r.URL.EscapedPath(), "/")
+		room, _ := url.PathUnescape(parts[5])
+		mu.Lock()
+		got[room] = append(got[room], body.Body)
+		mu.Unlock()
+		_, _ = w.Write([]byte(`{"event_id":"$x"}`))
+	}))
+	defer srv.Close()
+	mx, err := notify.NewMatrix(notify.Config{Homeserver: srv.URL, AccessToken: "t", OpsRooms: []string{"!ops:x"},
+		DefaultRooms: []string{"!def:x"}, Routes: []notify.Route{{Label: "pci", Rooms: []string{"!pci:x"}}, {Label: "web", Rooms: []string{"!web:x"}}}}, nil, srv.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := newEnv(t, Options{AgentSilentAfter: 30 * time.Minute})
+	e.m.n = mx
+	hs := e.massSilence(20, func(i int) []string {
+		if i == 0 {
+			return []string{"pci"}
+		}
+		return []string{"web"}
+	})
+	for _, h := range hs {
+		e.checkinAt(h, e.now)
+	}
+	e.now = e.now.Add(time.Hour)
+	if err := e.m.Check(e.ctx); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got["!pci:x"]) != 1 || !strings.Contains(got["!pci:x"][0], "h000") || !strings.Contains(got["!pci:x"][0], hs[0].ID) {
+		t.Fatalf("pci room: %q", got["!pci:x"])
+	}
+	if len(got["!ops:x"]) != 1 || !strings.Contains(got["!ops:x"][0], "20 agents silent") {
+		t.Fatalf("ops room: %q", got["!ops:x"])
+	}
+	if len(got["!web:x"]) != 1 || strings.Contains(got["!web:x"][0], "h000") {
+		t.Fatalf("web room: %q", got["!web:x"])
 	}
 }
