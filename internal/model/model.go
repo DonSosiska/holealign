@@ -185,10 +185,12 @@ type Rule struct {
 	References    []string          `json:"references,omitempty" yaml:"references,omitempty"`
 }
 
-// PackageSelector matches a finding's package. Empty Type matches any type.
+// PackageSelector matches a finding's package. Empty Type matches any type. Exactly one of Name
+// (the binary package name, glob allowed) and Source (the source package name, exact) is set.
 type PackageSelector struct {
-	Name string `json:"name" yaml:"name"`
-	Type string `json:"type,omitempty" yaml:"type,omitempty"`
+	Name   string `json:"name,omitempty" yaml:"name,omitempty"`
+	Source string `json:"source,omitempty" yaml:"source,omitempty"`
+	Type   string `json:"type,omitempty" yaml:"type,omitempty"`
 }
 
 // Fix is the remediation advice attached to a rule.

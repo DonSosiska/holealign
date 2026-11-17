@@ -45,8 +45,14 @@ The reason is short and names the deciding facts, for example
 `os.libc=glibc, sshd.config.logingracetime=120`. It never contains `file.match` values.
 
 Which rule applies: a rule matches a finding when the finding's vulnerability ID or one of its
-aliases is in the rule's `vulns` and a `packages` selector matches (`name` is a `path.Match` glob such
-as `nginx*` or `linux-image-*`; `type` is equal, or empty for any). Rules with `status: rejected` are
+aliases is in the rule's `vulns` and a `packages` selector matches. A selector has `type` (equal, or empty for any) and exactly one of `name` (the binary package name, a
+`path.Match` glob such as `nginx*`) and `source` (the source package, an exact name, no glob). The
+source package of a finding is the `upstream` qualifier of its PURL without version, or the binary
+package name when there is none. Syft sets `upstream` for deb (`source@version`), apk (the origin
+package), Arch (the base package) and rpm (the source RPM file name, `openssl-3.0.7-27.el9.src.rpm`,
+reduced to `openssl`). Debian hosts report binaries such as `libc6` and `libc-bin`, so
+`{source: glibc, type: deb}` covers them all; `pkg["name"]` and `pkg["source"]` tell them apart in
+expressions. Rules with `status: rejected` are
 ignored. If several apply (for example separate rules for nginx and Apache), the winner is chosen by
 status (`reviewed` over `draft`), then database over file, then the first ID.
 
@@ -64,9 +70,10 @@ server, or create and edit it in the web UI. Required: `id`, `vulns`, `packages`
 id: CVE-2024-6387                        # ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$
 vulns: [CVE-2024-6387]                   # CVE/GHSA IDs this rule covers
 title: "OpenSSH regreSSHion: unauthenticated RCE via SIGALRM race"
-packages:                                # at most 50 selectors; name is a glob
+packages:                                # at most 50 selectors; name (glob, binary package) or source (exact)
   - {name: openssh-server, type: deb}
   - {name: openssh-server, type: rpm}
+  # - {source: openssh, type: deb}         # every binary built from the source package
 facts: [os.libc, sshd.config]            # every fact the expressions read; any absent -> conditions_unknown
 exploitable_if: >                        # CEL, must return bool
   pkg.name.startsWith("openssh-server") &&
@@ -105,7 +112,7 @@ Expressions are [CEL](https://cel.dev/) and must return a bool.
 | Name | Type | Contents |
 |---|---|---|
 | `facts` | `map(string, dyn)` | Host facts. Read as `facts["literal"]` (the name must be a string literal). |
-| `pkg` | `map(string, dyn)` | `name`, `version`, `type`, `purl`, `fixed_versions` (list), `target`, `target_kind` |
+| `pkg` | `map(string, dyn)` | `name` (binary package), `source` (source package), `version`, `type`, `purl`, `fixed_versions` (list), `target`, `target_kind` |
 | `host` | `map(string, dyn)` | `hostname`, `labels` (list), `os_id`, `os_version_id`, `kernel`, `arch` |
 
 Functions:

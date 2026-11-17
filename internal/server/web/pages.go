@@ -429,6 +429,9 @@ func (s *Server) renderRule(w http.ResponseWriter, r *http.Request, sess *sessio
 	var pkgs []string
 	for _, p := range rule.Packages {
 		n := clip(p.Name, 100)
+		if p.Source != "" {
+			n = "source " + clip(p.Source, 100)
+		}
 		if p.Type != "" {
 			n += " (" + clip(p.Type, 32) + ")"
 		}

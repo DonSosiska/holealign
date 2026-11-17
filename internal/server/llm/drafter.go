@@ -6,8 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/url"
-	"path"
 	"sort"
 	"strconv"
 	"strings"
@@ -89,47 +87,27 @@ func NewDrafter(d Deps) *Drafter {
 
 func keyOf(f model.Finding) string { return f.VulnID + "|" + SourceOf(f) }
 
-// sourceOf returns the source package of a finding: the "upstream" qualifier of its PURL
-// (without any @version), falling back to the package name.
 // SourceOf returns the source (upstream) package of a finding: the PURL "upstream"
-// qualifier without version, or the package name.
-func SourceOf(f model.Finding) string {
-	if i := strings.IndexByte(f.PURL, '?'); i >= 0 {
-		if q, err := url.ParseQuery(f.PURL[i+1:]); err == nil {
-			up := q.Get("upstream")
-			if j := strings.IndexByte(up, '@'); j >= 0 {
-				up = up[:j]
-			}
-			if up != "" {
-				return up
-			}
-		}
-	}
-	return f.PackageName
-}
+// qualifier without version, or the package name. See rules.SourceOf.
+func SourceOf(f model.Finding) string { return rules.SourceOf(f.PURL, f.PackageName) }
 
 func selectorMatches(sels []model.PackageSelector, name, typ string) bool {
-	for _, p := range sels {
-		if ok, _ := path.Match(p.Name, name); ok && (p.Type == "" || p.Type == typ) {
-			return true
-		}
-	}
-	return false
+	return rules.SelectorMatches(sels, name, name, typ)
 }
 
 // covered reports whether any stored rule already covers the finding's vuln and package.
 func (d *Drafter) covered(ctx context.Context, f model.Finding) (bool, error) {
-	rules, err := d.d.Store.ListRules(ctx)
+	stored, err := d.d.Store.ListRules(ctx)
 	if err != nil {
 		return false, err
 	}
 	if d.d.Rules != nil {
-		rules = append(rules, d.d.Rules()...)
+		stored = append(stored, d.d.Rules()...)
 	}
 	ids := append([]string{f.VulnID}, f.Aliases...)
-	for _, r := range rules {
+	for _, r := range stored {
 		for _, id := range ids {
-			if contains(r.Vulns, id) && selectorMatches(r.Packages, f.PackageName, f.PackageType) {
+			if contains(r.Vulns, id) && rules.SelectorMatches(r.Packages, f.PackageName, SourceOf(f), f.PackageType) {
 				return true, nil
 			}
 		}
@@ -151,6 +129,9 @@ func siblingPackages(fs []model.Finding) []model.PackageSelector {
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Name != out[j].Name {
 			return out[i].Name < out[j].Name
+		}
+		if out[i].Source != out[j].Source {
+			return out[i].Source < out[j].Source
 		}
 		return out[i].Type < out[j].Type
 	})
@@ -524,6 +505,9 @@ func normalizeSelectors(sels []model.PackageSelector) []model.PackageSelector {
 	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].Name != out[j].Name {
 			return out[i].Name < out[j].Name
+		}
+		if out[i].Source != out[j].Source {
+			return out[i].Source < out[j].Source
 		}
 		return out[i].Type < out[j].Type
 	})

@@ -91,7 +91,7 @@ func TestRulesCandidatesCLI(t *testing.T) {
 		_, _ = w.Write([]byte(`{"results":[{"vulns":[{"id":"CVE-2099-0200","modified":"2099-01-10T00:00:00Z"}]}]}`))
 	})
 	mux.HandleFunc("/v1/vulns/", func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"id":"CVE-2099-0200","published":"2099-01-01T00:00:00Z","severity":[{"type":"CVSS_V3","score":"CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"}]}`))
+		_, _ = w.Write([]byte(`{"id":"CVE-2099-0200","published":"2099-01-01T00:00:00Z","affected":[{"package":{"name":"openssh","ecosystem":"Ubuntu:24.04:LTS"}}],"severity":[{"type":"CVSS_V3","score":"CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"}]}`))
 	})
 	mux.HandleFunc("/epss", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"data":[{"cve":"CVE-2099-0200","epss":"0.25"}]}`))
@@ -105,7 +105,7 @@ func TestRulesCandidatesCLI(t *testing.T) {
 	_ = os.WriteFile(pk, []byte("# test\nopenssh\n"), 0o644)
 	outF := filepath.Join(dir, "c.json")
 	code, _, errOut := runCLI(t, "", "rules", "candidates", "-packages", pk, "-rules", repoRules, "-kev", kev, "-epss", srv.URL+"/epss?cve=",
-		"-osv-url", srv.URL, "-ecosystems", " Debian:12, ,", "-since", "100000d", "-max", "5", "-out", outF)
+		"-osv-url", srv.URL, "-ecosystems", " Ubuntu:24.04:LTS, ,", "-since", "100000d", "-max", "5", "-out", outF)
 	if code != 0 {
 		t.Fatalf("%d %q", code, errOut)
 	}

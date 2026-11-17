@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path"
 	"regexp"
 	"sort"
 	"strconv"
@@ -19,6 +18,7 @@ import (
 	"time"
 
 	"github.com/DonSosiska/panoptes/internal/model"
+	"github.com/DonSosiska/panoptes/internal/server/rules"
 )
 
 // Defaults of the candidates command.
@@ -26,9 +26,11 @@ const (
 	DefaultOSVURL    = "https://api.osv.dev"
 	DefaultKEVURL    = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
 	DefaultEPSSURL   = "https://api.first.org/data/v1/epss?cve="
+	DefaultBulkURL   = "https://osv-vulnerabilities.storage.googleapis.com"
 	DefaultMax       = 20
 	DefaultMaxReqs   = 2000
 	DefaultSince     = 30 * 24 * time.Hour
+	DefaultKEVMaxAge = 3 * 365 * 24 * time.Hour
 	MaxBodyBytes     = 8 << 20
 	RequestTimeout   = 30 * time.Second
 	UserAgent        = "panoptes-rules-bot"
@@ -38,7 +40,11 @@ const (
 )
 
 // DefaultEcosystems are the OSV ecosystem names queried by default.
-var DefaultEcosystems = []string{"Debian:12", "Ubuntu:24.04:LTS", "Alpine:v3.20"}
+var DefaultEcosystems = []string{"Debian:12", "Alpine:v3.20"}
+
+// bulkEcosystems are the OSV ecosystems read from the per-ecosystem all.zip export. The others
+// (Ubuntu is about 820 MB, Red Hat is large too) go through the per-package API.
+var bulkEcosystems = map[string]bool{"Debian": true, "Alpine": true}
 
 // ErrRequestCap is returned (and logged) when the per-run HTTP request budget is used up.
 var ErrRequestCap = errors.New("http request limit reached")
@@ -48,6 +54,7 @@ type Candidate struct {
 	Vuln           string   `json:"vuln"`
 	Aliases        []string `json:"aliases"`
 	Package        string   `json:"package"`
+	Source         string   `json:"source"`
 	BinaryPackages []string `json:"binary_packages"`
 	Type           string   `json:"type"`
 	Ecosystem      string   `json:"ecosystem"`
@@ -60,13 +67,16 @@ type Candidate struct {
 
 // CandidateOptions configure FindCandidates.
 type CandidateOptions struct {
-	OSVURL      string // default DefaultOSVURL
+	OSVURL      string // OSV API, used for ecosystems without a bulk export; default DefaultOSVURL
+	BulkURL     string // base URL of the OSV bulk exports (<base>/<Ecosystem>/all.zip); default DefaultBulkURL
+	CacheDir    string // where the bulk exports are cached between runs; default: a temporary directory removed at the end
 	KEV         string // URL or file path of the CISA KEV JSON; default DefaultKEVURL
 	EPSSURL     string // URL prefix; the comma-separated CVE list is appended; default DefaultEPSSURL
 	Ecosystems  []string
 	Packages    []string
-	Rules       []model.Rule // existing rules, for the covered check
-	Since       time.Duration
+	Rules       []model.Rule  // existing rules, for the covered check
+	Since       time.Duration // a record published within this window is relevant (default 30d)
+	KEVMaxAge   time.Duration // a KEV record published within this age is relevant (default 3y)
 	Max         int
 	MaxRequests int
 	Client      *http.Client
@@ -185,6 +195,14 @@ type osvDetail struct {
 			Name      string `json:"name"`
 			Ecosystem string `json:"ecosystem"`
 		} `json:"package"`
+		Ranges []struct {
+			Type   string `json:"type"`
+			Events []struct {
+				Introduced   string `json:"introduced"`
+				Fixed        string `json:"fixed"`
+				LastAffected string `json:"last_affected"`
+			} `json:"events"`
+		} `json:"ranges"`
 		EcosystemSpecific map[string]any `json:"ecosystem_specific"`
 	} `json:"affected"`
 }
@@ -194,10 +212,15 @@ var (
 	cveOnlyR = regexp.MustCompile(`^CVE-\d{4}-\d{4,}$`)
 )
 
-// FindCandidates queries OSV, KEV and EPSS and returns the ranked candidates (see docs/rules-feed.md).
+// FindCandidates reads OSV, KEV and EPSS and returns the ranked candidates (see docs/rules-feed.md).
+// Debian and Alpine come from OSV's per-ecosystem bulk export (one cached download each); other
+// ecosystems (Ubuntu, Red Hat) are queried package by package through the OSV API.
 func FindCandidates(ctx context.Context, o CandidateOptions) ([]Candidate, error) {
 	if o.OSVURL == "" {
 		o.OSVURL = DefaultOSVURL
+	}
+	if o.BulkURL == "" {
+		o.BulkURL = DefaultBulkURL
 	}
 	if o.KEV == "" {
 		o.KEV = DefaultKEVURL
@@ -210,6 +233,9 @@ func FindCandidates(ctx context.Context, o CandidateOptions) ([]Candidate, error
 	}
 	if o.Since <= 0 {
 		o.Since = DefaultSince
+	}
+	if o.KEVMaxAge <= 0 {
+		o.KEVMaxAge = DefaultKEVMaxAge
 	}
 	if o.Max <= 0 {
 		o.Max = DefaultMax
@@ -239,7 +265,12 @@ func FindCandidates(ctx context.Context, o CandidateOptions) ([]Candidate, error
 		types[e] = t
 	}
 	f := &fetcher{c: o.Client, max: o.MaxRequests}
-	cutoff := o.Now().Add(-o.Since)
+	now := o.Now()
+	pol := policy{cutoff: now.Add(-o.Since), kevCutoff: now.Add(-o.KEVMaxAge)}
+	pkgSet := map[string]bool{}
+	for _, p := range o.Packages {
+		pkgSet[p] = true
+	}
 
 	kev, err := loadKEV(ctx, f, o.KEV)
 	if err != nil {
@@ -247,13 +278,81 @@ func FindCandidates(ctx context.Context, o CandidateOptions) ([]Candidate, error
 	}
 	log.Info("KEV loaded", "cves", len(kev))
 
-	details := map[string]*osvDetail{}
 	seen := map[string]bool{}
 	var out []Candidate
+	add := func(c Candidate, ok bool) {
+		if !ok || covered(o.Rules, c) {
+			return
+		}
+		key := c.Vuln + "|" + c.Package
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		out = append(out, c)
+	}
+
+	// Bulk ecosystems: one download and one scan per OSV ecosystem name (Debian, Alpine).
+	bulk := map[string]map[string]bool{} // base ecosystem -> wanted releases
+	var apiEcos []string
+	for _, e := range o.Ecosystems {
+		if base, _, _ := strings.Cut(e, ":"); bulkEcosystems[base] {
+			if bulk[base] == nil {
+				bulk[base] = map[string]bool{}
+			}
+			bulk[base][e] = true
+		} else {
+			apiEcos = append(apiEcos, e)
+		}
+	}
+	cacheDir := o.CacheDir
+	if len(bulk) > 0 && cacheDir == "" {
+		d, err := os.MkdirTemp("", "panoptes-rules-")
+		if err != nil {
+			return nil, err
+		}
+		defer os.RemoveAll(d)
+		cacheDir = d
+	}
+	bases := make([]string, 0, len(bulk))
+	for b := range bulk {
+		bases = append(bases, b)
+	}
+	sort.Strings(bases)
+	failures := 0
+	for _, base := range bases {
+		zp, err := fetchBulk(ctx, f, o.BulkURL, base, cacheDir, log)
+		if err != nil {
+			if errors.Is(err, ErrRequestCap) {
+				log.Warn("request limit reached, stopping", "limit", o.MaxRequests)
+			} else {
+				log.Warn("OSV bulk export unavailable, skipping", "ecosystem", base, "err", err)
+			}
+			failures++
+			continue
+		}
+		n, err := scanZip(zp, func(d *osvDetail) {
+			for _, a := range d.Affected {
+				if !bulk[base][a.Package.Ecosystem] || !pkgSet[a.Package.Name] {
+					continue
+				}
+				add(candidateFor(d, a.Package.Name, a.Package.Ecosystem, types[a.Package.Ecosystem], kev, pol))
+			}
+		})
+		if err != nil {
+			log.Warn("OSV bulk export unreadable, skipping", "ecosystem", base, "err", err)
+			failures++
+			continue
+		}
+		log.Info("bulk export scanned", "ecosystem", base, "records", n)
+	}
+
+	// Other ecosystems: per-package queries, capped by the request budget.
 	okQueries, queries := 0, 0
+	details := map[string]*osvDetail{}
 outer:
 	for _, pkg := range o.Packages {
-		for _, eco := range o.Ecosystems {
+		for _, eco := range apiEcos {
 			queries++
 			ids, err := queryPackage(ctx, f, o.OSVURL, pkg, eco)
 			if errors.Is(err, ErrRequestCap) {
@@ -269,8 +368,8 @@ outer:
 			okQueries++
 			for _, v := range ids {
 				cve := cveRe.FindString(v.id)
-				inKEV := cve != "" && kev[cve]
-				if !inKEV && !v.modified.After(cutoff) {
+				// A record untouched for longer than the KEV age limit is not worth a detail request.
+				if !(cve != "" && kev[cve]) && v.modified.Before(pol.kevCutoff) {
 					continue
 				}
 				d, ok := details[v.id]
@@ -286,29 +385,11 @@ outer:
 					}
 					details[v.id] = d
 				}
-				if d == nil || d.Withdrawn != "" {
-					continue
-				}
-				c, ok := toCandidate(d, pkg, eco, types[eco], kev)
-				if !ok {
-					continue
-				}
-				if !c.KEV && c.Severity != "High" && c.Severity != "Critical" {
-					continue
-				}
-				if covered(o.Rules, c) {
-					continue
-				}
-				key := c.Vuln + "|" + c.Package
-				if seen[key] {
-					continue
-				}
-				seen[key] = true
-				out = append(out, c)
+				add(candidateFor(d, pkg, eco, types[eco], kev, pol))
 			}
 		}
 	}
-	if queries > 0 && okQueries == 0 {
+	if attempts := queries + len(bulk); attempts > 0 && okQueries+len(bulk)-failures == 0 {
 		return nil, errors.New("every OSV query failed")
 	}
 
@@ -337,6 +418,43 @@ outer:
 	}
 	log.Info("candidates selected", "count", len(out), "http_requests", f.count)
 	return out, nil
+}
+
+// policy holds the time limits of the relevance filter.
+type policy struct {
+	cutoff    time.Time // published after this: recent
+	kevCutoff time.Time // KEV entries published after this still count
+}
+
+// relevant applies the relevance rules to one (record, package, release) combination: the
+// vulnerability must be unfixed for the release, or published within the window, or (KEV) published
+// within the KEV age limit. Without KEV it also needs severity High or Critical.
+func (p policy) relevant(c Candidate, unfixed bool, published time.Time) bool {
+	if c.KEV {
+		return unfixed || published.After(p.kevCutoff)
+	}
+	if c.Severity != "High" && c.Severity != "Critical" {
+		return false
+	}
+	return unfixed || published.After(p.cutoff)
+}
+
+// candidateFor builds the candidate for a package of one OSV record in one ecosystem release, or
+// reports false when the record is withdrawn, does not affect the package there, has no CVE or
+// severity, or is not relevant.
+func candidateFor(d *osvDetail, pkg, eco, typ string, kev map[string]bool, p policy) (Candidate, bool) {
+	if d == nil || d.Withdrawn != "" {
+		return Candidate{}, false
+	}
+	c, unfixed, ok := toCandidate(d, pkg, eco, typ, kev)
+	if !ok {
+		return Candidate{}, false
+	}
+	pub, _ := time.Parse(time.RFC3339, d.Published)
+	if !p.relevant(c, unfixed, pub) {
+		return Candidate{}, false
+	}
+	return c, true
 }
 
 type osvRef struct {
@@ -428,8 +546,10 @@ func loadKEV(ctx context.Context, f *fetcher, src string) (map[string]bool, erro
 	return out, nil
 }
 
-// toCandidate builds a candidate from an OSV record; ok is false when it has no CVE id or no usable severity (and is not in KEV).
-func toCandidate(d *osvDetail, pkg, eco, typ string, kev map[string]bool) (Candidate, bool) {
+// toCandidate builds a candidate from an OSV record; ok is false when it has no CVE id, does not
+// affect pkg in eco, or has no usable severity (and is not in KEV). unfixed reports that an
+// affected range of pkg in eco has no fix.
+func toCandidate(d *osvDetail, pkg, eco, typ string, kev map[string]bool) (c Candidate, unfixed, ok bool) {
 	ids := append([]string{d.ID}, d.Aliases...)
 	cve := ""
 	for _, id := range ids {
@@ -444,9 +564,9 @@ func toCandidate(d *osvDetail, pkg, eco, typ string, kev map[string]bool) (Candi
 		}
 	}
 	if cve == "" {
-		return Candidate{}, false
+		return Candidate{}, false, false
 	}
-	c := Candidate{Vuln: cve, Package: pkg, Type: typ, Ecosystem: eco, Published: d.Published, KEV: kev[cve], Aliases: []string{}}
+	c = Candidate{Vuln: cve, Package: pkg, Source: pkg, Type: typ, Ecosystem: eco, Published: d.Published, KEV: kev[cve], Aliases: []string{}}
 	seen := map[string]bool{cve: true}
 	for _, id := range ids {
 		if id != "" && !seen[id] {
@@ -458,14 +578,29 @@ func toCandidate(d *osvDetail, pkg, eco, typ string, kev map[string]bool) (Candi
 	c.CVSS, c.Severity = severityOf(d)
 	if c.Severity == "" {
 		if !c.KEV {
-			return Candidate{}, false
+			return Candidate{}, false, false
 		}
 		c.Severity = "Unknown"
 	}
 	bins := map[string]bool{}
+	found := false
 	for _, a := range d.Affected {
 		if a.Package.Name != pkg || a.Package.Ecosystem != eco {
 			continue
+		}
+		found = true
+		for _, r := range a.Ranges {
+			if r.Type == "GIT" {
+				continue
+			}
+			introduced, fixed := false, false
+			for _, e := range r.Events {
+				introduced = introduced || e.Introduced != ""
+				fixed = fixed || e.Fixed != ""
+			}
+			if introduced && !fixed {
+				unfixed = true
+			}
 		}
 		if l, ok := a.EcosystemSpecific["binaries"].([]any); ok {
 			for _, e := range l {
@@ -477,6 +612,9 @@ func toCandidate(d *osvDetail, pkg, eco, typ string, kev map[string]bool) (Candi
 			}
 		}
 	}
+	if !found {
+		return Candidate{}, false, false
+	}
 	if len(bins) == 0 {
 		bins[pkg] = true
 	}
@@ -484,7 +622,7 @@ func toCandidate(d *osvDetail, pkg, eco, typ string, kev map[string]bool) (Candi
 		c.BinaryPackages = append(c.BinaryPackages, b)
 	}
 	sort.Strings(c.BinaryPackages)
-	return c, true
+	return c, unfixed, true
 }
 
 // severityOf returns the CVSS v3 base score and rating of a record. CVSS v4 vectors (not computed
@@ -521,9 +659,14 @@ func severityOf(d *osvDetail) (float64, string) {
 	return 0, ""
 }
 
-// covered reports whether any rule lists the candidate's CVE (or an alias) for a matching package.
+// covered reports whether any rule lists the candidate's CVE (or an alias) for a matching package:
+// a source selector matches the candidate's source package, a name selector its binary names.
 func covered(rs []model.Rule, c Candidate) bool {
 	ids := append([]string{c.Vuln}, c.Aliases...)
+	source := c.Source
+	if source == "" {
+		source = c.Package
+	}
 	names := append([]string{c.Package}, c.BinaryPackages...)
 	for _, r := range rs {
 		listed := false
@@ -537,14 +680,9 @@ func covered(rs []model.Rule, c Candidate) bool {
 		if !listed {
 			continue
 		}
-		for _, sel := range r.Packages {
-			if sel.Type != "" && sel.Type != c.Type {
-				continue
-			}
-			for _, n := range names {
-				if ok, _ := path.Match(sel.Name, n); ok {
-					return true
-				}
+		for _, n := range names {
+			if rules.SelectorMatches(r.Packages, n, source, c.Type) {
+				return true
 			}
 		}
 	}

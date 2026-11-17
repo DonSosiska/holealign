@@ -51,7 +51,7 @@ NEVER request credentials, keys, certificates, password or shadow files, tokens 
 # CEL environment
 Expressions are CEL (Common Expression Language) and must return a bool. Variables:
 - facts: map(string, dyn) of host facts, e.g. facts["os.libc"] == "glibc"
-- pkg: map(string, dyn): name, version, type, purl, fixed_versions (list), target, target_kind
+- pkg: map(string, dyn): name (binary package), source (source package; equals name when the package has no separate source), version, type, purl, fixed_versions (list), target, target_kind
 - host: map(string, dyn): hostname, labels (list), os_id, os_version_id, kernel, arch
 Functions: version_lt(a, b), version_ge(a, b) (loose numeric version comparison, e.g. version_lt(pkg["version"], "2.4.58")); has_module(list, name) is sugar for "name in list".
 Optional types are enabled: for a map key that may be missing use the optional index form m[?"key"].orValue(default), e.g. facts["sshd.config"][?"logingracetime"].orValue("120") != "0". Plain m["key"] on a missing key is an evaluation error, which yields "conditions unknown". Values from sshd.config, kernel.sysctl, php.ini are strings; sockets.listening ports are ints; sockets.ports is list<int>. Expression cost limit is 10000 and evaluation has a 50 ms timeout, so keep expressions simple.

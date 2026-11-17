@@ -49,6 +49,7 @@ const (
 	vecCrit = "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H" // 9.8
 	vecHigh = "CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H" // 7.8
 	vecMed  = "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N" // 6.1
+	apiEco  = "Ubuntu:24.04:LTS"                             // not a bulk ecosystem: exercises the per-package API path
 	recent  = "2099-01-10T00:00:00Z"
 	old     = "2001-01-01T00:00:00Z"
 )
@@ -95,7 +96,7 @@ func newFakeAPIs(t *testing.T, vulns []fakeVuln, epss map[string]string) *fakeAP
 		q := req.Queries[0]
 		var list []map[string]string
 		for _, v := range vulns {
-			if v.pkg == q.Package.Name && q.Package.Ecosystem == "Debian:12" {
+			if v.pkg == q.Package.Name && q.Package.Ecosystem == apiEco {
 				list = append(list, map[string]string{"id": v.id, "modified": v.modified})
 			}
 		}
@@ -118,7 +119,7 @@ func newFakeAPIs(t *testing.T, vulns []fakeVuln, epss map[string]string) *fakeAP
 			return
 		}
 		cve := strings.TrimPrefix(v.id, "DEBIAN-")
-		aff := map[string]any{"package": map[string]string{"name": v.pkg, "ecosystem": "Debian:12"}}
+		aff := map[string]any{"package": map[string]string{"name": v.pkg, "ecosystem": apiEco}}
 		if len(v.binaries) > 0 {
 			var bs []any
 			for _, b := range v.binaries {
@@ -167,7 +168,7 @@ func writeKEV(t *testing.T, cves ...string) string {
 
 func baseOpts(f *fakeAPIs, kev string, pkgs ...string) CandidateOptions {
 	return CandidateOptions{
-		OSVURL: f.srv.URL, KEV: kev, EPSSURL: f.srv.URL + "/epss?cve=", Ecosystems: []string{"Debian:12"}, Packages: pkgs,
+		OSVURL: f.srv.URL, KEV: kev, EPSSURL: f.srv.URL + "/epss?cve=", Ecosystems: []string{apiEco}, Packages: pkgs,
 		Since: 30 * 24 * time.Hour, Max: 20, Now: func() time.Time { return time.Date(2099, 1, 15, 0, 0, 0, 0, time.UTC) },
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
@@ -206,7 +207,7 @@ func TestCandidates(t *testing.T) {
 		t.Fatalf("order: %s", got)
 	}
 	k := cs[0]
-	if !k.KEV || k.Severity != "Medium" || k.Package != "openssh" || k.Type != "deb" || k.Ecosystem != "Debian:12" ||
+	if !k.KEV || k.Severity != "Medium" || k.Package != "openssh" || k.Type != "deb" || k.Ecosystem != apiEco ||
 		len(k.BinaryPackages) != 1 || k.BinaryPackages[0] != "openssh" || k.EPSS != 0.01 || k.CVSS != 6.1 {
 		t.Fatalf("kev candidate: %+v", k)
 	}
@@ -268,7 +269,7 @@ func TestCandidatesTotalFailure(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Error(w, "no", 500) }))
 	defer srv.Close()
 	o := CandidateOptions{OSVURL: srv.URL, KEV: writeKEV(t), EPSSURL: srv.URL + "/?cve=", Packages: []string{"openssh"},
-		Ecosystems: []string{"Debian:12"}, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+		Ecosystems: []string{apiEco}, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	if _, err := FindCandidates(context.Background(), o); err == nil || !strings.Contains(err.Error(), "every OSV query failed") {
 		t.Fatalf("got %v", err)
 	}

@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 
@@ -47,10 +48,13 @@ func rulesCandidates(args []string, stdout, stderr io.Writer) error {
 	fs := newFlags("candidates", stderr)
 	rulesDir := fs.String("rules", "", "directory with the existing rules (a CVE they already cover is skipped)")
 	pkgFile := fs.String("packages", "", "file with source package names, one per line, # comments")
-	ecos := fs.String("ecosystems", strings.Join(rulesbot.DefaultEcosystems, ","), "comma-separated OSV ecosystem names")
+	ecos := fs.String("ecosystems", strings.Join(rulesbot.DefaultEcosystems, ","), "comma-separated OSV ecosystem names (Debian and Alpine use the bulk export; Ubuntu:* and Red Hat:* query package by package and are slower)")
 	kev := fs.String("kev", rulesbot.DefaultKEVURL, "CISA KEV JSON, URL or file")
 	epss := fs.String("epss", rulesbot.DefaultEPSSURL, "FIRST EPSS API URL; the CVE list is appended")
-	since := fs.String("since", "30d", "only vulnerabilities modified within this window (KEV entries always count)")
+	since := fs.String("since", "30d", "a vulnerability published within this window is relevant (unfixed ones and recent KEV entries count regardless)")
+	kevMax := fs.String("kev-max-age", "1095d", "a KEV vulnerability published within this age is relevant (unfixed ones always are)")
+	cache := fs.String("cache", "", "directory for the downloaded OSV bulk exports (default $XDG_CACHE_HOME/panoptes-rules, else the user cache dir, else a temporary directory)")
+	bulk := fs.String("bulk-url", rulesbot.DefaultBulkURL, "base URL of the OSV bulk exports (<base>/<Ecosystem>/all.zip)")
 	max := fs.Int("max", rulesbot.DefaultMax, "maximum number of candidates")
 	out := fs.String("out", "", "write the JSON array to this file (default: stdout)")
 	osv := fs.String("osv-url", rulesbot.DefaultOSVURL, "OSV API base URL")
@@ -58,11 +62,15 @@ func rulesCandidates(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	if *pkgFile == "" || fs.NArg() != 0 {
-		return errors.New("usage: rules candidates -packages <file> [-rules <dir>] [-ecosystems list] [-kev url|file] [-epss url] [-since 30d] [-max 20] [-out file]")
+		return errors.New("usage: rules candidates -packages <file> [-rules <dir>] [-ecosystems list] [-kev url|file] [-epss url] [-since 30d] [-kev-max-age 1095d] [-cache dir] [-max 20] [-out file]")
 	}
 	win, err := rulesbot.ParseSince(*since)
 	if err != nil {
 		return fmt.Errorf("-since: %w", err)
+	}
+	kevAge, err := rulesbot.ParseSince(*kevMax)
+	if err != nil {
+		return fmt.Errorf("-kev-max-age: %w", err)
 	}
 	pb, err := os.ReadFile(*pkgFile)
 	if err != nil {
@@ -76,7 +84,7 @@ func rulesCandidates(args []string, stdout, stderr io.Writer) error {
 	defer stop()
 	cs, err := rulesbot.FindCandidates(ctx, rulesbot.CandidateOptions{
 		OSVURL: *osv, KEV: *kev, EPSSURL: *epss, Ecosystems: splitKeys(*ecos), Packages: rulesbot.ParsePackages(pb),
-		Rules: rs, Since: win, Max: *max, Logger: botLogger(stderr),
+		Rules: rs, Since: win, KEVMaxAge: kevAge, BulkURL: *bulk, CacheDir: cacheDir(*cache), Max: *max, Logger: botLogger(stderr),
 	})
 	if err != nil {
 		return err
@@ -205,4 +213,19 @@ func readCandidate(js, file string, index int) (rulesbot.Candidate, error) {
 		return c, fmt.Errorf("-index %d is out of range (%d candidates)", index, len(all))
 	}
 	return all[index], nil
+}
+
+// cacheDir returns the bulk export cache directory: the flag, else $XDG_CACHE_HOME/panoptes-rules or
+// <user cache dir>/panoptes-rules; empty (a temporary directory) when none can be determined.
+func cacheDir(flagValue string) string {
+	if flagValue != "" {
+		return flagValue
+	}
+	if x := os.Getenv("XDG_CACHE_HOME"); x != "" {
+		return filepath.Join(x, "panoptes-rules")
+	}
+	if d, err := os.UserCacheDir(); err == nil {
+		return filepath.Join(d, "panoptes-rules")
+	}
+	return ""
 }

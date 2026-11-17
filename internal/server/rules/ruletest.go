@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"sort"
 	"strings"
 
@@ -29,6 +30,7 @@ type TestCase struct {
 type TestFinding struct {
 	Vuln     string `yaml:"vuln"`
 	Package  string `yaml:"package"`
+	Source   string `yaml:"source"` // source package; default: none (the finding has no upstream qualifier)
 	Type     string `yaml:"type"`
 	Version  string `yaml:"version"`
 	Severity string `yaml:"severity"`
@@ -149,6 +151,11 @@ func runCase(e *Engine, ruleID string, c TestCase) string {
 	f := model.Finding{VulnID: c.Finding.Vuln, PackageName: c.Finding.Package, PackageType: c.Finding.Type,
 		PackageVer: c.Finding.Version, Severity: c.Finding.Severity, KEV: c.Finding.KEV,
 		Target: "host", TargetKind: model.TargetHost}
+	if c.Finding.Source != "" {
+		q := url.Values{}
+		q.Set("upstream", c.Finding.Source)
+		f.PURL = "pkg:" + purlType(c.Finding.Type) + "/test/" + url.PathEscape(c.Finding.Package) + "?" + q.Encode()
+	}
 	ev := e.Evaluate(context.Background(), hc, f)
 	if ev.Rule == nil || ev.Rule.ID != ruleID {
 		got := "no rule"
@@ -161,4 +168,11 @@ func runCase(e *Engine, ruleID string, c TestCase) string {
 		return fmt.Sprintf("verdict %s (%s), want %s", ev.Verdict, ev.Reason, c.Want)
 	}
 	return ""
+}
+
+func purlType(t string) string {
+	if t == "" {
+		return "generic"
+	}
+	return t
 }

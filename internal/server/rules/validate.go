@@ -97,12 +97,19 @@ func Validate(r model.Rule) error {
 		add("rule is larger than %d bytes as JSON", maxRuleJSONBytes)
 	}
 	for i, s := range r.Packages {
-		if s.Name == "" {
-			add("packages[%d]: name is required", i)
-			continue
-		}
-		if _, err := path.Match(s.Name, "x"); err != nil {
-			add("packages[%d]: invalid glob %q: %v", i, s.Name, err)
+		switch {
+		case s.Name == "" && s.Source == "":
+			add("packages[%d]: name or source is required", i)
+		case s.Name != "" && s.Source != "":
+			add("packages[%d]: use either name or source, not both", i)
+		case s.Name != "":
+			if _, err := path.Match(s.Name, "x"); err != nil {
+				add("packages[%d]: invalid glob %q: %v", i, s.Name, err)
+			}
+		default:
+			if strings.ContainsAny(s.Source, "*?[]\\") {
+				add("packages[%d]: source %q must be an exact package name (globs are for name only)", i, s.Source)
+			}
 		}
 	}
 

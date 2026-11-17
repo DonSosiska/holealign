@@ -94,7 +94,7 @@ func TestDraftHappyPath(t *testing.T) {
 	r := res.Rule
 	if r.ID != "CVE-2099-0100-openssh" || r.Status != model.RuleDraft || r.Source != "llm:test-model" ||
 		strings.Join(r.Vulns, ",") != "CVE-2099-0100,DEBIAN-CVE-2099-0100" ||
-		len(r.Packages) != 1 || r.Packages[0] != (model.PackageSelector{Name: "openssh-server", Type: "deb"}) {
+		len(r.Packages) != 1 || r.Packages[0] != (model.PackageSelector{Source: "openssh", Type: "deb"}) {
 		t.Fatalf("forced fields: %+v", r)
 	}
 	if len(r.References) != 1 || r.References[0] != "https://example.org/advisory/1" {
@@ -130,6 +130,9 @@ func TestDraftHappyPath(t *testing.T) {
 	copyDir(t, repoTests, filepath.Join(repo, "tests"))
 	rb, _ := os.ReadFile(rp)
 	tb, _ := os.ReadFile(tp)
+	if !strings.Contains(string(tb), "source: openssh") || !strings.Contains(string(tb), "package: openssh-server") || !strings.Contains(string(rb), "source: openssh") {
+		t.Errorf("source selector / source in tests missing:\n%s\n%s", rb, tb)
+	}
 	rb = []byte(strings.Replace(string(rb), "status: draft", "status: reviewed", 1))
 	_ = os.WriteFile(filepath.Join(repo, "rules", r.ID+".yaml"), rb, 0o644)
 	_ = os.WriteFile(filepath.Join(repo, "tests", r.ID+".yaml"), tb, 0o644)

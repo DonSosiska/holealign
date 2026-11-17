@@ -58,7 +58,7 @@ Every rule has a test file `tests/<rule-id>.yaml`: a YAML list of cases evaluate
 | Key | Meaning |
 |---|---|
 | `name` | Required, shown in failures. |
-| `finding` | `vuln` and `package` are required; `type`, `version`, `severity`, `kev` optional. The case is matched like a real finding (aliases are not used). |
+| `finding` | `vuln` and `package` (the binary package) are required; `source`, `type`, `version`, `severity`, `kev` optional. With `source` the finding gets a PURL with that `upstream` qualifier, so `source` selectors apply; without it the source is the package name. The case is matched like a real finding (aliases are not used). |
 | `facts` | The host facts, as the agent would send them. Numbers are handled like on the wire. Absent facts give `conditions_unknown`. |
 | `host` | `os_id`, `os_version_id`, `arch`, `labels` (the `host.*` CEL variables). |
 | `want` | `exploitable`, `affected_not_exploitable`, `conditions_unknown` or `not_affected`. |
@@ -260,24 +260,51 @@ panoptes-server rules candidates -rules rules -packages packages.txt -max 20 -ou
 |---|---|---|
 | `-rules <dir>` | | existing rules; a CVE is covered when a rule lists it (or an alias) in `vulns` for a matching package |
 | `-packages <file>` | required | source package names, one per line, `#` comments |
-| `-ecosystems <list>` | `Debian:12,Ubuntu:24.04:LTS,Alpine:v3.20` | comma-separated OSV ecosystems (spaces and empty items ignored); Debian and Ubuntu give type `deb`, Alpine `apk`, `Red Hat` `rpm` |
+| `-ecosystems <list>` | `Debian:12,Alpine:v3.20` | comma-separated OSV ecosystem releases (spaces and empty items ignored); Debian and Ubuntu give type `deb`, Alpine `apk`, `Red Hat` `rpm`. Debian and Alpine are read from the bulk export; `Ubuntu:*` and `Red Hat:*` are queried package by package (slower, capped by the request limit) |
 | `-kev <url\|file>` | CISA KEV JSON URL | known exploited vulnerabilities |
 | `-epss <url>` | `https://api.first.org/data/v1/epss?cve=` | EPSS API; the CVE list is appended, 100 per request |
-| `-since` | `30d` | only vulnerabilities modified in this window (KEV entries always count) |
+| `-since` | `30d` | a vulnerability *published* (not modified) within this window is relevant |
+| `-kev-max-age` | `1095d` | a KEV vulnerability published within this age is relevant |
+| `-cache <dir>` | `$XDG_CACHE_HOME/panoptes-rules`, else the user cache dir, else a temporary directory | where the OSV bulk exports are kept between runs |
+| `-bulk-url` | `https://osv-vulnerabilities.storage.googleapis.com` | base URL of the bulk exports (mirrors, tests) |
 | `-max` | `20` | cap on the result |
 | `-out <file>` | stdout | |
 | `-osv-url` | `https://api.osv.dev` | OSV base URL (mirrors, tests) |
 
-For every package and ecosystem it queries OSV `/v1/querybatch` (no version, paginated) and fetches
-`/v1/vulns/{id}` for vulnerabilities that are in KEV or were modified in the window. A candidate needs
-a CVE id (or CVE alias) and either to be in KEV or to be rated High or Critical: the CVSS v3 base
-score is computed from the vector; a CVSS v4 vector is not computed, the record's qualitative
-`database_specific.severity` is used if present, otherwise the record is skipped. Sorting: KEV first,
-then EPSS, then CVSS. A CVE appearing for the same package in several ecosystems is listed once (the
-first ecosystem wins). Each entry: `vuln, aliases, package, binary_packages, type, ecosystem,
-severity, cvss, epss, kev, published`. Limits: 2000 HTTP requests per run, 8 MiB per response, 30 s
-timeouts, `User-Agent: panoptes-rules-bot`. Failures for single packages are logged and skipped;
-exit 1 when every OSV query fails or KEV cannot be read.
+Data. For Debian and Alpine it downloads OSV's per-ecosystem export
+(`<bulk-url>/<Ecosystem>/all.zip`; Debian is about 82 MB, Alpine about 9 MB) once per run into the
+cache directory, reusing the cached copy when the server answers `304` to `If-None-Match` /
+`If-Modified-Since` (and when the download fails but a copy exists). The zip is read as a stream,
+nothing is extracted; limits: 200 MB per downloaded file, 4 MiB per JSON entry. Records are filtered
+to the requested release (`affected[].package.ecosystem` equal, e.g. `Debian:12`) and to `-packages`.
+Ubuntu (about 820 MB) is not downloaded: `Ubuntu:*` and `Red Hat:*` releases still query
+`/v1/querybatch` per package and fetch `/v1/vulns/{id}` for each hit (skipping records unmodified for
+longer than `-kev-max-age` unless in KEV), within 2000 HTTP requests per run.
+
+Relevance. For the requested release a record is a candidate when it has a CVE id (or CVE alias),
+is not withdrawn, and
+- it is **unfixed**: an affected range of the package has no `fixed` event; or
+- it was **published** within `-since`; or
+- it is in **KEV** and published within `-kev-max-age`, or in KEV and unfixed.
+
+Outside KEV the severity must be High or Critical: the CVSS v3 base score is computed from the
+vector; a CVSS v4 vector is not computed, the record's qualitative `database_specific.severity` is used
+if present, otherwise the record is skipped. KEV entries of any severity pass. A CVE is dropped when
+`-rules` already covers it (the CVE or an alias in `vulns`, and a selector that matches: `source`
+against the package, `name` globs against the package and `binary_packages`). So a long-fixed
+vulnerability such as Heartbleed (CVE-2014-0160) or CVE-2015-7547 no longer shows up, however often
+OSV re-modifies the record. Sorting: KEV first, then EPSS (batches of 100), then CVSS; `-max` caps the
+list. A CVE appearing for the same package in several ecosystems is listed once (the first wins).
+Each entry: `vuln, aliases, package, source, binary_packages, type, ecosystem, severity, cvss, epss,
+kev, published`. `package` and `source` are the source package; `binary_packages` is best effort
+(Debian records carry no binaries: it is `[package]`) and the draft does not depend on it. Further
+limits: 8 MiB per API response, 30 s API timeouts, `User-Agent: panoptes-rules-bot`. Failures for
+single packages are logged and skipped; exit 1 when every OSV source fails or KEV cannot be read.
+
+Expected cost of a run with the six packages openssh, openssl, nginx, sudo, glibc and curl on the
+default ecosystems: one download per ecosystem the first time, then a conditional request; well under
+a minute once the cache is warm, with a handful of HTTP requests instead of the thousand the per-package
+path needed.
 
 ### `rules draft`
 
@@ -298,8 +325,10 @@ and tests: few-shot examples and ID collision); `-out-rules`, `-out-tests` (defa
 The model sees the same prompt as the server drafter (fact catalog, CEL environment, untrusted-data
 delimiters, sanitising) plus a repository variant that asks for `{rule, tests}` with at least one
 `exploitable` and one non-exploitable case (the exploitable case is not needed when `exploitable_if`
-is `false`). Cleaning is as in the server: `vulns` are the candidate and its aliases, packages are
-exact selectors for `binary_packages` with the candidate's type, the ID is `<VULN>-<source>`
+is `false`). Cleaning is as in the server: `vulns` are the candidate and its aliases, the package
+selector is `{source: <candidate package>, type: <candidate type>}` (the rule covers every binary built
+from the source; the model is told to use `pkg["name"]` / `pkg["source"]` in expressions to tell
+binaries apart), test findings carry `source` and a realistic binary `package`, the ID is `<VULN>-<source>`
 (refused when it exists), texts are capped, references must appear in the advisory, test facts must
 be catalog facts. The rule is written with `status: draft` and `source: llm:<model>`. It is checked
 with `Validate`, the bundle coverage rules and `RunTests` (evaluated as if `reviewed`, because drafts

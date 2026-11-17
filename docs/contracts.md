@@ -231,7 +231,7 @@ each rule's source (`builtin`, `feed:<seq>`, `db`; `Engine.Sources()`). Rule ids
 `^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`.
 
 **Rule tests.** `tests/<rule-id>.yaml` is a YAML list of cases
-`{name, finding: {vuln, package, type, version, severity, kev}, facts: {...}, host: {os_id, os_version_id, arch, labels}, want: <verdict>}`;
+`{name, finding: {vuln, package, source, type, version, severity, kev}, facts: {...}, host: {os_id, os_version_id, arch, labels}, want: <verdict>}`;
 `rules.RunTests(rules, tests)` evaluates them with the real Engine (the rule under test must be the one that
 matches). The shipped rules' tests live in `rules-tests/`.
 
@@ -297,15 +297,17 @@ references: [https://www.qualys.com/2024/07/01/cve-2024-6387/regresshion.txt]
 
 ### Matching a rule to a finding
 A rule applies when `finding.vuln_id` or any of `finding.aliases` is in `rule.vulns`, AND a
-`packages` selector matches (`name` matches as a `path.Match` glob, e.g. `nginx*`, `linux-image-*`;
-`type` equal or empty). `status: rejected` rules are ignored. Several rules may cover the same CVE for
+`packages` selector matches (`type` equal or empty, and exactly one of `name`, a `path.Match` glob over the
+binary package name, e.g. `nginx*`, `linux-image-*`, or `source`, an exact match on the source package: the
+PURL `upstream` qualifier without version, else the package name; for rpm the source RPM file name reduced to
+its package name). `status: rejected` rules are ignored. Several rules may cover the same CVE for
 different packages (e.g. `CVE-2023-44487-nginx` and `CVE-2023-44487-apache`); if more than one applies,
 the winner is chosen by status (`reviewed` over `draft`), then layer (DB over feed over built-in), then the first by ID.
 
 ### CEL environment
 Variables:
 - `facts` — `map(string, dyn)` (host facts)
-- `pkg` — `map(string, dyn)`: `name`, `version`, `type`, `purl`, `fixed_versions` (list), `target`, `target_kind`
+- `pkg` — `map(string, dyn)`: `name` (binary package), `source` (source package), `version`, `type`, `purl`, `fixed_versions` (list), `target`, `target_kind`
 - `host` — `map(string, dyn)`: `hostname`, `labels` (list), `os_id`, `os_version_id`, `kernel`, `arch`
 
 Custom functions:

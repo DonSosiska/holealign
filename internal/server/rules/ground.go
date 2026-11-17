@@ -2,6 +2,7 @@ package rules
 
 import (
 	"context"
+	"net/url"
 	"path"
 	"sort"
 	"strings"
@@ -284,7 +285,7 @@ func candidates(name string, keys []string, h *hints) []any {
 // package selector of the rule (first few), so that conditions such as
 // pkg["name"].startsWith("openssh-server") can be satisfied.
 func groundVariants(r model.Rule, lits []string) []map[string]any {
-	type pv struct{ name, typ string }
+	type pv struct{ name, source, typ string }
 	var vs []pv
 	seen := map[pv]bool{}
 	add := func(v pv) {
@@ -296,30 +297,43 @@ func groundVariants(r model.Rule, lits []string) []map[string]any {
 	// string literals of the expression that a selector glob matches are the
 	// most likely real package names (selector "openssh*" + "openssh-server")
 	for _, s := range r.Packages {
-		for _, l := range lits {
-			if ok, _ := path.Match(s.Name, l); ok {
-				t := s.Type
-				if t == "" {
-					t = "deb"
-				}
-				add(pv{l, t})
-			}
-		}
-	}
-	for _, s := range r.Packages {
-		n := strings.NewReplacer(`\`, "", "*", "", "?", "x").Replace(s.Name)
 		t := s.Type
 		if t == "" {
 			t = "deb"
 		}
-		add(pv{n, t})
+		for _, l := range lits {
+			if s.Source != "" {
+				// a source selector: binaries are unknown, literals that start with the source name are likely
+				if strings.HasPrefix(l, s.Source) {
+					add(pv{l, s.Source, t})
+				}
+			} else if ok, _ := path.Match(s.Name, l); ok {
+				add(pv{l, "", t})
+			}
+		}
 	}
-	add(pv{"pkg", "deb"})
+	for _, s := range r.Packages {
+		t := s.Type
+		if t == "" {
+			t = "deb"
+		}
+		if s.Source != "" {
+			add(pv{s.Source, s.Source, t})
+			continue
+		}
+		n := strings.NewReplacer(`\`, "", "*", "", "?", "x").Replace(s.Name)
+		add(pv{n, "", t})
+	}
+	add(pv{"pkg", "", "deb"})
 	out := make([]map[string]any, len(vs))
 	for i, v := range vs {
+		purl := "pkg:" + v.typ + "/" + v.name + "@1.0.0"
+		if v.source != "" {
+			purl += "?upstream=" + url.QueryEscape(v.source)
+		}
 		out[i] = pkgVars(model.Finding{
 			VulnID: "CVE-0000-0000", PackageName: v.name, PackageVer: "1.0.0", PackageType: v.typ,
-			PURL: "pkg:" + v.typ + "/" + v.name + "@1.0.0", FixedVersions: []string{"99.0.0"},
+			PURL: purl, FixedVersions: []string{"99.0.0"},
 			Target: "x", TargetKind: model.TargetKind("host"),
 		})
 	}

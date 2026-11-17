@@ -294,6 +294,7 @@ func marshalRule(r model.Rule, c Candidate, advisory string) ([]byte, error) {
 type outFinding struct {
 	Vuln     string `yaml:"vuln"`
 	Package  string `yaml:"package"`
+	Source   string `yaml:"source,omitempty"`
 	Type     string `yaml:"type"`
 	Severity string `yaml:"severity,omitempty"`
 	KEV      bool   `yaml:"kev,omitempty"`
@@ -317,7 +318,7 @@ func marshalTests(cs []rules.TestCase) ([]byte, error) {
 	out := make([]outTest, 0, len(cs))
 	for _, c := range cs {
 		t := outTest{Name: c.Name, Facts: c.Facts, Want: c.Want,
-			Finding: outFinding{Vuln: c.Finding.Vuln, Package: c.Finding.Package, Type: c.Finding.Type, Severity: c.Finding.Severity, KEV: c.Finding.KEV}}
+			Finding: outFinding{Vuln: c.Finding.Vuln, Package: c.Finding.Package, Source: c.Finding.Source, Type: c.Finding.Type, Severity: c.Finding.Severity, KEV: c.Finding.KEV}}
 		if h := (outHost{OSID: c.Host.OSID, OSVersion: c.Host.OSVersion, Arch: c.Host.Arch}); h != (outHost{}) {
 			t.Host = &h
 		}

@@ -93,6 +93,10 @@ func fence(s string) string { return strings.ReplaceAll(s, "```", "'''") }
 func packageNames(r model.Rule) []string {
 	var out []string
 	for _, p := range r.Packages {
+		if p.Source != "" {
+			out = append(out, "source:"+p.Source)
+			continue
+		}
 		out = append(out, p.Name)
 	}
 	return out

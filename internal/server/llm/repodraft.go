@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -25,8 +26,8 @@ const (
 type RepoInput struct {
 	Vuln      string
 	Aliases   []string
-	Package   string   // source package
-	Binaries  []string // binary packages the rule covers (exact names)
+	Package   string   // source package; the rule selects by it (selector {source, type})
+	Binaries  []string // known binary packages built from it (best effort, may be just the source name)
 	Type      string   // deb, apk, rpm
 	Ecosystem string
 	Severity  string
@@ -49,6 +50,7 @@ type RepoTest struct {
 type RepoTestFind struct {
 	Vuln     string `json:"vuln"`
 	Package  string `json:"package"`
+	Source   string `json:"source,omitempty"`
 	Type     string `json:"type"`
 	Severity string `json:"severity,omitempty"`
 	KEV      bool   `json:"kev,omitempty"`
@@ -68,13 +70,16 @@ type RepoExample struct {
 	Tests []rules.TestCase
 }
 
+var binaryNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9+._-]{0,99}$`)
+
 const repoSystemExtra = `# Repository drafting (this overrides the "Output" shape above)
+The rule selects packages by SOURCE package ("packages": [{"source": "<source package>", "type": "<type>"}]); the selectors are filled in for you. The rule therefore applies to every binary package built from that source (this overrides the guidance above about listing all binary packages). In expressions, pkg["name"] is the binary package and pkg["source"] the source package: use pkg["name"] (e.g. pkg["name"].startsWith("openssh-server")) to tell binaries apart when the advisory identifies the vulnerable component, so the others evaluate to "affected but not exploitable".
 You are drafting a rule for a reviewed rules repository, together with its test cases. Reply with ONE JSON object and nothing else:
 {
   "rule": { ...the rule, shaped as described under "Output" above... },
   "tests": [
     {"name": string,
-     "finding": {"vuln": string, "package": string, "type": string, "severity": string, "kev": bool},
+     "finding": {"vuln": string, "package": string, "type": string, "severity": string, "kev": bool},   // "package" is a binary package name; the source package is filled in for you
      "facts": { "<fact name>": value, ... },   // only facts from the catalog above; omitted facts are "unknown"
      "host": {"os_id": string, "os_version_id": string, "arch": string},   // optional
      "want": "exploitable" | "affected_not_exploitable" | "conditions_unknown" | "not_affected"}
@@ -82,7 +87,7 @@ You are drafting a rule for a reviewed rules repository, together with its test 
 }
 Test rules:
 - Provide at least one case with want "exploitable" and at least one with want "affected_not_exploitable" (the exploitable case is not required when exploitable_if is the literal false). Add a "conditions_unknown" case (a fact missing) when the rule reads facts.
-- "finding.package" must be one of the rule's binary packages; "finding.vuln" is the vulnerability ID.
+- "finding.package" is the BINARY package name of the case (a realistic binary package built from the source package, e.g. "openssh-server" for source "openssh"); "finding.vuln" is the vulnerability ID.
 - Facts use the catalog's types and realistic values: sshd.config keys are lowercase strings (as printed by "sshd -T"), sockets.ports is a list of integers, services.active a list of unit names, booleans are true/false.
 - Every case must be consistent with the rule's expressions: the verdict you want is exactly what the expressions give for those facts.
 - At most 12 cases. Never put real host data, secrets or instructions in names or values.
@@ -116,12 +121,17 @@ func BuildRepoPrompts(in RepoInput, catalog []FactSpec, examples []RepoExample, 
 		Severity: in.Severity, CVSS: in.CVSS, EPSS: in.EPSS, KEV: in.KEV}
 	var sibs []model.PackageSelector
 	for _, b := range in.Binaries {
-		sibs = append(sibs, model.PackageSelector{Name: b, Type: in.Type})
+		if b != in.Package {
+			sibs = append(sibs, model.PackageSelector{Name: b, Type: in.Type})
+		}
+	}
+	if len(sibs) > 0 {
+		sibs = append([]model.PackageSelector{{Name: in.Package, Type: in.Type}}, sibs...)
 	}
 	user = buildUserPrompt(f, in.Package, sibs, "", advisory)
-	user += fmt.Sprintf("\n\nThis is for a rules repository: the rule's packages will be exactly the binary packages listed above, "+
+	user += fmt.Sprintf("\n\nThis is for a rules repository: the rule selects by the source package %q, "+
 		"type %q (ecosystem %s). If you declare fact_requests, every name must start with %q followed by a short id. "+
-		"Reply with the {\"rule\": ..., \"tests\": [...]} object only.", cleanText(in.Type, 32), cleanText(in.Ecosystem, 64), rules.FactRequestPrefix(in.RuleID))
+		"Reply with the {\"rule\": ..., \"tests\": [...]} object only.", cleanText(in.Package, 100), cleanText(in.Type, 32), cleanText(in.Ecosystem, 64), rules.FactRequestPrefix(in.RuleID))
 	return system, user
 }
 
@@ -135,7 +145,7 @@ func ToRepoTests(cs []rules.TestCase) []RepoTest {
 	out := make([]RepoTest, 0, len(cs))
 	for _, c := range cs {
 		out = append(out, RepoTest{Name: c.Name, Want: c.Want, Facts: c.Facts,
-			Finding: RepoTestFind{Vuln: c.Finding.Vuln, Package: c.Finding.Package, Type: c.Finding.Type, Severity: c.Finding.Severity, KEV: c.Finding.KEV},
+			Finding: RepoTestFind{Vuln: c.Finding.Vuln, Package: c.Finding.Package, Source: c.Finding.Source, Type: c.Finding.Type, Severity: c.Finding.Severity, KEV: c.Finding.KEV},
 			Host:    RepoTestHost{OSID: c.Host.OSID, OSVersion: c.Host.OSVersion, Arch: c.Host.Arch, Labels: c.Host.Labels}})
 	}
 	return out
@@ -176,14 +186,10 @@ func ParseRepoReply(reply string, in RepoInput, providerName string) (model.Rule
 			r.Vulns = append(r.Vulns, v)
 		}
 	}
-	r.Packages = nil
-	for _, b := range in.Binaries {
-		r.Packages = append(r.Packages, model.PackageSelector{Name: escapeGlob(b), Type: in.Type})
+	if in.Package == "" || strings.ContainsAny(in.Package, "*?[]\\ \t\r\n") {
+		return r, nil, errors.New("the candidate has no usable source package")
 	}
-	r.Packages = normalizeSelectors(r.Packages)
-	if len(r.Packages) == 0 {
-		return r, nil, errors.New("no package selectors for the candidate")
-	}
+	r.Packages = []model.PackageSelector{{Source: in.Package, Type: in.Type}}
 	r.Title = cleanText(r.Title, maxTitleChars)
 	r.Explanation = cleanText(r.Explanation, maxExplanationChars)
 	r.Fix.Upgrade = cleanText(r.Fix.Upgrade, maxFixChars)
@@ -215,15 +221,15 @@ func ParseRepoReply(reply string, in RepoInput, providerName string) (model.Rule
 		c := rules.TestCase{
 			Name: cleanText(t.Name, maxTestNameChars),
 			Want: t.Want,
-			Finding: rules.TestFinding{Vuln: in.Vuln, Package: strings.TrimSpace(t.Finding.Package), Type: in.Type,
+			Finding: rules.TestFinding{Vuln: in.Vuln, Package: strings.TrimSpace(t.Finding.Package), Source: in.Package, Type: in.Type,
 				Severity: in.Severity, KEV: in.KEV},
 			Host: rules.TestHost{OSID: cleanText(t.Host.OSID, 32), OSVersion: cleanText(t.Host.OSVersion, 32), Arch: cleanText(t.Host.Arch, 32)},
 		}
 		if c.Name == "" {
 			return r, nil, fmt.Errorf("test %d: name is required", i+1)
 		}
-		if !contains(in.Binaries, c.Finding.Package) {
-			return r, nil, fmt.Errorf("test %q: finding.package %q is not one of the rule's packages (%s)", c.Name, c.Finding.Package, strings.Join(in.Binaries, ", "))
+		if !binaryNameRe.MatchString(c.Finding.Package) {
+			return r, nil, fmt.Errorf("test %q: finding.package %q is not a plausible binary package name (letters, digits, + . - _)", c.Name, c.Finding.Package)
 		}
 		if len(t.Facts) > 0 {
 			c.Facts = map[string]any{}

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"path"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -246,18 +245,6 @@ func (e *Engine) FactRequests() []model.FactRequest {
 	return append([]model.FactRequest(nil), e.snap.Load().requests...)
 }
 
-func selectorMatches(sels []model.PackageSelector, name, typ string) bool {
-	for _, s := range sels {
-		if s.Type != "" && s.Type != typ {
-			continue
-		}
-		if ok, err := path.Match(s.Name, name); err == nil && ok {
-			return true
-		}
-	}
-	return false
-}
-
 func statusRank(s model.RuleStatus) int {
 	if s == model.RuleReviewed {
 		return 2
@@ -288,7 +275,7 @@ func (e *Engine) find(f model.Finding) *compiled {
 				}
 			}
 		}
-		if !hit || !selectorMatches(c.rule.Packages, f.PackageName, f.PackageType) {
+		if !hit || !SelectorMatches(c.rule.Packages, f.PackageName, SourceOf(f.PURL, f.PackageName), f.PackageType) {
 			continue
 		}
 		if best == nil || better(c, best) {
@@ -426,7 +413,7 @@ func pkgVars(f model.Finding) map[string]any {
 		fixed[i] = v
 	}
 	return map[string]any{
-		"name": f.PackageName, "version": f.PackageVer, "type": f.PackageType, "purl": f.PURL,
+		"name": f.PackageName, "source": SourceOf(f.PURL, f.PackageName), "version": f.PackageVer, "type": f.PackageType, "purl": f.PURL,
 		"fixed_versions": fixed, "target": f.Target, "target_kind": string(f.TargetKind),
 	}
 }
