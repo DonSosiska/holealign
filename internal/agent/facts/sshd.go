@@ -6,7 +6,7 @@ import (
 	"regexp"
 	"strings"
 
-	"panoptes/internal/model"
+	"github.com/DonSosiska/panoptes/internal/model"
 )
 
 var reOpenSSHVersion = regexp.MustCompile(`OpenSSH_([^,\n]+)`)

@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"panoptes/internal/model"
+	"github.com/DonSosiska/panoptes/internal/model"
 )
 
 // Values of services.source.

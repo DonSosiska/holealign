@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"testing"
 
-	"panoptes/internal/server/config"
+	"github.com/DonSosiska/panoptes/internal/server/config"
 )
 
 func nopLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }

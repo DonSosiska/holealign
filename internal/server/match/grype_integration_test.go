@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"panoptes/internal/model"
+	"github.com/DonSosiska/panoptes/internal/model"
 )
 
 // A minimal CycloneDX SBOM as Syft would write it: Debian 12 with a vulnerable openssh-server.

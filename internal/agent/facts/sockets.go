@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"strings"
 
-	"panoptes/internal/model"
+	"github.com/DonSosiska/panoptes/internal/model"
 )
 
 // socketEntry is one row of /proc/net/{tcp,tcp6,udp,udp6}.

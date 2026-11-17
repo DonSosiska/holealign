@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"panoptes/internal/model"
+	"github.com/DonSosiska/panoptes/internal/model"
 )
 
 // recorded is one request seen by the fake homeserver.

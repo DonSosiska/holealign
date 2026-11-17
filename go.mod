@@ -1,4 +1,4 @@
-module panoptes
+module github.com/DonSosiska/panoptes
 
 go 1.27.4
 

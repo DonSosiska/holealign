@@ -11,7 +11,7 @@ import (
 	"testing/fstest"
 	"time"
 
-	"panoptes/internal/model"
+	"github.com/DonSosiska/panoptes/internal/model"
 )
 
 func fmReq(path, pattern string) model.FactRequest {

@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	"panoptes/internal/model"
+	"github.com/DonSosiska/panoptes/internal/model"
 )
 
 // groupKey identifies events that describe one vulnerability on one target of one host.

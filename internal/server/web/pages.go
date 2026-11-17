@@ -14,8 +14,8 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"panoptes/internal/model"
-	"panoptes/internal/server/store"
+	"github.com/DonSosiska/panoptes/internal/model"
+	"github.com/DonSosiska/panoptes/internal/server/store"
 )
 
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request, sess *session) {

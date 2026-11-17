@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"sort"
 
-	"panoptes/internal/model"
+	"github.com/DonSosiska/panoptes/internal/model"
 )
 
 // NormalizeSBOM removes the fields Syft fills with random or time-dependent values

@@ -10,7 +10,7 @@ import (
 	"runtime"
 	"sync"
 
-	"panoptes/internal/model"
+	"github.com/DonSosiska/panoptes/internal/model"
 )
 
 // Env bundles the external dependencies of the collectors so tests can replace them.

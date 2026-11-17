@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"panoptes/internal/agent/config"
-	"panoptes/internal/agent/transport"
-	"panoptes/internal/model"
+	"github.com/DonSosiska/panoptes/internal/agent/config"
+	"github.com/DonSosiska/panoptes/internal/agent/transport"
+	"github.com/DonSosiska/panoptes/internal/model"
 )
 
 func TestClampNextCheckin(t *testing.T) {

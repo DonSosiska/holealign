@@ -56,7 +56,7 @@ You need Docker with Compose, and a Linux host with systemd for the agent.
    `https://panoptes.example.com` or `http://192.0.2.10:8080`.
 
    ```sh
-   curl -fsSL https://raw.githubusercontent.com/OWNER/panoptes/main/deploy/install.sh | \
+   curl -fsSL https://raw.githubusercontent.com/DonSosiska/panoptes/main/deploy/install.sh | \
      sudo sh -s -- --server https://panoptes.example.com --token pt_xxx --labels prod,web
    ```
 
@@ -180,14 +180,14 @@ Each release publishes `checksums.txt`, a keyless Sigstore signature for it
 (`checksums.txt.sig` and `checksums.txt.pem`), SPDX SBOMs for the archives, and
 GitHub build provenance attestations. Signatures are made by the release workflow
 in this repository, so the certificate identity must match that workflow and the
-exact release tag. Replace `OWNER` with the GitHub owner of the repository, and
+exact release tag. Replace
 `X.Y.Z` with the release version (the tag is `vX.Y.Z`). The identity is an exact
 string, not a pattern: a signature from any other workflow or tag is rejected.
 
 1. Verify the checksum file was signed by the release workflow:
 
    ```sh
-   cosign verify-blob --certificate checksums.txt.pem --signature checksums.txt.sig --certificate-identity "https://github.com/OWNER/panoptes/.github/workflows/release.yml@refs/tags/vX.Y.Z" --certificate-oidc-issuer https://token.actions.githubusercontent.com checksums.txt
+   cosign verify-blob --certificate checksums.txt.pem --signature checksums.txt.sig --certificate-identity "https://github.com/DonSosiska/panoptes/.github/workflows/release.yml@refs/tags/vX.Y.Z" --certificate-oidc-issuer https://token.actions.githubusercontent.com checksums.txt
    ```
 
 2. Check the files you downloaded against the verified checksums. `--ignore-missing`
@@ -201,14 +201,14 @@ string, not a pattern: a signature from any other workflow or tag is rejected.
    `X.Y.Z` with the release version, for example `1.2.3` for tag `v1.2.3`:
 
    ```sh
-   cosign verify ghcr.io/OWNER/panoptes-server:X.Y.Z --certificate-identity "https://github.com/OWNER/panoptes/.github/workflows/release.yml@refs/tags/vX.Y.Z" --certificate-oidc-issuer https://token.actions.githubusercontent.com
+   cosign verify ghcr.io/donsosiska/panoptes-server:X.Y.Z --certificate-identity "https://github.com/DonSosiska/panoptes/.github/workflows/release.yml@refs/tags/vX.Y.Z" --certificate-oidc-issuer https://token.actions.githubusercontent.com
    ```
 
 4. Verify the build provenance of a downloaded archive, `.deb` or `.rpm` (requires the
    [GitHub CLI](https://cli.github.com/)):
 
    ```sh
-   gh attestation verify panoptes-agent_X.Y.Z_linux_amd64.tar.gz --repo OWNER/panoptes --signer-workflow OWNER/panoptes/.github/workflows/release.yml
+   gh attestation verify panoptes-agent_X.Y.Z_linux_amd64.tar.gz --repo DonSosiska/panoptes --signer-workflow DonSosiska/panoptes/.github/workflows/release.yml
    ```
 
 Linux packages (`.deb`, `.rpm`) are not signed with apt or rpm keys. Verify them

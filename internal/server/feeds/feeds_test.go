@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"panoptes/internal/server/store"
+	"github.com/DonSosiska/panoptes/internal/server/store"
 )
 
 type fakeDB struct {

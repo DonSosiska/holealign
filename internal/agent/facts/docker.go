@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"panoptes/internal/model"
+	"github.com/DonSosiska/panoptes/internal/model"
 )
 
 const (

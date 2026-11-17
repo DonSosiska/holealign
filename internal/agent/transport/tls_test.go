@@ -19,7 +19,7 @@ import (
 	"testing"
 	"time"
 
-	"panoptes/internal/model"
+	"github.com/DonSosiska/panoptes/internal/model"
 )
 
 type testPKI struct {

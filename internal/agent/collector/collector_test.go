@@ -17,8 +17,8 @@ import (
 	"testing"
 	"time"
 
-	"panoptes/internal/agent/hostdata"
-	"panoptes/internal/model"
+	"github.com/DonSosiska/panoptes/internal/agent/hostdata"
+	"github.com/DonSosiska/panoptes/internal/model"
 )
 
 type fakeBackend struct {
@@ -245,11 +245,11 @@ func TestNoTransportDependency(t *testing.T) {
 	if err != nil {
 		t.Skip("go tool not available")
 	}
-	out, err := exec.Command(goBin, "list", "-deps", "panoptes/internal/agent/collector").CombinedOutput()
+	out, err := exec.Command(goBin, "list", "-deps", "github.com/DonSosiska/panoptes/internal/agent/collector").CombinedOutput()
 	if err != nil {
 		t.Skipf("go list failed: %v\n%s", err, out)
 	}
-	for _, pkg := range []string{"panoptes/internal/agent/transport", "panoptes/internal/agent/runner"} {
+	for _, pkg := range []string{"github.com/DonSosiska/panoptes/internal/agent/transport", "github.com/DonSosiska/panoptes/internal/agent/runner"} {
 		if strings.Contains("\n"+string(out), "\n"+pkg+"\n") {
 			t.Errorf("collector must not depend on %s", pkg)
 		}

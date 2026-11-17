@@ -20,7 +20,7 @@ import (
 	"strings"
 	"time"
 
-	"panoptes/internal/model"
+	"github.com/DonSosiska/panoptes/internal/model"
 )
 
 // ErrUnauthorized is returned when the server answers 401.

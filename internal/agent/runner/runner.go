@@ -12,10 +12,10 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"panoptes/internal/agent/config"
-	"panoptes/internal/agent/hostdata"
-	"panoptes/internal/agent/transport"
-	"panoptes/internal/model"
+	"github.com/DonSosiska/panoptes/internal/agent/config"
+	"github.com/DonSosiska/panoptes/internal/agent/hostdata"
+	"github.com/DonSosiska/panoptes/internal/agent/transport"
+	"github.com/DonSosiska/panoptes/internal/model"
 )
 
 // unauthorizedRetry is how long to wait after a 401 when no enroll token is available.

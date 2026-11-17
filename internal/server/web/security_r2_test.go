@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"panoptes/internal/model"
+	"github.com/DonSosiska/panoptes/internal/model"
 )
 
 type httptestResp = httptest.ResponseRecorder

@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"panoptes/internal/model"
-	"panoptes/internal/server/store"
+	"github.com/DonSosiska/panoptes/internal/model"
+	"github.com/DonSosiska/panoptes/internal/server/store"
 )
 
 // keyedMatcher answers per SBOM content: findings, an error, or a delay until ctx is done.

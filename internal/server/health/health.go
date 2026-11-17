@@ -16,11 +16,11 @@ import (
 	"time"
 	"unicode"
 
-	"panoptes/internal/model"
-	"panoptes/internal/server/core"
-	"panoptes/internal/server/feeds"
-	"panoptes/internal/server/notify"
-	"panoptes/internal/server/store"
+	"github.com/DonSosiska/panoptes/internal/model"
+	"github.com/DonSosiska/panoptes/internal/server/core"
+	"github.com/DonSosiska/panoptes/internal/server/feeds"
+	"github.com/DonSosiska/panoptes/internal/server/notify"
+	"github.com/DonSosiska/panoptes/internal/server/store"
 )
 
 // kv keys published for the web UI banner (empty value = healthy).

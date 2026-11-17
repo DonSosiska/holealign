@@ -12,7 +12,7 @@ import (
 	"strconv"
 	"strings"
 
-	"panoptes/internal/model"
+	"github.com/DonSosiska/panoptes/internal/model"
 )
 
 var (

@@ -17,10 +17,10 @@ import (
 	"testing"
 	"time"
 
-	"panoptes/internal/agent/collector"
-	"panoptes/internal/agent/config"
-	"panoptes/internal/agent/hostdata"
-	"panoptes/internal/model"
+	"github.com/DonSosiska/panoptes/internal/agent/collector"
+	"github.com/DonSosiska/panoptes/internal/agent/config"
+	"github.com/DonSosiska/panoptes/internal/agent/hostdata"
+	"github.com/DonSosiska/panoptes/internal/model"
 )
 
 func TestDiffFacts(t *testing.T) {

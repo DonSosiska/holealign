@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"panoptes/internal/model"
-	"panoptes/internal/server/rules"
+	"github.com/DonSosiska/panoptes/internal/model"
+	"github.com/DonSosiska/panoptes/internal/server/rules"
 )
 
 func hostFinding(host string) model.Finding {

@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"panoptes/internal/server/clientip"
-	"panoptes/internal/server/config"
-	"panoptes/internal/server/feeds"
-	"panoptes/internal/server/store"
+	"github.com/DonSosiska/panoptes/internal/server/clientip"
+	"github.com/DonSosiska/panoptes/internal/server/config"
+	"github.com/DonSosiska/panoptes/internal/server/feeds"
+	"github.com/DonSosiska/panoptes/internal/server/store"
 )
 
 func TestTokenCreateWithOptions(t *testing.T) {

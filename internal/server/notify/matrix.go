@@ -20,8 +20,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"panoptes/internal/model"
-	"panoptes/internal/server/core"
+	"github.com/DonSosiska/panoptes/internal/model"
+	"github.com/DonSosiska/panoptes/internal/server/core"
 )
 
 // Config is the matrix section of the server configuration. AccessToken is already

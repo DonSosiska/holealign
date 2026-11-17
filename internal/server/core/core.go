@@ -7,7 +7,7 @@ package core
 import (
 	"context"
 
-	"panoptes/internal/model"
+	"github.com/DonSosiska/panoptes/internal/model"
 )
 
 // HostContext is everything a rule may look at for one host.

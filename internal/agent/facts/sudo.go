@@ -3,7 +3,7 @@ package facts
 import (
 	"context"
 
-	"panoptes/internal/model"
+	"github.com/DonSosiska/panoptes/internal/model"
 )
 
 // parseSudoVersion extracts the version from `sudo -V` output.

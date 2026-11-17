@@ -8,8 +8,8 @@ import (
 	"net/http"
 	"time"
 
-	"panoptes/internal/server/api"
-	"panoptes/internal/server/config"
+	"github.com/DonSosiska/panoptes/internal/server/api"
+	"github.com/DonSosiska/panoptes/internal/server/config"
 )
 
 // namedServer is one HTTP listener.

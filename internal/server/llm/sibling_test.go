@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"panoptes/internal/model"
+	"github.com/DonSosiska/panoptes/internal/model"
 )
 
 func debFinding(pkg string) model.Finding {

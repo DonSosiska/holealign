@@ -8,8 +8,8 @@ import (
 	"sync"
 	"testing"
 
-	"panoptes/internal/model"
-	"panoptes/internal/server/core"
+	"github.com/DonSosiska/panoptes/internal/model"
+	"github.com/DonSosiska/panoptes/internal/server/core"
 )
 
 const shippedRules = "../../../rules"

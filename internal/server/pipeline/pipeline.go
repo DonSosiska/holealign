@@ -16,10 +16,10 @@ import (
 	"sync"
 	"time"
 
-	"panoptes/internal/model"
-	"panoptes/internal/server/core"
-	"panoptes/internal/server/notify"
-	"panoptes/internal/server/store"
+	"github.com/DonSosiska/panoptes/internal/model"
+	"github.com/DonSosiska/panoptes/internal/server/core"
+	"github.com/DonSosiska/panoptes/internal/server/notify"
+	"github.com/DonSosiska/panoptes/internal/server/store"
 )
 
 // DefaultRunTimeout bounds one pipeline run.

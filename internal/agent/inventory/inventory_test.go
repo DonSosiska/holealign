@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"panoptes/internal/model"
+	"github.com/DonSosiska/panoptes/internal/model"
 )
 
 func TestNormalizeSBOMDeterministic(t *testing.T) {

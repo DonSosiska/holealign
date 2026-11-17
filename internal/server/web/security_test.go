@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"panoptes/internal/model"
-	"panoptes/internal/server/config"
-	"panoptes/internal/server/store"
+	"github.com/DonSosiska/panoptes/internal/model"
+	"github.com/DonSosiska/panoptes/internal/server/config"
+	"github.com/DonSosiska/panoptes/internal/server/store"
 )
 
 type lockedBuf struct {

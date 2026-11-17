@@ -12,13 +12,13 @@ import (
 	"os/signal"
 	"syscall"
 
-	"panoptes/internal/agent/collector"
-	"panoptes/internal/agent/config"
-	"panoptes/internal/agent/facts"
-	"panoptes/internal/agent/hostdata"
-	"panoptes/internal/agent/inventory"
-	"panoptes/internal/agent/runner"
-	"panoptes/internal/agent/transport"
+	"github.com/DonSosiska/panoptes/internal/agent/collector"
+	"github.com/DonSosiska/panoptes/internal/agent/config"
+	"github.com/DonSosiska/panoptes/internal/agent/facts"
+	"github.com/DonSosiska/panoptes/internal/agent/hostdata"
+	"github.com/DonSosiska/panoptes/internal/agent/inventory"
+	"github.com/DonSosiska/panoptes/internal/agent/runner"
+	"github.com/DonSosiska/panoptes/internal/agent/transport"
 )
 
 // version is set with -ldflags "-X main.version=...".

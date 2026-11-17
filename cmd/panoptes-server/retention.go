@@ -5,8 +5,8 @@ import (
 	"log/slog"
 	"time"
 
-	"panoptes/internal/server/config"
-	"panoptes/internal/server/store"
+	"github.com/DonSosiska/panoptes/internal/server/config"
+	"github.com/DonSosiska/panoptes/internal/server/store"
 )
 
 // pruneInterval is how often the retention job runs (and once at start).

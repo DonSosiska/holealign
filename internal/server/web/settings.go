@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"panoptes/internal/server/api"
-	"panoptes/internal/server/config"
-	"panoptes/internal/server/store"
+	"github.com/DonSosiska/panoptes/internal/server/api"
+	"github.com/DonSosiska/panoptes/internal/server/config"
+	"github.com/DonSosiska/panoptes/internal/server/store"
 )
 
 const matrixSettingKey = "matrix.routes"

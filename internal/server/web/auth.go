@@ -16,7 +16,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"panoptes/internal/server/store"
+	"github.com/DonSosiska/panoptes/internal/server/store"
 )
 
 const (

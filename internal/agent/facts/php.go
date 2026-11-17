@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"panoptes/internal/model"
+	"github.com/DonSosiska/panoptes/internal/model"
 )
 
 // phpIniKeys are the php.ini directives exposed as php.ini.

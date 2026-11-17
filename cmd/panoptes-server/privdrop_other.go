@@ -5,7 +5,7 @@ package main
 import (
 	"os"
 
-	"panoptes/internal/server/config"
+	"github.com/DonSosiska/panoptes/internal/server/config"
 )
 
 // prepareCLI creates the data directory (there is no uid to drop to on this platform).

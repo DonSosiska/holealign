@@ -14,8 +14,8 @@ import (
 	"cel.dev/cel-go/cel"
 	celast "cel.dev/cel-go/common/ast"
 
-	"panoptes/internal/model"
-	"panoptes/internal/server/core"
+	"github.com/DonSosiska/panoptes/internal/model"
+	"github.com/DonSosiska/panoptes/internal/server/core"
 )
 
 // DefaultEvalTimeout is the per-expression evaluation timeout.

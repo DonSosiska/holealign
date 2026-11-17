@@ -9,7 +9,7 @@ import (
 	"runtime"
 	"strings"
 
-	"panoptes/internal/model"
+	"github.com/DonSosiska/panoptes/internal/model"
 )
 
 // parseOSRelease parses /etc/os-release style KEY=value lines.

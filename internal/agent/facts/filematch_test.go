@@ -10,7 +10,7 @@ import (
 	"testing/fstest"
 	"time"
 
-	"panoptes/internal/model"
+	"github.com/DonSosiska/panoptes/internal/model"
 )
 
 const modeSymlink = fs.ModeSymlink

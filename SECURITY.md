@@ -4,9 +4,9 @@
 
 Please do not open a public GitHub issue for security problems.
 
-Report them privately by email to **security@OWNER.example**. <!-- TODO: replace with the real security contact before publishing -->
-If GitHub private vulnerability reporting is enabled for the repository, you can use
-that instead (Security tab, "Report a vulnerability").
+Report them privately through GitHub private vulnerability reporting: open the
+[Security tab](https://github.com/DonSosiska/panoptes/security/advisories/new) of the
+repository and choose "Report a vulnerability".
 
 Include the affected version or commit, the steps to reproduce, and the impact as you
 understand it. We aim to acknowledge reports within a few working days.
@@ -49,5 +49,3 @@ refuses any other tag. Artifacts are signed keyless with Sigstore, and the signi
 is the exact workflow path and tag. The Linux packages (`.deb`, `.rpm`) are not apt- or
 rpm-signed, so verify `checksums.txt` against its signature and then check the package
 checksums. See README.md, "Verifying releases", for the exact commands.
-<!-- TODO: replace OWNER in the repository links with the real GitHub owner, and replace the
-security contact above with the real one before publishing. -->

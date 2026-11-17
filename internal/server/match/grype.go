@@ -31,7 +31,7 @@ import (
 	"github.com/anchore/grype/grype/version"
 	"github.com/anchore/grype/grype/vulnerability"
 
-	"panoptes/internal/model"
+	"github.com/DonSosiska/panoptes/internal/model"
 )
 
 // MaxPackages caps the packages Grype may decode from one SBOM; the API pre-parser enforces the same

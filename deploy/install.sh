@@ -1,7 +1,7 @@
 #!/bin/sh
 # Panoptes agent installer (Linux with systemd, root required).
 #
-#   curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/OWNER/panoptes/main/deploy/install.sh | \
+#   curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/DonSosiska/panoptes/main/deploy/install.sh | \
 #     sudo PANOPTES_ENROLL_TOKEN=pt_xxx sh -s -- --server https://panoptes.example.com --labels prod,web
 #
 # Options:
@@ -30,7 +30,7 @@
 #   -h, --help        show this help.
 #
 # Environment:
-#   PANOPTES_REPO     GitHub repository to download from (default: OWNER/panoptes).
+#   PANOPTES_REPO     GitHub repository to download from (default: DonSosiska/panoptes).
 #   PANOPTES_ENROLL_TOKEN  enrollment token (alternative to --token-file).
 #
 # The token is written to the config file only and is never printed. The root collector removes
@@ -49,7 +49,7 @@
 
 set -eu
 
-REPO="${PANOPTES_REPO:-OWNER/panoptes}"
+REPO="${PANOPTES_REPO:-DonSosiska/panoptes}"
 VERSION="latest"
 SERVER=""
 TOKEN="${PANOPTES_ENROLL_TOKEN:-}"
@@ -506,7 +506,7 @@ umask 022
 cat > "$COLLECTOR_UNIT_PATH" <<'EOF'
 [Unit]
 Description=Panoptes collector (root, no network: reads host state, serves it on a unix socket)
-Documentation=https://github.com/OWNER/panoptes/blob/main/docs/contracts.md
+Documentation=https://github.com/DonSosiska/panoptes/blob/main/docs/contracts.md
 After=docker.service
 
 [Service]
@@ -607,7 +607,7 @@ EOF
 cat > "$UNIT_PATH" <<'EOF'
 [Unit]
 Description=Panoptes agent (unprivileged sender: talks to the server)
-Documentation=https://github.com/OWNER/panoptes/blob/main/docs/contracts.md
+Documentation=https://github.com/DonSosiska/panoptes/blob/main/docs/contracts.md
 Wants=network-online.target
 Requires=panoptes-collector.service
 After=network-online.target panoptes-collector.service

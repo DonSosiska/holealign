@@ -24,8 +24,8 @@ import (
 	"sync"
 	"time"
 
-	"panoptes/internal/agent/hostdata"
-	"panoptes/internal/model"
+	"github.com/DonSosiska/panoptes/internal/agent/hostdata"
+	"github.com/DonSosiska/panoptes/internal/model"
 )
 
 // DefaultInventoryMinGap: at most one inventory scan per this interval, whoever asks.

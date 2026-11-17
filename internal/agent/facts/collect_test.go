@@ -12,7 +12,7 @@ import (
 	"testing"
 	"testing/fstest"
 
-	"panoptes/internal/model"
+	"github.com/DonSosiska/panoptes/internal/model"
 )
 
 // fakeRunner answers commands from a table keyed by "name arg1 arg2".

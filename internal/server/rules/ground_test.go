@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"panoptes/internal/model"
+	"github.com/DonSosiska/panoptes/internal/model"
 )
 
 func groundRule(expr string, facts ...string) model.Rule {

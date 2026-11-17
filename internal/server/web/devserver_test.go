@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"panoptes/internal/model"
-	"panoptes/internal/server/config"
-	"panoptes/internal/server/store"
+	"github.com/DonSosiska/panoptes/internal/model"
+	"github.com/DonSosiska/panoptes/internal/server/config"
+	"github.com/DonSosiska/panoptes/internal/server/store"
 )
 
 // TestDevServer starts a throwaway UI with demo data when PANOPTES_WEB_DEV=<addr> is set,

@@ -1,6 +1,6 @@
 [Unit]
 Description=Panoptes agent (unprivileged sender: talks to the server)
-Documentation=https://github.com/OWNER/panoptes/blob/main/docs/contracts.md
+Documentation=https://github.com/DonSosiska/panoptes/blob/main/docs/contracts.md
 Wants=network-online.target
 Requires=panoptes-collector.service
 After=network-online.target panoptes-collector.service

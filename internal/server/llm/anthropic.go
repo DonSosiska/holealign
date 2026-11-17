@@ -10,7 +10,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go/v2"
 	"github.com/anthropics/anthropic-sdk-go/v2/option"
 
-	"panoptes/internal/server/config"
+	"github.com/DonSosiska/panoptes/internal/server/config"
 )
 
 type anthropicProvider struct {

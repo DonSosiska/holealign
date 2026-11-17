@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"panoptes/internal/model"
+	"github.com/DonSosiska/panoptes/internal/model"
 )
 
 func TestRedirectRefusedAndBodyNotResent(t *testing.T) {

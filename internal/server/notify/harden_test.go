@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"panoptes/internal/model"
+	"github.com/DonSosiska/panoptes/internal/model"
 )
 
 func TestRenderTruncatesAndStripsControl(t *testing.T) {

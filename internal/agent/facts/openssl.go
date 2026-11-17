@@ -4,7 +4,7 @@ import (
 	"context"
 	"regexp"
 
-	"panoptes/internal/model"
+	"github.com/DonSosiska/panoptes/internal/model"
 )
 
 var reOpenSSLVersion = regexp.MustCompile(`(?m)^OpenSSL (\S+)`)

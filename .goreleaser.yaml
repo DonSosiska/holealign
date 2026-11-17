@@ -91,7 +91,7 @@ nfpms:
     file_name_template: "{{ .PackageName }}_{{ .Version }}_{{ .Arch }}"
     formats: [deb, rpm]
     vendor: Panoptes
-    homepage: https://github.com/OWNER/panoptes # replace OWNER
+    homepage: https://github.com/DonSosiska/panoptes
     maintainer: "Panoptes <noreply@panoptes.invalid>"
     description: "Panoptes agent: sends host facts and package inventory to panoptes-server."
     license: Apache-2.0
@@ -117,7 +117,7 @@ nfpms:
     file_name_template: "{{ .PackageName }}_{{ .Version }}_{{ .Arch }}"
     formats: [deb, rpm]
     vendor: Panoptes
-    homepage: https://github.com/OWNER/panoptes # replace OWNER
+    homepage: https://github.com/DonSosiska/panoptes
     maintainer: "Panoptes <noreply@panoptes.invalid>"
     description: "Panoptes server: matches vulnerabilities, evaluates exploitability, alerts to Matrix."
     license: Apache-2.0
@@ -135,8 +135,8 @@ nfpms:
     scripts:
       postinstall: deploy/nfpm/postinstall.sh
 
-# Container images for the server. Replace OWNER with the GitHub user or org
-# (lowercase) that publishes to ghcr.io. The release workflow logs in to ghcr.io
+# Container images for the server, published to ghcr.io/donsosiska (the owner
+# must be lowercase in image names). The release workflow logs in to ghcr.io
 # with GITHUB_TOKEN, which needs packages: write.
 dockers:
   - id: panoptes-server-amd64
@@ -148,9 +148,9 @@ dockers:
     build_flag_templates:
       - "--platform=linux/amd64"
       - "--label=org.opencontainers.image.version={{ .Version }}"
-      - "--label=org.opencontainers.image.source=https://github.com/OWNER/panoptes"
+      - "--label=org.opencontainers.image.source=https://github.com/DonSosiska/panoptes"
     image_templates:
-      - "ghcr.io/OWNER/panoptes-server:{{ .Version }}-amd64"
+      - "ghcr.io/donsosiska/panoptes-server:{{ .Version }}-amd64"
     extra_files:
       - rules
 
@@ -163,22 +163,22 @@ dockers:
     build_flag_templates:
       - "--platform=linux/arm64"
       - "--label=org.opencontainers.image.version={{ .Version }}"
-      - "--label=org.opencontainers.image.source=https://github.com/OWNER/panoptes"
+      - "--label=org.opencontainers.image.source=https://github.com/DonSosiska/panoptes"
     image_templates:
-      - "ghcr.io/OWNER/panoptes-server:{{ .Version }}-arm64"
+      - "ghcr.io/donsosiska/panoptes-server:{{ .Version }}-arm64"
     extra_files:
       - rules
 
 docker_manifests:
-  - name_template: "ghcr.io/OWNER/panoptes-server:{{ .Version }}"
+  - name_template: "ghcr.io/donsosiska/panoptes-server:{{ .Version }}"
     image_templates:
-      - "ghcr.io/OWNER/panoptes-server:{{ .Version }}-amd64"
-      - "ghcr.io/OWNER/panoptes-server:{{ .Version }}-arm64"
+      - "ghcr.io/donsosiska/panoptes-server:{{ .Version }}-amd64"
+      - "ghcr.io/donsosiska/panoptes-server:{{ .Version }}-arm64"
 
   # "latest" moves on every release, so it is only published for final semver
   # releases (no prerelease suffix such as -rc1). Prereleases skip it.
-  - name_template: "ghcr.io/OWNER/panoptes-server:latest"
+  - name_template: "ghcr.io/donsosiska/panoptes-server:latest"
     skip: "{{ if .Prerelease }}true{{ end }}"
     image_templates:
-      - "ghcr.io/OWNER/panoptes-server:{{ .Version }}-amd64"
-      - "ghcr.io/OWNER/panoptes-server:{{ .Version }}-arm64"
+      - "ghcr.io/donsosiska/panoptes-server:{{ .Version }}-amd64"
+      - "ghcr.io/donsosiska/panoptes-server:{{ .Version }}-arm64"

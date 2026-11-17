@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"syscall"
 
-	"panoptes/internal/server/config"
+	"github.com/DonSosiska/panoptes/internal/server/config"
 )
 
 // prepareCLI runs before a token/host/user subcommand opens the database. When started as root

@@ -7,7 +7,7 @@ import (
 	"regexp"
 	"strings"
 
-	"panoptes/internal/model"
+	"github.com/DonSosiska/panoptes/internal/model"
 )
 
 const (

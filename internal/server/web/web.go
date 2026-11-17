@@ -24,10 +24,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"panoptes/internal/model"
-	"panoptes/internal/server/config"
-	"panoptes/internal/server/pipeline"
-	"panoptes/internal/server/store"
+	"github.com/DonSosiska/panoptes/internal/model"
+	"github.com/DonSosiska/panoptes/internal/server/config"
+	"github.com/DonSosiska/panoptes/internal/server/pipeline"
+	"github.com/DonSosiska/panoptes/internal/server/store"
 )
 
 //go:embed templates/*.html static/*

@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"panoptes/internal/model"
-	"panoptes/internal/server/core"
+	"github.com/DonSosiska/panoptes/internal/model"
+	"github.com/DonSosiska/panoptes/internal/server/core"
 )
 
 func draftEngine(r model.Rule) *Engine {

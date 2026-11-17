@@ -1,6 +1,6 @@
 [Unit]
 Description=Panoptes collector (root, no network: reads host state, serves it on a unix socket)
-Documentation=https://github.com/OWNER/panoptes/blob/main/docs/contracts.md
+Documentation=https://github.com/DonSosiska/panoptes/blob/main/docs/contracts.md
 After=docker.service
 
 [Service]

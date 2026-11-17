@@ -9,7 +9,7 @@
 services:
   panoptes-server:
     # Build from source. To use a prebuilt image instead, comment out "build"
-    # and set image: ghcr.io/OWNER/panoptes-server:latest (replace OWNER).
+    # and set image: ghcr.io/donsosiska/panoptes-server:latest.
     build:
       context: ..
       dockerfile: deploy/Dockerfile.server.build

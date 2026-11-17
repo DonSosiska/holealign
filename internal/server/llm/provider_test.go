@@ -11,7 +11,7 @@ import (
 	"sync"
 	"testing"
 
-	"panoptes/internal/server/config"
+	"github.com/DonSosiska/panoptes/internal/server/config"
 )
 
 type captured struct {

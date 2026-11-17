@@ -11,9 +11,9 @@ import (
 	"sync"
 	"testing"
 
-	"panoptes/internal/agent/config"
-	"panoptes/internal/agent/hostdata"
-	"panoptes/internal/model"
+	"github.com/DonSosiska/panoptes/internal/agent/config"
+	"github.com/DonSosiska/panoptes/internal/agent/hostdata"
+	"github.com/DonSosiska/panoptes/internal/model"
 )
 
 func fr(name, path, pattern string) model.FactRequest {

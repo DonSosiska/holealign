@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"panoptes/internal/model"
-	"panoptes/internal/server/store"
+	"github.com/DonSosiska/panoptes/internal/model"
+	"github.com/DonSosiska/panoptes/internal/server/store"
 )
 
 func (e *env) enrollReq(t *testing.T, token, machine, prevKey string) (int, model.EnrollResponse, string) {

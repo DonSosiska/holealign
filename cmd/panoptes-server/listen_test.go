@@ -20,10 +20,10 @@ import (
 	"testing"
 	"time"
 
-	"panoptes/internal/server/api"
-	"panoptes/internal/server/config"
-	"panoptes/internal/server/store"
-	"panoptes/internal/server/web"
+	"github.com/DonSosiska/panoptes/internal/server/api"
+	"github.com/DonSosiska/panoptes/internal/server/config"
+	"github.com/DonSosiska/panoptes/internal/server/store"
+	"github.com/DonSosiska/panoptes/internal/server/web"
 )
 
 func testLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"panoptes/internal/server/store"
+	"github.com/DonSosiska/panoptes/internal/server/store"
 )
 
 func runCLI(t *testing.T, stdin string, args ...string) (int, string, string) {
