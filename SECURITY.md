@@ -23,6 +23,9 @@ understand it. We aim to acknowledge reports within a few working days.
 
 ## Trust model
 
+The full threat model, the operator hardening checklist and the known limitations are in
+[docs/security-model.md](docs/security-model.md). Summary:
+
 - The agent is split in two processes: a root collector with no network (it parses untrusted local
   files and serves the results on a unix socket, peer-checked with `SO_PEERCRED`) and an unprivileged
   sender (user `panoptes`) that is the only process talking to the server. Only `-mode all`
@@ -43,7 +46,7 @@ understand it. We aim to acknowledge reports within a few working days.
 - Enrollment tokens and agent keys are stored on the server only as SHA-256 hashes.
 - LLM output is never trusted. An LLM-drafted rule is inert until a human reviews and approves it.
 - Releases are signed with keyless Sigstore (cosign), ship SBOMs, and have build provenance
-  attestations. See README.md, "Verifying releases".
+  attestations. See [docs/installation.md](docs/installation.md#verifying-releases).
 - Build and CI inputs are pinned: GitHub Actions to commit SHAs, and base images to digests.
 
 ## Release integrity
@@ -54,4 +57,9 @@ reviewer must approve each release. Tags must point at a commit on `main`; the w
 refuses any other tag. Artifacts are signed keyless with Sigstore, and the signing identity
 is the exact workflow path and tag. The Linux packages (`.deb`, `.rpm`) are not apt- or
 rpm-signed, so verify `checksums.txt` against its signature and then check the package
-checksums. See README.md, "Verifying releases", for the exact commands.
+checksums. See [docs/installation.md](docs/installation.md#verifying-releases) for the exact commands.
+
+## License
+
+Panoptes is source-available under the PolyForm Noncommercial License 1.0.0 (see [LICENSE](LICENSE)).
+Reporting a vulnerability does not change the license terms.
