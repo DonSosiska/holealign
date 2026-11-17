@@ -1,219 +1,239 @@
 # Panoptes
 
-Panoptes finds vulnerabilities on Linux hosts and checks whether they are actually
-exploitable given the host's real configuration. A small agent on each host pushes
-facts and a software inventory to a central server; the server matches vulnerabilities
-with Grype, evaluates rules against the facts, and sends alerts to Matrix/Element.
+[![ci](https://github.com/DonSosiska/panoptes/actions/workflows/ci.yml/badge.svg)](https://github.com/DonSosiska/panoptes/actions/workflows/ci.yml)
+License: [PolyForm Noncommercial 1.0.0](LICENSE) (source-available, not open source)
 
-Design goals: very simple install and configuration, and low cost (one SQLite file,
-no external database, optional LLM).
+English | [Українська](README.uk.md)
+
+Panoptes finds vulnerabilities on Linux hosts and decides whether each one is **actually
+exploitable given that host's configuration**. Agents on your hosts push a software inventory
+(SBOM) and a set of configuration facts to a central server. The server matches vulnerabilities
+with Grype (including CISA KEV and EPSS data), evaluates CEL rules against the facts, and alerts
+Matrix/Element rooms chosen by host labels. Rules that do not exist yet can be drafted by an LLM;
+a draft stays inert until a human reviews it. It is one binary plus one SQLite file, with no
+external database.
 
 ## How it differs from version-only scanners
 
-A version-only scanner flags every OpenSSH build in an affected range. Panoptes also
-reads the host. regreSSHion (CVE-2024-6387) is exploitable only on glibc systems where
-`LoginGraceTime` is not `0`. On a musl host, or with `LoginGraceTime 0`, the finding is
-recorded as not exploitable and does not page anyone.
+A version-only scanner flags every OpenSSH build in an affected range. Panoptes also reads the
+host. regreSSHion (CVE-2024-6387) is exploitable only on glibc systems where `LoginGraceTime` is
+not `0`. On a musl host, or with `LoginGraceTime 0`, the finding is recorded as
+`affected_not_exploitable` and nobody gets paged. When Panoptes cannot tell (no rule, or a fact is
+missing) the verdict is `conditions_unknown`, never "safe".
+
+| Verdict | Meaning |
+|---|---|
+| `exploitable` | Package is vulnerable and the rule's conditions hold on this host. Alerts. |
+| `affected_not_exploitable` | Package is vulnerable, conditions are not met or are mitigated. |
+| `conditions_unknown` | No rule, or a required fact is missing, or the rule failed to evaluate. |
+| `not_affected` | A rule says the package is not affected at all. |
+| `resolved` | The finding disappeared (package upgraded or removed). |
+
+## Features
+
+- Privilege-separated agent: a root collector with no network access, and an unprivileged sender
+  that is the only process talking to the server.
+- Host and container-image inventory (Syft), OS and language packages.
+- Vulnerability matching with Grype; KEV and EPSS shown and used for ordering and alerts.
+- Configuration facts: sshd, nginx, Apache, PHP, kernel sysctl and modules, listening sockets,
+  services, Docker containers, and bounded `file.match` reads. Catalog: [docs/rules.md](docs/rules.md#fact-catalog).
+- CEL rules, eight shipped. Verdicts and the draft guard: [docs/rules.md](docs/rules.md).
+- Optional LLM rule drafting (Anthropic or any OpenAI-compatible endpoint such as Ollama):
+  [docs/llm.md](docs/llm.md).
+- Matrix/Element alerts routed by host label, with dedup, grouping and burst summaries:
+  [docs/notifications.md](docs/notifications.md).
+- Admin web UI: hosts, findings, rule review, enrollment tokens, Matrix routes, users.
+- Health alerts: silent agents, stale vulnerability feed, failing pipeline.
+- Agentless mode (server monitors its own host): [docs/installation.md](docs/installation.md#agentless-mode).
+- Signed releases: cosign signatures, SBOMs, build provenance.
 
 ## Architecture
 
 ```
-  Linux host (agent, root)                    Panoptes server
- +--------------------------+   HTTPS, push   +---------------------------------+
- | panoptes-agent           | --------------> | API -> SQLite                   |
- |  sshd -T, nginx -T,      |  facts, labels, |  Grype: packages -> CVEs        |
- |  sysctl, services,       |  inventory      |  rules (CEL): CVE + facts       |
- |  packages, containers    |                 |   -> exploitable / not / unknown|
- +--------------------------+                 |  Matrix alerts   web UI         |
-                                              |  LLM drafts rules (optional)    |
-                                              +---------------------------------+
+  Monitored Linux host (any number)                Panoptes server
+ +-------------------------------------+        +----------------------------------------+
+ | panoptes-collector (root, NO network)|        | agent API  :8080  /api/v1/*  /healthz  |
+ |   sshd -T, nginx -T, sysctl, /proc, |        |   enroll, check-in, inventory          |
+ |   Syft scan, file.match             |        |                                        |
+ |        |  unix socket               | HTTPS  | SQLite + Grype DB      (data_dir)      |
+ | panoptes-agent sender (user         |------->| pipeline: Grype -> CEL rules -> verdict|
+ |   "panoptes", the only one with     | push,  |                                        |
+ |   network access)                   | out-   | admin UI   :8081  (loopback default)   |
+ +-------------------------------------+ bound  |        ^  SSH tunnel / VPN / proxy     |
+   no inbound connection to the host     only   |        |                               |
+                                                | Matrix notifier ---> Matrix rooms      |
+                                                | LLM drafter (optional) ---> LLM API    |
+                                                +----------------------------------------+
 ```
 
-The agent only connects out to the server. There is no inbound connection to the host.
+Details: [docs/architecture.md](docs/architecture.md).
 
-## Quickstart (about 5 minutes)
+## Requirements
 
-You need Docker with Compose, and a Linux host with systemd for the agent.
+- Monitored hosts: Linux on amd64 or arm64 with systemd (for the installer and packages), and an
+  OS package database that Syft and Grype understand (dpkg, rpm, apk).
+- Server: Docker with Compose (container image), or a Linux host with systemd (`.deb`, `.rpm` or
+  binary). About 4 GiB of memory is allotted to it in the shipped Compose file and systemd unit,
+  and the first start downloads the Grype database (about 100 MB).
+- Optional: a Matrix homeserver and bot account for alerts; an LLM API for rule drafting.
+- Building from source: Go 1.27.4 (see `go.mod`). See [docs/development.md](docs/development.md).
 
-1. **Start the server.**
+## Quick start
 
-   ```sh
-   cp deploy/server.env.example deploy/.env
-   # edit deploy/.env: set PANOPTES_ADMIN_PASSWORD (at least 8 characters)
-   cd deploy
-   docker compose up -d --build
-   ```
+About five minutes. For a real deployment read [docs/installation.md](docs/installation.md) and the
+[hardening checklist](docs/security-model.md#operator-hardening-checklist) first.
 
-   The admin user `admin` is created on first start from `PANOPTES_ADMIN_PASSWORD`.
+### 1. Start the server
 
-2. **Create an enrollment token** for the first agent. It is printed once.
+```sh
+git clone https://github.com/DonSosiska/panoptes.git
+cd panoptes/deploy
+cp server.env.example .env
+# edit .env: set PANOPTES_ADMIN_PASSWORD (at least 12 characters)
+docker compose up -d --build
+docker compose logs -f panoptes-server      # wait for "panoptes-server listening"
+```
 
-   ```sh
-   docker compose exec panoptes-server panoptes-server token create first
-   ```
+The user `admin` is created on first start from `PANOPTES_ADMIN_PASSWORD` (or from the file named by
+`PANOPTES_ADMIN_PASSWORD_FILE`). The agent API listens on `:8080`, the admin UI on
+`127.0.0.1:8081` only. Agents require `https://`, so put TLS in front of port 8080 (a reverse
+proxy, or native `tls_cert`/`tls_key`): [TLS options](docs/installation.md#tls).
 
-3. **Install the agent** on a host. Use a URL the host can reach, for example
-   `https://panoptes.example.com` or `http://192.0.2.10:8080`.
+### 2. Create an enrollment token
 
-   ```sh
-   curl -fsSL https://raw.githubusercontent.com/DonSosiska/panoptes/main/deploy/install.sh | \
-     sudo sh -s -- --server https://panoptes.example.com --token pt_xxx --labels prod,web
-   ```
+```sh
+docker compose exec panoptes-server panoptes-server token create first -labels prod,web -max-hosts 5 -expires 72h
+```
 
-   The script verifies the keyless cosign signature of `checksums.txt` and then the
-   archive checksum (it aborts when `cosign` is missing unless you pass
-   `--skip-signature-check`; or install the signed `.deb`/`.rpm` instead), installs the
-   binary to `/usr/bin/panoptes-agent`, writes `/etc/panoptes/agent.yaml` (`root:panoptes`, mode 0640),
-   creates the system user `panoptes`, and starts the `panoptes-collector` and `panoptes-agent` services. Logs: `journalctl -u panoptes-agent -f`.
-   For air-gapped hosts, use `--binary PATH`.
+The token (`pt_...`) is printed once. Labels on a token are authoritative: hosts that enroll
+with it get exactly these labels, which select the Matrix rooms for their alerts.
 
-   To trust only your own CA and/or pin the server key, add `--ca-file PATH` and
-   `--server-pin HEX` (repeatable; get the value with `panoptes-agent -print-server-pin`,
-   which validates the chain first, so compare it out of band). See
-   `deploy/agent.yaml.example` (`ca_file`, `server_cert_sha256`, `client_cert`/`client_key` for mTLS).
+### 3. Install the agent on a host
 
-4. **Open the web UI** at `http://localhost:8081` (the admin listener, bound to loopback; or your public URL) and log in as
-   `admin`. The host appears after its first check-in, and findings follow after the
-   first inventory upload.
+On the monitored host, as root. Save the token to a file (not to the command line), download the
+installer, read it, run it:
 
-Set `PANOPTES_PUBLIC_URL` in `deploy/.env` to the URL users will open. It is used in
-links inside alerts.
+```sh
+install -m 0600 /dev/null /root/panoptes.token && vi /root/panoptes.token   # paste the pt_... token
+curl --proto '=https' --tlsv1.2 -fsSLO https://raw.githubusercontent.com/DonSosiska/panoptes/main/deploy/install.sh
+less install.sh
+sh install.sh --server https://panoptes.example.com --token-file /root/panoptes.token
+```
 
-## Matrix setup
+The installer needs [cosign](https://docs.sigstore.dev/cosign/system_config/installation/): it
+verifies the keyless signature of `checksums.txt` against the exact release workflow and tag, then
+the archive checksum, and aborts if cosign is missing (`--skip-signature-check` overrides this;
+not recommended). It installs `/usr/bin/panoptes-agent`, creates the system user `panoptes`,
+writes `/etc/panoptes/agent.yaml` (`root:panoptes`, 0640) and starts `panoptes-collector` and
+`panoptes-agent`. Check with `journalctl -u panoptes-agent -f`. Private CA, server key pinning,
+air-gapped hosts and every other flag: [docs/installation.md](docs/installation.md#agents).
 
-1. Create a bot user on your homeserver, for example `@panoptes:matrix.example.com`.
-2. Get an access token for the bot. In Element, log in as the bot and open
-   Settings, then Help & About, then Access Token. Or call the login API with
-   `POST /_matrix/client/v3/login`.
-3. Invite the bot to each alert room and make sure it joins.
-4. In `deploy/.env`, set `PANOPTES_MATRIX_TOKEN` to the token and
-   `PANOPTES_MATRIX_HOMESERVER` to the homeserver URL. Restart the server.
-5. In the web UI, under Settings, set the default rooms and the label-to-room routes.
-   For example, hosts labelled `prod` go to `#prod-alerts`. Hosts that match no route
-   use the default rooms. The same settings can also be made in `server.yaml`.
+For a throwaway test without TLS only, use `--server http://SERVER:8080 --allow-insecure-http`.
+Agent keys then cross the network in cleartext.
 
-## LLM setup (optional)
+### 4. Open the admin UI
 
-The LLM only drafts rules. It never decides exploitability on its own. Set the provider
-in `deploy/.env`:
+The admin listener is bound to loopback on purpose. Reach it through an SSH tunnel:
 
-| Setting | Value |
-|---|---|
-| none (default) | `PANOPTES_LLM_PROVIDER=none`. No drafting. Only shipped and hand-written rules apply. |
-| Anthropic | `PANOPTES_LLM_PROVIDER=anthropic`, `PANOPTES_LLM_API_KEY=...`, optionally `PANOPTES_LLM_MODEL`. |
-| OpenAI-compatible (for example Ollama) | `PANOPTES_LLM_PROVIDER=openai-compatible`, `PANOPTES_LLM_BASE_URL=http://ollama:11434/v1`, `PANOPTES_LLM_MODEL=llama3.1`. Set the API key only if your endpoint needs one. |
+```sh
+ssh -L 8081:127.0.0.1:8081 you@panoptes-docker-host
+```
 
-When a High or Critical finding, or a KEV finding, has no rule, Panoptes asks the LLM
-for a draft. The draft is applied right away but flagged as unapproved until someone
-approves it in the web UI. `PANOPTES_LLM_DAILY_LIMIT` (`llm.daily_limit`) caps the calls
-per day.
+then open <http://127.0.0.1:8081> and log in as `admin`. The host appears after its first
+check-in; findings follow after the first inventory upload (a few minutes, longer on the first
+scan). Set `PANOPTES_PUBLIC_URL` in `.env` to the URL people will actually open: it is used for
+links in alerts.
 
-## Writing rules
+Next: [Matrix alerts](docs/notifications.md), [LLM drafting](docs/llm.md) (optional),
+[operations](docs/operations.md).
 
-Rules are YAML files. Shipped rules are in `rules/`; the server reads them from
-`/usr/share/panoptes/rules` in packages and images. The full format, the CEL
-environment and the verdict algorithm are in [docs/contracts.md §4](docs/contracts.md).
+## Agentless quick start
 
-A rule for CVE-2024-6387 (`rules/CVE-2024-6387.yaml`, abridged):
+New: agentless mode. The server monitors its own host through a built-in local agent, so no
+separate agent install or enrollment is needed. Disabled by default.
+
+On a host that runs the server from the `.deb`/`.rpm` package or as a binary with systemd:
+
+```sh
+sudo sh install.sh --collector-only      # installs only the root collector (see installation docs)
+```
+
+then in `/etc/panoptes/server.yaml`:
 
 ```yaml
-id: CVE-2024-6387
-vulns: [CVE-2024-6387]
-packages:
-  - {name: openssh-server, type: deb}
-  - {name: openssh-server, type: rpm}
-facts: [os.libc, sshd.config]
-exploitable_if: >
-  facts["os.libc"] == "glibc" &&
-  facts["sshd.config"].?["logingracetime"].orValue("120") != "0"
-explanation: "Exploitable only on glibc systems while LoginGraceTime is non-zero."
-fix:
-  upgrade: "Upgrade OpenSSH to the distribution's patched package and restart sshd."
-  mitigation: "Set 'LoginGraceTime 0' in /etc/ssh/sshd_config and reload sshd."
-status: reviewed
+local_agent:
+  enabled: true
+  source: collector        # collector | inprocess | auto
+  labels: [server]
 ```
 
-Facts come from the agent (`os.libc`, `sshd.config`, `nginx.directives`, `kernel.sysctl`,
-and more, listed in the contract). A fact that is missing on a host means the verdict is
-`conditions_unknown`, not `not exploitable`.
+and add `SupplementaryGroups=panoptes` to the server unit (a drop-in:
+`systemctl edit panoptes-server`), then `systemctl restart panoptes-server`. In Docker,
+`source: inprocess` scans the container, not the host: mount the host collector socket into the
+container instead. Details, all `local_agent.*` keys and caveats:
+[docs/installation.md](docs/installation.md#agentless-mode).
 
-## Security notes
+## Documentation
 
-- The agent never runs commands sent by the server. Every command the agent runs is
-  hard-coded as a fixed argv, with no shell.
-- The agent runs as root because it has to read sshd, nginx, package and container
-  state. Its systemd unit is hardened, and it uses CPU, memory and I/O limits.
-- `file.match` (reading config files for a rule) is limited to `/etc/`, `/opt/*/conf/`,
-  `/opt/*/etc/` and `/usr/local/etc/`. Secret-looking values such as passwords and
-  tokens are masked before they leave the host.
-- The server stores only SHA-256 hashes of enrollment tokens and agent keys.
-- Put the server behind HTTPS (a reverse proxy or a load balancer). Agents send their
-  keys with every request.
+| Document | Contents |
+|---|---|
+| [docs/architecture.md](docs/architecture.md) | Components, data flow, privilege separation, trust boundaries, storage |
+| [docs/installation.md](docs/installation.md) | Server and agent install, TLS, every `install.sh` flag, verifying releases, upgrades, agentless mode |
+| [docs/configuration.md](docs/configuration.md) | Every server and agent config key, with defaults and environment overrides |
+| [docs/rules.md](docs/rules.md) | Verdicts, writing rules, CEL environment, fact catalog, `file.match` policy, shipped rules, draft review |
+| [docs/llm.md](docs/llm.md) | LLM providers, cost control, what is sent, prompt-injection defenses |
+| [docs/notifications.md](docs/notifications.md) | Matrix setup, routing, message types, dedup, delivery problems |
+| [docs/operations.md](docs/operations.md) | CLI, backup and restore, retention, health alerts, air-gapped feeds, troubleshooting |
+| [docs/security-model.md](docs/security-model.md) | Threat model, mitigations, hardening checklist, known limitations |
+| [docs/development.md](docs/development.md) | Repository layout, building, tests, release process |
+| [docs/contracts.md](docs/contracts.md) | Protocol and interface contracts (source of truth) |
+| [SECURITY.md](SECURITY.md) | Reporting vulnerabilities, supported versions |
+| [CONTRIBUTING.md](CONTRIBUTING.md), [CHANGELOG.md](CHANGELOG.md) | Contributing, release notes |
 
-## Packages and building from source
+## Security summary
 
-- Release archives, `.deb` and `.rpm` packages, and the server image are published
-  from tags `v*` (see `.goreleaser.yaml`). Packages install the service units but
-  do not start them. Set `/etc/panoptes/agent.yaml` or `/etc/panoptes/server.env`
-  first, then `systemctl enable --now panoptes-collector panoptes-agent` (or `panoptes-server`). The
-  agent package creates the system user `panoptes` and makes `agent.yaml` `root:panoptes` 0640.
-- `make build` builds the binaries into `bin/`. `make docker` builds the server image
-  from source. `make release-snapshot` runs a local goreleaser dry run.
-- Configuration reference: [deploy/agent.yaml.example](deploy/agent.yaml.example),
-  [deploy/server.yaml.example](deploy/server.yaml.example),
-  [deploy/server.env.example](deploy/server.env.example).
+- **No remote commands.** The agent never executes anything the server sends. Every command is a
+  hard-coded argv without a shell; the server can only ask for `file.match` reads.
+- **Privilege separation.** The root collector has no network; the sender with the network is not
+  root. A parser bug cannot reach the network.
+- **The agent does not trust the server.** TLS 1.2+, chain always verified, optional private CA
+  only (`ca_file`), SPKI pinning and mTLS.
+- **Bounded file reads.** `file.match` only reads world-readable files under a few configuration
+  roots, behind a denylist, and masks secrets before anything leaves the host.
+- **Hashed secrets, rate limits, re-enrollment protection.** Enrollment tokens and agent keys are
+  stored as SHA-256 hashes; an enrolled host cannot be silently re-enrolled.
+- **LLM output is inert until a human approves it.** A draft can never lower a verdict, and
+  approving needs the reviewer's password.
+- **Signed releases.** Cosign keyless signatures with an exact identity, SBOMs, provenance.
 
-## Privilege separation
-
-The agent runs as two services from one binary. `panoptes-collector` runs as root, has no network
-(`PrivateNetwork=yes`, `IPAddressDeny=any`, unix sockets only) and is the only process that parses
-untrusted local files (configs, package databases, images). It serves the results on
-`/run/panoptes/collector.sock`. `panoptes-agent` is the sender: it runs as the unprivileged user
-`panoptes`, holds the agent key, and is the only process that talks to the server. A bug in a parser
-cannot reach the network, and a compromised sender is not root. `-mode all` (the default, used by
-`-once`, containers and the e2e tests) keeps the single-process behaviour. Details:
-[docs/contracts.md](docs/contracts.md) section 2. Test it with `deploy/e2e/split-mode.sh`.
+Full model and operator checklist: [docs/security-model.md](docs/security-model.md). Report
+vulnerabilities privately: [SECURITY.md](SECURITY.md).
 
 ## Verifying releases
 
-Each release publishes `checksums.txt`, a keyless Sigstore signature for it
-(`checksums.txt.sig` and `checksums.txt.pem`), SPDX SBOMs for the archives, and
-GitHub build provenance attestations. Signatures are made by the release workflow
-in this repository, so the certificate identity must match that workflow and the
-exact release tag. Replace
-`X.Y.Z` with the release version (the tag is `vX.Y.Z`). The identity is an exact
-string, not a pattern: a signature from any other workflow or tag is rejected.
+Every release has `checksums.txt` with a keyless cosign signature, SPDX SBOMs and GitHub build
+provenance. `install.sh` checks the signature for you. To check by hand (cosign, `gh attestation`,
+server image), see [docs/installation.md](docs/installation.md#verifying-releases).
 
-1. Verify the checksum file was signed by the release workflow:
+## Packages and building from source
 
-   ```sh
-   cosign verify-blob --certificate checksums.txt.pem --signature checksums.txt.sig --certificate-identity "https://github.com/DonSosiska/panoptes/.github/workflows/release.yml@refs/tags/vX.Y.Z" --certificate-oidc-issuer https://token.actions.githubusercontent.com checksums.txt
-   ```
-
-2. Check the files you downloaded against the verified checksums. `--ignore-missing`
-   skips the files you did not download:
-
-   ```sh
-   sha256sum -c checksums.txt --ignore-missing
-   ```
-
-3. Verify the server image signature. Use the same exact identity as step 1. Replace
-   `X.Y.Z` with the release version, for example `1.2.3` for tag `v1.2.3`:
-
-   ```sh
-   cosign verify ghcr.io/donsosiska/panoptes-server:X.Y.Z --certificate-identity "https://github.com/DonSosiska/panoptes/.github/workflows/release.yml@refs/tags/vX.Y.Z" --certificate-oidc-issuer https://token.actions.githubusercontent.com
-   ```
-
-4. Verify the build provenance of a downloaded archive, `.deb` or `.rpm` (requires the
-   [GitHub CLI](https://cli.github.com/)):
-
-   ```sh
-   gh attestation verify panoptes-agent_X.Y.Z_linux_amd64.tar.gz --repo DonSosiska/panoptes --signer-workflow DonSosiska/panoptes/.github/workflows/release.yml
-   ```
-
-Linux packages (`.deb`, `.rpm`) are not signed with apt or rpm keys. Verify them
-through `checksums.txt` as in steps 1 and 2.
+Release archives, `.deb`/`.rpm` packages and the server image
+`ghcr.io/donsosiska/panoptes-server` are published from tags `v*`. `make build` builds the
+binaries into `bin/`; `make docker` builds the server image from source. See
+[docs/development.md](docs/development.md).
 
 ## License
 
-Apache License 2.0. See [LICENSE](LICENSE).
+Panoptes is **source-available** under the [PolyForm Noncommercial License
+1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0/) (see [LICENSE](LICENSE)). You
+may use, modify and distribute it for any noncommercial purpose: personal use, research,
+education, hobby projects, and use by charities, educational institutions, public research and
+safety organizations, environmental organizations and government institutions. It is not an OSI
+open-source license. Third-party dependencies keep their own licenses: [NOTICE](NOTICE).
+
+### Commercial use
+
+The PolyForm Noncommercial License does not cover commercial use, for example use by a
+for-profit company for its business. Commercial use requires a separate license from the author.
+Contact the author through [GitHub](https://github.com/DonSosiska/panoptes) (the repository
+owner's profile or a GitHub Discussion; do not post confidential details in a public issue).

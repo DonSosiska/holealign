@@ -94,7 +94,7 @@ nfpms:
     homepage: https://github.com/DonSosiska/panoptes
     maintainer: "Panoptes <noreply@panoptes.invalid>"
     description: "Panoptes agent: sends host facts and package inventory to panoptes-server."
-    license: Apache-2.0
+    license: PolyForm-Noncommercial-1.0.0
     bindir: /usr/bin
     contents:
       - src: deploy/systemd/panoptes-agent.service
@@ -120,7 +120,7 @@ nfpms:
     homepage: https://github.com/DonSosiska/panoptes
     maintainer: "Panoptes <noreply@panoptes.invalid>"
     description: "Panoptes server: matches vulnerabilities, evaluates exploitability, alerts to Matrix."
-    license: Apache-2.0
+    license: PolyForm-Noncommercial-1.0.0
     bindir: /usr/bin
     contents:
       - src: deploy/systemd/panoptes-server.service
