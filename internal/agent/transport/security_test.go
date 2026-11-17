@@ -110,3 +110,36 @@ func TestEnrollSendsPreviousKeyAndHandles409(t *testing.T) {
 		t.Errorf("Authorization = %q, want empty", gotAuth.Load())
 	}
 }
+
+func TestRateLimitedNotRetriedAndTyped(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Retry-After", "1")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+	c := fast(New(srv.URL, "k"))
+	c.AllowInsecureHTTP = true
+	_, err := c.Checkin(context.Background(), model.CheckinRequest{})
+	var rl *RateLimitedError
+	if !errors.As(err, &rl) || rl.RetryAfter != 5*time.Second {
+		t.Fatalf("err = %v (want RateLimitedError clamped to 5s)", err)
+	}
+	if calls != 1 {
+		t.Errorf("calls = %d, 429 must not be retried by the transport", calls)
+	}
+}
+
+func TestParseRetryAfter(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	for in, want := range map[string]time.Duration{
+		"": 30 * time.Second, "1": 5 * time.Second, "90": 90 * time.Second, "100000": 15 * time.Minute,
+		"-4": 5 * time.Second, "junk": 30 * time.Second,
+		now.Add(2 * time.Minute).Format(http.TimeFormat): 2 * time.Minute,
+	} {
+		if got := parseRetryAfter(in, now); got != want {
+			t.Errorf("parseRetryAfter(%q) = %v, want %v", in, got, want)
+		}
+	}
+}

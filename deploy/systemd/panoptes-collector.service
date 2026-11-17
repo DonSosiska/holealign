@@ -1,0 +1,75 @@
+[Unit]
+Description=Panoptes collector (root, no network: reads host state, serves it on a unix socket)
+Documentation=https://github.com/OWNER/panoptes/blob/main/docs/contracts.md
+After=docker.service
+
+[Service]
+Type=simple
+# Root, because it must run sshd -T, nginx -T, read all package databases and docker.sock.
+# It parses untrusted local files (configs, package databases, container images), so it has
+# NO network: it only listens on /run/panoptes/collector.sock. The network-facing half is
+# panoptes-agent.service, which runs unprivileged as user "panoptes".
+User=root
+# Group panoptes + UMask 0007 + RuntimeDirectoryMode 0750: /run/panoptes is root:panoptes 0750 and the
+# socket root:panoptes 0660, so only root and the panoptes user can reach it (the collector also
+# checks SO_PEERCRED).
+Group=panoptes
+ExecStart=/usr/bin/panoptes-agent -mode collector -config /etc/panoptes/agent.yaml
+Restart=always
+RestartSec=10
+
+RuntimeDirectory=panoptes
+RuntimeDirectoryMode=0750
+UMask=0007
+
+# No network at all. PrivateNetwork=yes puts the service in an empty network namespace;
+# IPAddressDeny=any and AF_UNIX only are belt and braces.
+#
+# Consequence: /proc/net/tcp is per network namespace and would be empty here, which would make
+# the `sockets.listening` fact silently wrong. We keep PrivateNetwork and instead read
+# /proc/1/net/* (the host network namespace of PID 1, readable by root with CAP_SYS_PTRACE,
+# which is kept below) in -mode collector. Socket inode -> process mapping still works because
+# inode numbers are global. If /proc/1/net is unreadable the sockets facts are omitted
+# (unknown) rather than reported empty. The alternative (no private namespace, only
+# IPAddressDeny=any and AF_UNIX) also blocks all IP traffic but leaves the process in the host
+# namespace; the empty namespace is the stronger isolation, so we pay for it with /proc/1/net.
+PrivateNetwork=yes
+IPAddressDeny=any
+RestrictAddressFamilies=AF_UNIX
+
+# Hardening that keeps read access to the whole system. The collector needs to read
+# everything, so ProtectHome and ProtectProc are deliberately not set.
+ProtectSystem=strict
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+PrivateDevices=yes
+SystemCallArchitectures=native
+# DAC_READ_SEARCH/DAC_OVERRIDE: read root-only files and open docker.sock;
+# SYS_PTRACE: resolve /proc/*/fd socket inodes of other users' processes and read /proc/1/net.
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_DAC_OVERRIDE CAP_SYS_PTRACE
+AmbientCapabilities=
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @mount
+# NOTE: child processes (sshd -T, nginx -T, php -i, apachectl, systemctl, ...) inherit
+# these limits. Verify on a real host that every collector still works
+# (run `panoptes-agent -print-facts` under `systemd-run` with the same properties).
+
+# Resource limits: scans must not disturb the host.
+Nice=10
+IOSchedulingClass=idle
+CPUQuota=50%
+MemoryMax=1G
+
+[Install]
+WantedBy=multi-user.target

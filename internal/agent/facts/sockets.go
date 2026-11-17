@@ -194,8 +194,12 @@ func protoOrder(p string) int {
 func collectSockets(ctx context.Context, env *Env) model.Facts {
 	var entries []socketEntry
 	readAny := false
+	netDir := env.NetDir
+	if netDir == "" {
+		netDir = "proc/net"
+	}
 	for _, proto := range procNetFiles {
-		data, err := env.readFile("proc/net/" + proto)
+		data, err := env.readFile(netDir + "/" + proto)
 		if err != nil {
 			continue
 		}

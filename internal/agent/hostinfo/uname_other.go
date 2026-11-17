@@ -1,5 +1,5 @@
 //go:build !unix
 
-package runner
+package hostinfo
 
 func kernelRelease() string { return "" }

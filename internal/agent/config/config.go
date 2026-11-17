@@ -2,6 +2,8 @@
 package config
 
 import (
+	"crypto/x509"
+	"encoding/hex"
 	"fmt"
 	"net/url"
 	"os"
@@ -31,6 +33,19 @@ type Config struct {
 	AllowInsecureHTTP    bool          `yaml:"allow_insecure_http"`
 	HostScanTimeout      time.Duration `yaml:"host_scan_timeout"`
 	ImageScanTimeout     time.Duration `yaml:"image_scan_timeout"`
+
+	// Server identity pinning (docs/contracts.md §2).
+	CAFile           string   `yaml:"ca_file"`            // PEM bundle; when set ONLY these roots are trusted
+	ServerCertSHA256 []string `yaml:"server_cert_sha256"` // hex SHA-256 of the leaf SubjectPublicKeyInfo
+	ClientCert       string   `yaml:"client_cert"`        // optional mTLS client certificate (PEM)
+	ClientKey        string   `yaml:"client_key"`         // key for client_cert (PEM)
+
+	// Privilege separation (docs/contracts.md §2): the root collector listens on this
+	// unix socket, the unprivileged sender connects to it. Unused in -mode all.
+	CollectorSocket string `yaml:"collector_socket"`
+	// CollectorUser is the unprivileged user whose uid may use the socket (plus root);
+	// its primary group owns the socket.
+	CollectorUser string `yaml:"collector_user"`
 }
 
 // DefaultExcludePaths are excluded from the host scan unless configured otherwise.
@@ -50,6 +65,8 @@ func Default() Config {
 		ExcludePaths:         DefaultExcludePaths(),
 		HostScanTimeout:      10 * time.Minute,
 		ImageScanTimeout:     5 * time.Minute,
+		CollectorSocket:      "/run/panoptes/collector.sock",
+		CollectorUser:        "panoptes",
 	}
 }
 
@@ -112,6 +129,58 @@ func (c *Config) Validate() error {
 	}
 	if c.StateDir == "" {
 		return fmt.Errorf("config: state_dir must not be empty")
+	}
+	if c.CollectorSocket == "" || !strings.HasPrefix(c.CollectorSocket, "/") {
+		return fmt.Errorf("config: collector_socket must be an absolute path")
+	}
+	pins, err := NormalizePins(c.ServerCertSHA256)
+	if err != nil {
+		return err
+	}
+	c.ServerCertSHA256 = pins
+	if c.CAFile != "" {
+		if err := checkCAFile(c.CAFile); err != nil {
+			return err
+		}
+	}
+	if (c.ClientCert == "") != (c.ClientKey == "") {
+		return fmt.Errorf("config: client_cert and client_key must be set together")
+	}
+	for name, p := range map[string]string{"client_cert": c.ClientCert, "client_key": c.ClientKey} {
+		if p == "" {
+			continue
+		}
+		f, err := os.Open(p)
+		if err != nil {
+			return fmt.Errorf("config: %s: %w", name, err)
+		}
+		f.Close()
+	}
+	return nil
+}
+
+// NormalizePins validates the hex SHA-256 pins and returns them lower-case without
+// separators (a colon-separated openssl style fingerprint is accepted).
+func NormalizePins(in []string) ([]string, error) {
+	out := make([]string, 0, len(in))
+	for _, p := range in {
+		n := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(p), ":", ""))
+		b, err := hex.DecodeString(n)
+		if err != nil || len(b) != 32 {
+			return nil, fmt.Errorf("config: server_cert_sha256 entry %q is not a 64-character hex SHA-256", p)
+		}
+		out = append(out, n)
+	}
+	return out, nil
+}
+
+func checkCAFile(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("config: ca_file: %w", err)
+	}
+	if !x509.NewCertPool().AppendCertsFromPEM(data) {
+		return fmt.Errorf("config: ca_file %s contains no PEM certificate", path)
 	}
 	return nil
 }

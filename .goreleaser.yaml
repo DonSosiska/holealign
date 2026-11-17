@@ -98,13 +98,17 @@ nfpms:
     contents:
       - src: deploy/systemd/panoptes-agent.service
         dst: /usr/lib/systemd/system/panoptes-agent.service
+      - src: deploy/systemd/panoptes-collector.service
+        dst: /usr/lib/systemd/system/panoptes-collector.service
       - src: deploy/agent.yaml.example
         dst: /etc/panoptes/agent.yaml
         type: config|noreplace # keeps an edited file on upgrade
         file_info:
-          mode: 0600 # holds the enroll token
+          mode: 0600 # holds the enroll token; postinstall makes it root:panoptes 0640 (group exists only after preinstall)
     scripts:
-      postinstall: deploy/nfpm/postinstall.sh
+      preinstall: deploy/nfpm/agent-preinstall.sh
+      postinstall: deploy/nfpm/agent-postinstall.sh
+      preremove: deploy/nfpm/agent-preremove.sh
 
   - id: panoptes-server
     ids: [panoptes-server]

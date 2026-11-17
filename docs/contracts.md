@@ -45,7 +45,52 @@ exclude_paths: [/proc, /sys, /dev, /run, /var/lib/docker, /var/lib/containerd, /
                 /mnt, /media, /var/lib/containers, /var/lib/kubelet, /var/lib/lxc, /var/lib/lxd, /home/*/.cache]
 host_scan_timeout: 10m          # per scan; a panic or timeout is an error, not a crash
 image_scan_timeout: 5m
+ca_file: /etc/panoptes/ca.pem   # optional PEM bundle; when set ONLY these roots are trusted (no system roots)
+server_cert_sha256: ["<64 hex>"] # optional; leaf SubjectPublicKeyInfo SHA-256 pins, checked in addition to chain validation
+client_cert: /etc/panoptes/client.pem  # optional mTLS client certificate; client_key must be set with it
+client_key: /etc/panoptes/client.key
+collector_socket: /run/panoptes/collector.sock  # privilege separation (below); unused in -mode all
+collector_user: panoptes        # uid allowed on the socket besides root; its group owns the socket
 ```
+
+### Process modes and the collector socket
+
+One binary, `-mode` flag: `all` (default; one process doing everything, used by `-once`, containers and e2e),
+`collector` and `sender`. The process that parses untrusted local files as root has no network, and the process
+that talks to the network is not root.
+
+- **collector** (root, `panoptes-collector.service`, `PrivateNetwork=yes`, `IPAddressDeny=any`,
+  `RestrictAddressFamilies=AF_UNIX`): listens on `collector_socket` (`/run/panoptes/collector.sock`; directory
+  `0750 root:panoptes`, socket `0660 root:panoptes`). It applies every collection policy itself (file.match allow/deny
+  lists and budgets, binary trust checks, scan timeouts) and runs at most one inventory scan per 10 minutes whoever
+  asks (later requests get the previous result). Its code lives in packages that do not import the HTTP transport
+  (`go list -deps` test). In a private network namespace `/proc/net` is empty, so `-mode collector` reads
+  `sockets.listening` from `/proc/1/net/*` (the host namespace of PID 1); if that is unreadable the sockets facts are
+  omitted (unknown), never reported empty.
+- **sender** (user `panoptes`, `panoptes-agent.service`, empty capability set, `NoNewPrivileges`): the whole runner
+  (enroll, check-in loop, clamping, backoff, credentials in `state_dir` owned by `panoptes`), but facts, inventory,
+  OS info and change detection come from the collector. `/etc/panoptes/agent.yaml` is `root:panoptes 0640`.
+- Socket protocol: one request per connection, one JSON line of at most 64 KiB, answered by one JSON document
+  (gzip-compressed for `inventory`; errors are plain JSON). `SO_PEERCRED` uid must be 0 or the `collector_user`'s uid.
+
+| Request | Response |
+|---|---|
+| `{"op":"facts","fact_requests":[...]}` | `{"ok":true,"facts":{...}}` |
+| `{"op":"inventory","gzip":true}` | `{"ok":true,"inventory":<InventoryPayload>}` |
+| `{"op":"osinfo"}` | `{"ok":true,"os":<OSInfo>,"machine_id":"<sha256 hex>"}` |
+| `{"op":"changed"}` | `{"ok":true,"changed":<bool>}` |
+| anything else / too large / bad JSON | `{"ok":false,"error":"..."}` |
+
+`panoptes-agent -print-facts` / `-print-inventory` / `-once` always run in-process.
+
+Server identity: TLS 1.2+, chain and host name are always verified (`InsecureSkipVerify` is never set). With `ca_file`
+only that bundle is trusted. With `server_cert_sha256` the presented leaf's SPKI SHA-256 must be in the list (colons
+and upper case are accepted); if `ca_file` is absent the chain is still validated against the system roots. A mismatch
+fails the handshake and logs the presented hash so an operator can pin it. Config validation rejects non-hex or
+wrong-length pins, an unreadable or certificate-less `ca_file`, and `client_cert` without `client_key`.
+`panoptes-agent -print-server-pin` connects to `server_url`, validates the chain normally and prints the leaf SPKI
+hash; it is a convenience, not trust-on-first-use. `deploy/install.sh` takes `--ca-file PATH` and `--server-pin HEX`
+(repeatable) and verifies the release with cosign (`checksums.txt.sig`/`.pem`) before trusting any checksum.
 
 Agent hardening rules (not trusting the server): `next_checkin_seconds` is clamped to 60 s – 1 h;
 `want_inventory` is honoured at most once per 10 min; after a failed scan the next attempt is delayed
@@ -53,6 +98,11 @@ Agent hardening rules (not trusting the server): `next_checkin_seconds` is clamp
 `agent.inventory_error`. On enrollment the agent sends a stored previous `agent_key` as
 `Authorization: Bearer`; on `409 Conflict` it logs an ERROR (operator: `panoptes-server host allow-reenroll
 <hostname>`) and retries hourly. `machine_id` is `hex(sha256("panoptes-machine-id:" + /etc/machine-id))`.
+A `429` is not retried inside the transport backoff loop: it surfaces as `*transport.RateLimitedError`
+(`Retry-After` seconds or HTTP date, default 30 s, clamped to 5 s - 15 min). The run loop logs it at INFO, does not treat
+it as a check-in or scan failure, keeps a scanned-but-rejected inventory pending (the same payload/hash is re-sent next
+cycle, no rescan) and schedules the next cycle at `max(normal next, Retry-After)`. With `-once`, a `Retry-After` of at
+most 60 s is waited out once; a longer one exits non-zero with a clear message.
 Helper binaries are looked up in `/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/sbin:/usr/local/bin` and only run
 when file and directory are root-owned and not group/world-writable.
 

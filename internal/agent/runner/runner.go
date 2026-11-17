@@ -11,8 +11,7 @@ import (
 	"time"
 
 	"panoptes/internal/agent/config"
-	"panoptes/internal/agent/facts"
-	"panoptes/internal/agent/inventory"
+	"panoptes/internal/agent/hostdata"
 	"panoptes/internal/agent/transport"
 	"panoptes/internal/model"
 )
@@ -67,19 +66,17 @@ type Runner struct {
 	log     *slog.Logger
 	client  *transport.Client
 
-	// injectable for tests
-	collectFacts func(ctx context.Context, reqs []model.FactRequest) model.Facts
-	scan         func(ctx context.Context, cfg config.Config) (model.InventoryPayload, error)
-	detector     interface {
-		Changed(ctx context.Context) bool
-		Reset(ctx context.Context)
-	}
+	// src provides facts, inventory, OS info and change detection: in-process (mode all)
+	// or from the root collector over its unix socket (mode sender).
+	src hostdata.Source
 
 	creds        transport.Credentials
 	lastFacts    model.Facts // last snapshot acknowledged by the server; nil = never sent
 	wantFull     bool
 	factRequests []model.FactRequest
 	invHash      string
+	sleep        func(context.Context, time.Duration) bool // test hook for -once waits
+	pendingInv   *model.InventoryPayload                   // scanned but not yet accepted (rate limited)
 	lastInvAt    time.Time
 
 	lastWantInv time.Time // last time a server WantInventory request was honoured
@@ -90,24 +87,37 @@ type Runner struct {
 }
 
 // New creates a runner.
-func New(cfg config.Config, version string, log *slog.Logger) *Runner {
+// src nil selects the in-process source.
+func New(cfg config.Config, version string, log *slog.Logger, src hostdata.Source) (*Runner, error) {
+	if src == nil {
+		src = hostdata.NewLocal(cfg, false)
+	}
 	if log == nil {
 		log = slog.Default()
 	}
-	client := transport.New(cfg.ServerURL, "")
+	client, err := transport.NewWithTLS(cfg.ServerURL, "", transport.TLSOptions{
+		CAFile:     cfg.CAFile,
+		PinsSHA256: cfg.ServerCertSHA256,
+		ClientCert: cfg.ClientCert,
+		ClientKey:  cfg.ClientKey,
+	})
+	if err != nil {
+		return nil, err
+	}
 	client.AllowInsecureHTTP = cfg.AllowInsecureHTTP
 	if cfg.AllowInsecureHTTP && strings.HasPrefix(cfg.ServerURL, "http://") {
 		log.Warn("allow_insecure_http is set: traffic including the agent key is NOT encrypted")
 	}
-	return &Runner{
-		cfg:          cfg,
-		version:      version,
-		log:          log,
-		client:       client,
-		collectFacts: facts.Collect,
-		scan:         inventory.Scan,
-		detector:     inventory.NewChangeDetector(cfg),
+	if cfg.CAFile != "" || len(cfg.ServerCertSHA256) > 0 {
+		log.Info("server identity checks enabled", "ca_file", cfg.CAFile != "", "pins", len(cfg.ServerCertSHA256), "mtls", cfg.ClientCert != "")
 	}
+	return &Runner{
+		cfg:     cfg,
+		version: version,
+		log:     log,
+		client:  client,
+		src:     src,
+	}, nil
 }
 
 // Run loops until ctx is cancelled.
@@ -117,10 +127,16 @@ func (r *Runner) Run(ctx context.Context) error {
 		if err == nil {
 			break
 		}
-		if !errors.Is(err, transport.ErrEnrollConflict) {
+		wait := unauthorizedRetry
+		var rl *transport.RateLimitedError
+		switch {
+		case errors.As(err, &rl):
+			r.log.Info("rate limited by server, retrying", "retry_in", rl.RetryAfter.String())
+			wait = rl.RetryAfter
+		case !errors.Is(err, transport.ErrEnrollConflict):
 			return err
 		}
-		if !sleepCtx(ctx, unauthorizedRetry) {
+		if !sleepCtx(ctx, wait) {
 			return nil
 		}
 	}
@@ -140,9 +156,37 @@ func (r *Runner) Run(ctx context.Context) error {
 }
 
 // RunOnce enrolls if needed, performs one check-in and uploads the inventory, then returns.
+//
+// When the server answers 429 with a Retry-After of at most 60 s the call waits and
+// retries once; a longer wait fails with a clear message.
 func (r *Runner) RunOnce(ctx context.Context) error {
-	if err := r.ensureEnrolled(ctx); err != nil {
-		return err
+	err := r.runOnce(ctx)
+	var rl *transport.RateLimitedError
+	if errors.As(err, &rl) && rl.RetryAfter <= onceMaxWait {
+		r.log.Info("rate limited by server, waiting before one retry", "retry_in", rl.RetryAfter.String())
+		sleep := r.sleep
+		if sleep == nil {
+			sleep = sleepCtx
+		}
+		if !sleep(ctx, rl.RetryAfter) {
+			return ctx.Err()
+		}
+		err = r.runOnce(ctx)
+	}
+	if errors.As(err, &rl) {
+		return fmt.Errorf("rate limited by the server; retry in %s: %w", rl.RetryAfter.Round(time.Second), err)
+	}
+	return err
+}
+
+// onceMaxWait is the longest Retry-After that -once waits out.
+const onceMaxWait = 60 * time.Second
+
+func (r *Runner) runOnce(ctx context.Context) error {
+	if r.creds.AgentKey == "" {
+		if err := r.ensureEnrolled(ctx); err != nil {
+			return err
+		}
 	}
 	_, err := r.checkinAndUpload(ctx, true)
 	return err
@@ -157,6 +201,12 @@ func (r *Runner) cycle(ctx context.Context, forceInventory bool) time.Duration {
 		}
 		if errors.Is(err, transport.ErrEnrollConflict) {
 			return unauthorizedRetry
+		}
+		var rl *transport.RateLimitedError
+		if errors.As(err, &rl) {
+			// not a failure: nothing backs off, a pending inventory is re-sent next cycle
+			r.log.Info("rate limited by server, retrying", "retry_in", rl.RetryAfter.String())
+			return max(delay, rl.RetryAfter)
 		}
 		if errors.Is(err, transport.ErrUnauthorized) {
 			r.log.Error("unauthorized and cannot re-enroll; retrying later", "retry_in", unauthorizedRetry)
@@ -197,6 +247,10 @@ func (r *Runner) enroll(ctx context.Context) error {
 		return errors.New("not enrolled and no enroll_token configured")
 	}
 	host, _ := os.Hostname()
+	info, err := r.src.Info(ctx)
+	if err != nil {
+		return fmt.Errorf("host info: %w", err)
+	}
 	if r.client.Key == "" {
 		// keep proving identity with a previous key if the state dir still has one
 		if old, err := transport.LoadCredentials(r.cfg.StateDir); err == nil {
@@ -206,7 +260,7 @@ func (r *Runner) enroll(ctx context.Context) error {
 	resp, err := r.client.Enroll(ctx, model.EnrollRequest{
 		Token:        r.cfg.EnrollToken,
 		Hostname:     host,
-		MachineID:    MachineID(),
+		MachineID:    info.MachineID,
 		Labels:       r.cfg.Labels,
 		AgentVersion: r.version,
 	})
@@ -229,7 +283,15 @@ func (r *Runner) enroll(ctx context.Context) error {
 }
 
 func (r *Runner) checkinAndUpload(ctx context.Context, forceInventory bool) (time.Duration, error) {
-	cur := NormalizeFacts(r.collectFacts(ctx, r.factRequests))
+	rawFacts, err := r.src.Facts(ctx, r.factRequests)
+	if err != nil {
+		return r.interval(), fmt.Errorf("collect facts: %w", err)
+	}
+	info, err := r.src.Info(ctx)
+	if err != nil {
+		return r.interval(), fmt.Errorf("host info: %w", err)
+	}
+	cur := NormalizeFacts(rawFacts)
 	if r.lastScanErr != "" {
 		cur[inventoryErrKey] = r.lastScanErr
 	}
@@ -240,7 +302,7 @@ func (r *Runner) checkinAndUpload(ctx context.Context, forceInventory bool) (tim
 			Hostname:      host,
 			Labels:        r.cfg.Labels,
 			AgentVersion:  r.version,
-			OS:            CollectOSInfo(),
+			OS:            info.OS,
 			InventoryHash: r.invHash,
 		}
 		if r.lastFacts == nil || r.wantFull {
@@ -268,8 +330,14 @@ func (r *Runner) checkinAndUpload(ctx context.Context, forceInventory bool) (tim
 	r.log.Debug("checkin ok", "facts", len(cur), "want_inventory", resp.WantInventory, "fact_requests", len(resp.FactRequests))
 	next := clampNextCheckin(resp.NextCheckinSeconds, r.interval())
 
-	changed := r.detector.Changed(ctx)
+	changed, cerr := r.src.Changed(ctx)
+	if cerr != nil {
+		r.log.Warn("change detection failed", "err", cerr)
+	}
 	due := r.lastInvAt.IsZero() || time.Since(r.lastInvAt) >= r.cfg.InventoryInterval
+	if r.pendingInv != nil {
+		return next, r.sendInventory(ctx, r.pendingInv, time.Now())
+	}
 	if !forceInventory && time.Now().Before(r.scanRetryAt) {
 		return next, nil // backing off after repeated scan failures
 	}
@@ -311,7 +379,7 @@ func (r *Runner) interval() time.Duration { return r.cfg.CheckinInterval }
 func (r *Runner) uploadInventory(ctx context.Context, reason string) error {
 	r.log.Info("scanning inventory", "reason", reason)
 	start := time.Now()
-	payload, err := r.scan(ctx, r.cfg)
+	payload, err := r.src.Inventory(ctx)
 	if err != nil {
 		if ctx.Err() == nil {
 			r.scanFailures++
@@ -325,12 +393,22 @@ func (r *Runner) uploadInventory(ctx context.Context, reason string) error {
 		return fmt.Errorf("inventory scan: %w", err)
 	}
 	r.scanFailures, r.scanRetryAt, r.lastScanErr = 0, time.Time{}, ""
-	if err := r.client.UploadInventory(ctx, payload); err != nil {
+	return r.sendInventory(ctx, &payload, start)
+}
+
+func (r *Runner) sendInventory(ctx context.Context, payload *model.InventoryPayload, start time.Time) error {
+	if err := r.client.UploadInventory(ctx, *payload); err != nil {
+		var rl *transport.RateLimitedError
+		if errors.As(err, &rl) {
+			r.pendingInv = payload // same payload (hash) is uploaded on the next cycle
+		} else {
+			r.pendingInv = nil
+		}
 		return fmt.Errorf("inventory upload: %w", err)
 	}
+	r.pendingInv = nil
 	r.invHash = payload.Hash
 	r.lastInvAt = time.Now()
-	r.detector.Reset(ctx)
 	r.log.Info("inventory uploaded", "targets", len(payload.Targets), "hash", payload.Hash, "took", time.Since(start).Round(time.Millisecond))
 	return nil
 }

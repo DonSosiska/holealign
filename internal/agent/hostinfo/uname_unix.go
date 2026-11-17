@@ -1,6 +1,6 @@
 //go:build unix
 
-package runner
+package hostinfo
 
 import "golang.org/x/sys/unix"
 

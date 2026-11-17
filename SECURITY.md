@@ -23,10 +23,17 @@ understand it. We aim to acknowledge reports within a few working days.
 
 ## Trust model
 
-- The agent runs as root on each host, so it treats the server as untrusted input.
+- The agent is split in two processes: a root collector with no network (it parses untrusted local
+  files and serves the results on a unix socket, peer-checked with `SO_PEERCRED`) and an unprivileged
+  sender (user `panoptes`) that is the only process talking to the server. Only `-mode all`
+  (containers, `-once`, tests) runs both roles in one root process.
+- The agent runs with root privileges on each host, so it treats the server as untrusted input.
 - The server cannot run commands on a host. The agent runs only fixed argv commands with no shell.
 - `file.match` reads are limited to an allowlist of configuration directories and a
   denylist of secret-looking paths. Secret-looking values are masked before they leave the host.
+- The agent verifies the server's TLS chain and can pin the server (`ca_file` as the only trust
+  root, `server_cert_sha256` SPKI pins, optional mTLS client certificate), so a network attacker
+  or a rogue CA cannot impersonate the server.
 - Enrollment tokens and agent keys are stored on the server only as SHA-256 hashes.
 - LLM output is never trusted. An LLM-drafted rule is inert until a human reviews and approves it.
 - Releases are signed with keyless Sigstore (cosign), ship SBOMs, and have build provenance

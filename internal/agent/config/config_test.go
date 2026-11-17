@@ -1,6 +1,9 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -50,5 +53,40 @@ func TestResolvePath(t *testing.T) {
 	t.Setenv(EnvConfigPath, "")
 	if ResolvePath("") != DefaultPath {
 		t.Error("default")
+	}
+}
+
+func TestPinningValidation(t *testing.T) {
+	pin := strings.Repeat("ab", 32)
+	cfg, err := Parse([]byte("server_url: https://x\nserver_cert_sha256: [\"" + strings.ToUpper(pin) + "\"]"))
+	if err != nil || cfg.ServerCertSHA256[0] != pin {
+		t.Fatalf("valid pin: %v %v", cfg.ServerCertSHA256, err)
+	}
+	colon := strings.TrimSuffix(strings.Repeat("ab:", 32), ":")
+	if cfg, err := Parse([]byte("server_url: https://x\nserver_cert_sha256: [\"" + colon + "\"]")); err != nil || cfg.ServerCertSHA256[0] != pin {
+		t.Fatalf("colon pin: %v %v", cfg.ServerCertSHA256, err)
+	}
+	for _, bad := range []string{"zz", "abcd", strings.Repeat("g", 64), strings.Repeat("ab", 33)} {
+		if _, err := Parse([]byte("server_url: https://x\nserver_cert_sha256: [\"" + bad + "\"]")); err == nil {
+			t.Errorf("bad pin %q accepted", bad)
+		}
+	}
+}
+
+func TestCAFileValidation(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := Parse([]byte("server_url: https://x\nca_file: " + dir + "/missing.pem")); err == nil {
+		t.Error("unreadable ca_file accepted")
+	}
+	junk := filepath.Join(dir, "junk.pem")
+	os.WriteFile(junk, []byte("hello"), 0o600)
+	if _, err := Parse([]byte("server_url: https://x\nca_file: " + junk)); err == nil {
+		t.Error("ca_file without certificates accepted")
+	}
+	if _, err := Parse([]byte("server_url: https://x\nclient_cert: " + junk)); err == nil {
+		t.Error("client_cert without client_key accepted")
+	}
+	if _, err := Parse([]byte("server_url: https://x\nclient_cert: /nope\nclient_key: /nope")); err == nil {
+		t.Error("unreadable client cert accepted")
 	}
 }
