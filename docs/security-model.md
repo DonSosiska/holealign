@@ -118,5 +118,10 @@ Do these in a real deployment.
 - **Agents run as root.** The collector is hardened and isolated, but anything that runs as root on
   every host is a high-value target: treat the server and the release pipeline accordingly.
 - **Single server, SQLite.** No clustering or high availability; back up regularly.
-- **The agentless local agent** (new) gives the server process read access to the collector socket;
-  apply the same care to the server host as to any monitored host.
+- **The built-in local agent (agentless mode, off by default).** With `source: collector` the server
+  process, running as the static user `panoptes`, can request the host's facts and inventory through the
+  collector socket. The root collector still has no network, and the server stays unprivileged. With
+  `source: inprocess` (or `auto` when the socket refuses the server) the server process itself reads
+  untrusted local files with its own privileges, so the server host needs the same care as any monitored
+  host. The local agent does not add a remote command channel: all API validation, limits and
+  authentication apply to it as to any agent.
