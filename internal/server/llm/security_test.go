@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/DonSosiska/panoptes/internal/model"
+	"github.com/DonSosiska/panoptes/internal/server/rules"
 )
 
 func TestParseForcesVulnsPackagesFix(t *testing.T) {
@@ -139,6 +140,31 @@ func TestCoveredByEngineRules(t *testing.T) {
 	e.run(finding())
 	if e.prov.n() != 0 {
 		t.Fatal("file rule coverage ignored")
+	}
+}
+
+// A CVE covered by a rule of the signed rules feed never costs an LLM call.
+func TestCoveredByFeedRules(t *testing.T) {
+	e := newEnv(t, 50, goodJSON)
+	eng := rules.New(nil, nil)
+	eng.SetFeed(7, []model.Rule{{
+		ID: "CVE-2030-0001", Vulns: []string{"CVE-2030-0001"}, Title: "t", Explanation: "e", Source: "feed",
+		Packages: []model.PackageSelector{{Name: "foo", Type: "deb"}}, Facts: []string{"os.id"},
+		ExploitableIf: `facts["os.id"] == "debian"`, Status: model.RuleReviewed,
+	}})
+	if err := eng.Reload(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if p := eng.Problems(); len(p) != 0 {
+		t.Fatal(p)
+	}
+	if src := eng.Sources()["CVE-2030-0001"]; src != "feed:7" {
+		t.Fatalf("source = %q", src)
+	}
+	e.dr.d.Rules = eng.Rules
+	e.run(finding())
+	if e.prov.n() != 0 {
+		t.Fatal("a CVE covered by a feed rule triggered an LLM call")
 	}
 }
 

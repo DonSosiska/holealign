@@ -44,8 +44,22 @@ limits:
 # SQLite database and Grype DB cache. Must match StateDirectory in the systemd unit.
 data_dir: /var/lib/panoptes
 
-# Shipped exploitability rules (YAML files).
+# Optional extra/override rule YAML files. The eight shipped rules are embedded in the binary, so
+# this directory may be absent.
 rules_dir: /usr/share/panoptes/rules
+
+# Signed central rules feed (docs/rules-feed.md). Layers: built-in < feed < local (UI edits, LLM drafts).
+# Generate the signing key offline with `panoptes-server rules keygen -out <file>` and list its public key.
+rules:
+  feed:
+    enabled: false
+    # latest.json; https:// required (file:// for mirrors). Empty = only `panoptes-server rules import`.
+    url: ""
+    interval: 6h
+    # Base64 ed25519 public keys; required when enabled. List two keys while rotating.
+    trusted_keys: []
+    # feed_stale alert ("rules feed") when no poll succeeded for this long or the last 3 polls failed.
+    stale_after: 7d
 
 feeds:
   # How often vulnerability data (Grype DB, KEV, EPSS) is refreshed.

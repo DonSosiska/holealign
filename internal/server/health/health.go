@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"runtime/debug"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -20,14 +21,16 @@ import (
 	"github.com/DonSosiska/panoptes/internal/server/core"
 	"github.com/DonSosiska/panoptes/internal/server/feeds"
 	"github.com/DonSosiska/panoptes/internal/server/notify"
+	"github.com/DonSosiska/panoptes/internal/server/rulesfeed"
 	"github.com/DonSosiska/panoptes/internal/server/store"
 )
 
 // kv keys published for the web UI banner (empty value = healthy).
 const (
-	KVFeedStale      = "health.feed_stale"      // detail text while the feed alert is active
-	KVPipelineErrors = "health.pipeline_errors" // one "host: detail" line per affected host
-	kvPipelineAlert  = "health.pipeline_alert." // + host id: RFC 3339 time of the last alert
+	KVFeedStale      = "health.feed_stale"       // detail text while the feed alert is active
+	KVRulesFeedStale = "health.rules_feed_stale" // detail text while the rules feed alert is active
+	KVPipelineErrors = "health.pipeline_errors"  // one "host: detail" line per affected host
+	kvPipelineAlert  = "health.pipeline_alert."  // + host id: RFC 3339 time of the last alert
 )
 
 const (
@@ -51,6 +54,10 @@ const (
 type Options struct {
 	AgentSilentAfter time.Duration // 0 disables agent_silent / agent_back
 	FeedStaleAfter   time.Duration // 0 disables feed_stale / feed_ok
+	// RulesFeedStaleAfter raises a feed_stale alert ("rules feed ...") when no poll of the signed
+	// rules feed succeeded for this long, or three polls in a row failed. 0 disables the check
+	// (feed disabled, or no URL because bundles are imported by hand).
+	RulesFeedStaleAfter time.Duration
 	// CheckinInterval is the agents' check-in period (default 20s); alerts are held back for
 	// 2 x CheckinInterval after the monitor started so a server restart does not look like silence.
 	CheckinInterval time.Duration
@@ -268,7 +275,7 @@ func (m *Monitor) safeCheck(ctx context.Context) {
 func (m *Monitor) Check(ctx context.Context) error {
 	var errs []error
 	m.pruneMissing(ctx)
-	for _, f := range []func(context.Context) error{m.checkAgents, m.checkFeed, m.checkPipeline} {
+	for _, f := range []func(context.Context) error{m.checkAgents, m.checkFeed, m.checkRulesFeed, m.checkPipeline} {
 		if err := f(ctx); err != nil {
 			errs = append(errs, err)
 		}
@@ -558,6 +565,76 @@ func (m *Monitor) checkFeed(ctx context.Context) error {
 		}})
 	default:
 		m.setKV(ctx, KVFeedStale, "")
+	}
+	return nil
+}
+
+// --- rules feed ---------------------------------------------------------------
+
+const rulesFeedKey = "server|rulesfeed"
+
+// rulesFeedFailuresBeforeAlert is the number of consecutive failed polls that raises the alert.
+const rulesFeedFailuresBeforeAlert = 3
+
+// checkRulesFeed raises feed_stale for the signed rules feed: no successful poll for
+// RulesFeedStaleAfter (an answering feed with nothing new is fresh), or the last 3 polls failed.
+func (m *Monitor) checkRulesFeed(ctx context.Context) error {
+	if m.opts.RulesFeedStaleAfter <= 0 {
+		return nil
+	}
+	now := m.opts.Now()
+	get := func(k string) string {
+		v, err := m.st.KVGet(ctx, k)
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			m.log.Warn("health: kv get", "key", k, "err", err)
+		}
+		return v
+	}
+	var ref time.Time // newest sign of life: successful poll or installed bundle
+	for _, k := range []string{rulesfeed.KVCheckedAt, rulesfeed.KVUpdatedAt} {
+		if t, err := time.Parse(time.RFC3339, get(k)); err == nil && t.After(ref) {
+			ref = t
+		}
+	}
+	failures, _ := strconv.Atoi(get(rulesfeed.KVFailures))
+	lastErr := strings.TrimSpace(get(rulesfeed.KVLastError))
+	tooOld := !ref.IsZero() && now.Sub(ref) > m.opts.RulesFeedStaleAfter
+	stale := tooOld || failures >= rulesFeedFailuresBeforeAlert
+
+	sent, err := m.st.NotificationSent(ctx, rulesFeedKey+"|"+string(model.EventFeedStale))
+	if err != nil {
+		return err
+	}
+	switch {
+	case stale:
+		detail := "rules feed "
+		if ref.IsZero() {
+			detail += "has never been fetched"
+		} else {
+			detail += "last checked " + HumanDuration(now.Sub(ref)) + " ago"
+		}
+		if failures > 0 {
+			detail += fmt.Sprintf(" (%d failed polls in a row)", failures)
+		}
+		if lastErr != "" {
+			detail += " — " + oneLine(lastErr, 200)
+		}
+		m.setKV(ctx, KVRulesFeedStale, detail)
+		if sent {
+			return nil
+		}
+		return m.deliver(ctx, []outEvent{{
+			ev:       model.Event{Kind: model.EventFeedStale, Detail: detail},
+			findingK: rulesFeedKey, dedupK: rulesFeedKey + "|" + string(model.EventFeedStale),
+		}})
+	case sent:
+		m.setKV(ctx, KVRulesFeedStale, "")
+		return m.deliver(ctx, []outEvent{{
+			ev:       model.Event{Kind: model.EventFeedOK, Detail: "rules feed is up to date again"},
+			findingK: rulesFeedKey, dedupK: rulesFeedKey + "|" + string(model.EventFeedOK),
+		}})
+	default:
+		m.setKV(ctx, KVRulesFeedStale, "")
 	}
 	return nil
 }

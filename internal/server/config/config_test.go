@@ -192,3 +192,72 @@ func TestRetentionAndLimits(t *testing.T) {
 		t.Fatal("negative limit accepted")
 	}
 }
+
+func TestRulesFeedConfig(t *testing.T) {
+	none := func(string) (string, bool) { return "", false }
+	c, err := load("", none)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := c.Rules.Feed
+	if f.Enabled || f.Interval != 6*time.Hour || f.StaleAfter.Std() != 7*24*time.Hour || len(f.TrustedKeys) != 0 {
+		t.Fatalf("defaults: %+v", f)
+	}
+	key := "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+	write := func(body string) string {
+		p := filepath.Join(t.TempDir(), "c.yaml")
+		_ = os.WriteFile(p, []byte(body), 0o600)
+		return p
+	}
+	// enabled without keys is a config error
+	if _, err := load(write("rules:\n  feed:\n    enabled: true\n"), none); err == nil || !strings.Contains(err.Error(), "trusted_keys") {
+		t.Fatalf("enabled without keys: %v", err)
+	}
+	for name, body := range map[string]string{
+		"http url":  "rules:\n  feed:\n    enabled: true\n    url: http://x.example/latest.json\n    trusted_keys: [" + key + "]\n",
+		"ftp url":   "rules:\n  feed:\n    enabled: true\n    url: ftp://x.example/latest.json\n    trusted_keys: [" + key + "]\n",
+		"bad key":   "rules:\n  feed:\n    enabled: true\n    trusted_keys: [not-a-key]\n",
+		"interval":  "rules:\n  feed:\n    interval: 1s\n",
+		"stale neg": "rules:\n  feed:\n    stale_after: -1h\n",
+	} {
+		if _, err := load(write(body), none); err == nil {
+			t.Errorf("%s accepted", name)
+		}
+	}
+	ok := "rules:\n  feed:\n    enabled: true\n    url: https://rules.example/latest.json\n    stale_after: 3d\n    trusted_keys: [" + key + "]\n"
+	c, err = load(write(ok), none)
+	if err != nil || !c.Rules.Feed.Enabled || c.Rules.Feed.StaleAfter.Std() != 72*time.Hour {
+		t.Fatalf("valid config: %v %+v", err, c.Rules.Feed)
+	}
+	// file:// is allowed; an empty url means import-only
+	for _, u := range []string{"file:///srv/rules/latest.json", ""} {
+		body := "rules:\n  feed:\n    enabled: true\n    url: \"" + u + "\"\n    trusted_keys: [" + key + "]\n"
+		if _, err := load(write(body), none); err != nil {
+			t.Errorf("url %q: %v", u, err)
+		}
+	}
+	// environment overrides
+	env := func(k string) (string, bool) {
+		switch k {
+		case "PANOPTES_RULES_FEED_ENABLED":
+			return "true", true
+		case "PANOPTES_RULES_FEED_URL":
+			return "https://env.example/latest.json", true
+		case "PANOPTES_RULES_FEED_TRUSTED_KEYS":
+			return key + "," + key, true
+		case "PANOPTES_RULES_FEED_INTERVAL":
+			return "2h", true
+		case "PANOPTES_RULES_FEED_STALE_AFTER":
+			return "2d", true
+		}
+		return "", false
+	}
+	c, err = load("", env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f = c.Rules.Feed
+	if !f.Enabled || f.URL != "https://env.example/latest.json" || len(f.TrustedKeys) != 2 || f.Interval != 2*time.Hour || f.StaleAfter.Std() != 48*time.Hour {
+		t.Fatalf("env: %+v", f)
+	}
+}

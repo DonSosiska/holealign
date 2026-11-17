@@ -218,9 +218,39 @@ Command execution rules for collectors: fixed argv (no shell), 10 s timeout, std
 
 ## 4. Rules
 
-YAML files in `rules/` (shipped, `status: reviewed`) plus rules in the DB (LLM drafts, user edits).
-A DB rule with the same `id` as a file rule overrides it, except a DB `draft`, which never replaces a
-file rule (the file rule is kept and a problem is reported). Rule ids match `^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`.
+Rules come from three layers, lowest precedence first (details: [rules-feed.md](rules-feed.md)):
+
+1. **built-in**: the YAML files of `rules/` (shipped, `status: reviewed`), embedded in the binary with
+   `go:embed`; `rules_dir`, when it exists, adds rules and replaces embedded ones with the same `id`;
+2. **feed**: the verified bundle of the signed central rules feed (only when `rules.feed.enabled`);
+3. **DB**: LLM drafts and user edits.
+
+A rule from a higher layer with the same `id` overrides the lower one, except a DB `draft`, which never
+replaces a rule from a lower layer (the lower rule is kept and a problem is reported). The engine exposes
+each rule's source (`builtin`, `feed:<seq>`, `db`; `Engine.Sources()`). Rule ids match
+`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`.
+
+**Rule tests.** `tests/<rule-id>.yaml` is a YAML list of cases
+`{name, finding: {vuln, package, type, version, severity, kev}, facts: {...}, host: {os_id, os_version_id, arch, labels}, want: <verdict>}`;
+`rules.RunTests(rules, tests)` evaluates them with the real Engine (the rule under test must be the one that
+matches). The shipped rules' tests live in `rules-tests/`.
+
+**Rules feed bundle** (`rules-<seq>.tar.gz`, `.sig`, `latest.json`; full description in
+[rules-feed.md](rules-feed.md)):
+- `rules-<seq>.tar.gz` holds `index.json`, `rules/<id>.yaml`, `tests/<id>.yaml` and nothing else.
+  `index.json` = `{format: 1, seq: <uint64>, created_at, min_server_version?, catalog: [fact names used],
+  rules: [{id, file, sha256}], tests: [{id, file, sha256}]}`. Every rule is `status: reviewed`.
+- `rules-<seq>.tar.gz.sig` = `{alg: "ed25519", key_id: <first 16 hex of sha256(pubkey)>,
+  sig: base64(ed25519.Sign(priv, sha256(tarball)))}`.
+- `latest.json` = `{seq, url (relative or absolute), sha256, sig: <the sig object>}`; servers poll it.
+- Acceptance (atomic, any failure rejects the whole bundle, the installed bundle stays): pointer <= 64 KiB,
+  https (or file://), no redirects; `seq` greater than the installed one (lower is logged and ignored);
+  tarball <= 10 MiB with the pointer's sha256; signature by a key in `rules.feed.trusted_keys`; strict in-memory
+  extraction (only the three name patterns, regular files, <= 5000 entries of <= 256 KiB, every file listed with
+  a matching sha256, nothing unlisted, `index.json` `seq` equal to the pointer's); every rule parses, passes
+  `Validate` and is `reviewed`; the bundle's tests pass. The accepted bundle is persisted in
+  `data_dir/rules-feed/` and re-verified at start. kv keys: `rulesfeed.seq`, `rulesfeed.updated_at`,
+  `rulesfeed.checked_at`, `rulesfeed.last_error`, `rulesfeed.failures`.
 
 `fact_requests` policy (enforced by `Validate`): at most 5 per rule; name `file.match:<ruleID-sanitized>.<id>`
 (`[a-z0-9._-]`, at most 64 chars after the prefix; ruleID lowercased, other characters become `-`).
@@ -270,7 +300,7 @@ A rule applies when `finding.vuln_id` or any of `finding.aliases` is in `rule.vu
 `packages` selector matches (`name` matches as a `path.Match` glob, e.g. `nginx*`, `linux-image-*`;
 `type` equal or empty). `status: rejected` rules are ignored. Several rules may cover the same CVE for
 different packages (e.g. `CVE-2023-44487-nginx` and `CVE-2023-44487-apache`); if more than one applies,
-the winner is chosen by status (`reviewed` over `draft`), then DB over file, then the first by ID.
+the winner is chosen by status (`reviewed` over `draft`), then layer (DB over feed over built-in), then the first by ID.
 
 ### CEL environment
 Variables:
@@ -400,7 +430,14 @@ triage:
 data_dir: /var/lib/panoptes           # SQLite DB + Grype DB cache
 feeds:
   interval: 6h                        # vuln DB / KEV / EPSS refresh
-rules_dir: /usr/share/panoptes/rules  # shipped YAML rules
+rules_dir: /usr/share/panoptes/rules  # optional: adds to / overrides the rules embedded in the binary
+rules:
+  feed:                               # signed central rules feed (docs/rules-feed.md); off by default
+    enabled: false                    # env PANOPTES_RULES_FEED_ENABLED
+    url: ""                           # latest.json, https:// (file:// for mirrors); empty = import only
+    interval: 6h                      # >= 1m
+    trusted_keys: []                  # base64 ed25519 public keys; required when enabled (list two while rotating)
+    stale_after: 7d                   # feed_stale ("rules feed") when no poll succeeded for this long or 3 polls failed
 matrix:
   homeserver: https://matrix.example.com
   access_token_env: PANOPTES_MATRIX_TOKEN
@@ -433,7 +470,8 @@ local_agent:                          # agentless mode: the server monitors its 
   docker_socket: /var/run/docker.sock
 ```
 
-Validation: `*_env` names must match `^PANOPTES_[A-Z0-9_]+$` and `matrix.access_token_env`, `llm.api_key_env`,
+Validation: with `rules.feed.enabled`, `rules.feed.trusted_keys` must hold at least one valid key and `rules.feed.url`
+must be `https://` or `file://`; `rules.feed.interval` is at least 1m. `*_env` names must match `^PANOPTES_[A-Z0-9_]+$` and `matrix.access_token_env`, `llm.api_key_env`,
 `admin.initial_password_env` must be pairwise different; retention/limits must not be negative.
 The initial admin password needs ≥ 12 characters and may come from the file named by
 `PANOPTES_ADMIN_PASSWORD_FILE`. Startup logs a WARN when `public_url`, `matrix.homeserver` or `llm.base_url`

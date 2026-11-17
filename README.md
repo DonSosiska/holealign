@@ -38,6 +38,9 @@ missing) the verdict is `conditions_unknown`, never "safe".
 - Configuration facts: sshd, nginx, Apache, PHP, kernel sysctl and modules, listening sockets,
   services, Docker containers, and bounded `file.match` reads. Catalog: [docs/rules.md](docs/rules.md#fact-catalog).
 - CEL rules, eight shipped. Verdicts and the draft guard: [docs/rules.md](docs/rules.md).
+- Optional signed central rules feed: rules are written and tested once in a separate repository,
+  packed into an ed25519-signed bundle and downloaded by every server like the Grype DB (built-in <
+  feed < local precedence, atomic verification, air-gapped import): [docs/rules-feed.md](docs/rules-feed.md).
 - Optional LLM rule drafting (Anthropic or any OpenAI-compatible endpoint such as Ollama):
   [docs/llm.md](docs/llm.md).
 - Matrix/Element alerts routed by host label, with dedup, grouping and burst summaries:
@@ -192,6 +195,7 @@ use the host collector socket instead. Details, all `local_agent.*` keys and cav
 | [docs/installation.md](docs/installation.md) | Server and agent install, TLS, every `install.sh` flag, verifying releases, upgrades, agentless mode |
 | [docs/configuration.md](docs/configuration.md) | Every server and agent config key, with defaults and environment overrides |
 | [docs/rules.md](docs/rules.md) | Verdicts, writing rules, CEL environment, fact catalog, `file.match` policy, shipped rules, draft review |
+| [docs/rules-feed.md](docs/rules-feed.md) | Signed central rules feed: bundle format, signing, key management, publishing, air-gapped import |
 | [docs/llm.md](docs/llm.md) | LLM providers, cost control, what is sent, prompt-injection defenses |
 | [docs/notifications.md](docs/notifications.md) | Matrix setup, routing, message types, dedup, delivery problems |
 | [docs/operations.md](docs/operations.md) | CLI, backup and restore, retention, health alerts, air-gapped feeds, troubleshooting |

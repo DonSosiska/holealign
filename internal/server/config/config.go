@@ -3,6 +3,7 @@ package config
 
 import (
 	"bytes"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -49,6 +50,7 @@ type Config struct {
 	Limits    Limits    `yaml:"limits"`
 
 	Feeds  Feeds  `yaml:"feeds"`
+	Rules  Rules  `yaml:"rules"`
 	Matrix Matrix `yaml:"matrix"`
 	LLM    LLM    `yaml:"llm"`
 	Admin  Admin  `yaml:"admin"`
@@ -139,6 +141,56 @@ type Feeds struct {
 	Update   bool          `yaml:"update"`   // false disables all network updates (tests, air-gapped)
 }
 
+// Rules configures rule sources other than rules_dir and the database.
+type Rules struct {
+	Feed RulesFeed `yaml:"feed"`
+}
+
+// RulesFeed configures the signed central rules feed (docs/rules-feed.md).
+type RulesFeed struct {
+	Enabled bool `yaml:"enabled"`
+	// URL of latest.json: https:// (file:// is accepted for tests and air-gapped mirrors).
+	// Empty with enabled: no polling, only bundles installed with `rules import` are used.
+	URL      string        `yaml:"url"`
+	Interval time.Duration `yaml:"interval"` // poll period, default 6h
+	// TrustedKeys are base64 ed25519 public keys; a bundle must be signed by one of them.
+	// List two keys while rotating.
+	TrustedKeys []string `yaml:"trusted_keys"`
+	// StaleAfter raises a feed_stale alert when no poll succeeded for this long (default 7d).
+	StaleAfter Duration `yaml:"stale_after"`
+}
+
+func (r *RulesFeed) validate() error {
+	if r.Interval < time.Minute {
+		return errors.New("rules.feed.interval must be at least 1m")
+	}
+	if r.StaleAfter < 0 {
+		return errors.New("rules.feed.stale_after must not be negative")
+	}
+	for i, k := range r.TrustedKeys {
+		b, err := base64.StdEncoding.DecodeString(strings.TrimSpace(k))
+		if err != nil || len(b) != 32 {
+			return fmt.Errorf("rules.feed.trusted_keys[%d] must be a base64 ed25519 public key (32 bytes)", i)
+		}
+	}
+	if !r.Enabled {
+		return nil
+	}
+	if len(r.TrustedKeys) == 0 {
+		return errors.New("rules.feed.enabled requires at least one entry in rules.feed.trusted_keys (generate with `panoptes-server rules keygen`)")
+	}
+	if r.URL != "" {
+		u, err := url.Parse(r.URL)
+		if err != nil || (u.Scheme != "https" && u.Scheme != "file") {
+			return errors.New("rules.feed.url must be an https:// URL (or file:// for tests and air-gapped mirrors)")
+		}
+		if u.Scheme == "https" && u.Host == "" {
+			return errors.New("rules.feed.url has no host")
+		}
+	}
+	return nil
+}
+
 // Triage configures the priority tiers of the web UI (docs/rules.md, "Reading the dashboard").
 type Triage struct {
 	// EPSSThreshold (0..1): a conditions_unknown finding with EPSS at or above it needs attention.
@@ -192,6 +244,7 @@ func Default() Config {
 		Alerts:      Alerts{AgentSilentAfter: 30 * time.Minute, FeedStaleAfter: 48 * time.Hour},
 		Triage:      Triage{EPSSThreshold: 0.1},
 		Feeds:       Feeds{Interval: 6 * time.Hour, Update: true},
+		Rules:       Rules{Feed: RulesFeed{Interval: 6 * time.Hour, StaleAfter: Duration(7 * 24 * time.Hour)}},
 		Retention:   Retention{ResolvedFindings: Duration(30 * 24 * time.Hour), Notifications: Duration(90 * 24 * time.Hour)},
 		Limits:      Limits{FindingsPerHost: 20000, MatchSecondsPerHostHour: 900},
 		Matrix:      Matrix{AccessTokenEnv: "PANOPTES_MATRIX_TOKEN"},
@@ -256,6 +309,9 @@ func load(path string, lookup func(string) (string, bool)) (*Config, error) {
 func (c *Config) validate() error {
 	if c.Feeds.Interval <= 0 {
 		return errors.New("feeds.interval must be positive")
+	}
+	if err := c.Rules.Feed.validate(); err != nil {
+		return err
 	}
 	if c.DataDir == "" {
 		return errors.New("data_dir must not be empty")
@@ -432,6 +488,9 @@ func isLoopbackHost(h string) bool {
 
 // DBPath is the SQLite database file.
 func (c *Config) DBPath() string { return filepath.Join(c.DataDir, "panoptes.db") }
+
+// RulesFeedDir is where the accepted rules feed bundle is kept.
+func (c *Config) RulesFeedDir() string { return filepath.Join(c.DataDir, "rules-feed") }
 
 // GrypeDBDir is the Grype vulnerability DB cache directory.
 func (c *Config) GrypeDBDir() string { return filepath.Join(c.DataDir, "grype-db") }

@@ -17,6 +17,7 @@ import (
 	"github.com/DonSosiska/panoptes/internal/model"
 	"github.com/DonSosiska/panoptes/internal/server/feeds"
 	"github.com/DonSosiska/panoptes/internal/server/notify"
+	"github.com/DonSosiska/panoptes/internal/server/rulesfeed"
 	"github.com/DonSosiska/panoptes/internal/server/store"
 )
 
@@ -653,5 +654,42 @@ func TestProblemWordingAndCleanClearsBanner(t *testing.T) {
 	e.check()
 	if v, _ := e.st.KVGet(e.ctx, KVPipelineErrors); v != "" {
 		t.Fatalf("poison banner not cleared: %q", v)
+	}
+}
+
+func TestRulesFeedStale(t *testing.T) {
+	e := newEnv(t, Options{RulesFeedStaleAfter: 7 * 24 * time.Hour})
+	set := func(k, v string) { _ = e.st.KVSet(e.ctx, k, v, e.now) }
+
+	set(rulesfeed.KVCheckedAt, e.now.Add(-time.Hour).Format(time.RFC3339))
+	if evs := e.check(); len(evs) != 0 {
+		t.Fatalf("fresh rules feed alerted: %v", kinds(evs))
+	}
+	// an answering feed with nothing new stays fresh; three failed polls in a row alert
+	set(rulesfeed.KVFailures, "3")
+	set(rulesfeed.KVLastError, "bundle 5: signature key is not trusted")
+	evs := e.check()
+	if len(evs) != 1 || evs[0].Kind != model.EventFeedStale || !strings.Contains(evs[0].Detail, "rules feed") ||
+		strings.Contains(evs[0].Detail, "vulnerability DB") || !strings.Contains(evs[0].Detail, "not trusted") {
+		t.Fatalf("want a rules feed feed_stale, got %v %+v", kinds(evs), evs)
+	}
+	if v, _ := e.st.KVGet(e.ctx, KVRulesFeedStale); v == "" {
+		t.Fatal("banner kv not set")
+	}
+	if v, _ := e.st.KVGet(e.ctx, KVFeedStale); v != "" {
+		t.Fatalf("grype banner must stay clear: %q", v)
+	}
+	if evs := e.check(); len(evs) != 0 {
+		t.Fatalf("repeated: %v", kinds(evs))
+	}
+	set(rulesfeed.KVFailures, "0")
+	set(rulesfeed.KVLastError, "")
+	if evs := e.check(); len(evs) != 1 || evs[0].Kind != model.EventFeedOK {
+		t.Fatalf("want feed_ok, got %v", kinds(evs))
+	}
+	// no successful poll for longer than stale_after
+	e.now = e.now.Add(8 * 24 * time.Hour)
+	if evs := e.check(); len(evs) != 1 || evs[0].Kind != model.EventFeedStale || !strings.Contains(evs[0].Detail, "last checked 8d") {
+		t.Fatalf("want stale by age, got %v", kinds(evs))
 	}
 }

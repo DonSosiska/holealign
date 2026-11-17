@@ -2,7 +2,7 @@
 {{define "content"}}
 <p class="crumbs"><a href="/rules">Rules</a> /</p>
 <h1>{{.Rule.ID}} <span class="badge {{rclass .Rule.Status}}">{{rstatus .Rule.Status}}</span></h1>
-<p class="muted">Source: {{.Rule.Source}}{{if .Rule.Vulns}} &middot; Covers: {{range .Rule.Vulns}}<a href="/vulns/{{.}}">{{.}}</a> {{end}}{{end}}</p>
+<p class="muted">Source: {{if .RuleSource}}<span class="badge {{srcclass .RuleSource}}">{{srclabel .RuleSource}}</span>{{else}}{{.Rule.Source}}{{end}}{{if isfeed .RuleSource}} (read-only){{end}}{{if .Rule.Vulns}} &middot; Covers: {{range .Rule.Vulns}}<a href="/vulns/{{.}}">{{.}}</a> {{end}}{{end}}</p>
 
 {{if .Draft}}
 <div class="llm-text" role="note">
@@ -52,6 +52,7 @@
 </div>
 
 <h2>Edit</h2>
+{{if isfeed .RuleSource}}<p class="muted">This rule comes from the signed rules feed ({{srclabel .RuleSource}}) and is read-only. Saving creates a local override: a user rule with the same id that takes precedence over the feed rule on this server only.</p>{{else if eq .RuleSource "builtin"}}<p class="muted">This is a built-in rule. Saving creates a local override (a user rule with the same id) on this server only.</p>{{end}}
 <form method="post" action="/rules/{{.Rule.ID}}/edit" class="stack">
   <input type="hidden" name="csrf" value="{{.CSRF}}">
   <input type="hidden" name="rule_version" value="{{.Version}}">

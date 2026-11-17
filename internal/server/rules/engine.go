@@ -26,7 +26,7 @@ const maxValueLen = 120
 // RuleProblem describes a rule that was skipped because it is invalid.
 type RuleProblem struct {
 	RuleID string
-	Source string // "file" or "db"
+	Source string // "file", "feed" or "db"
 	Err    error
 }
 
@@ -42,7 +42,7 @@ type compiled struct {
 	rule     model.Rule
 	exploit  cel.Program
 	notAff   cel.Program
-	fromDB   bool
+	layer    int      // layerBuiltin < layerFeed < layerDB
 	declared []string // facts that must be present
 	refs     []factRef
 	redact   bool // rule reads file.match facts: never echo values in errors
@@ -51,9 +51,17 @@ type compiled struct {
 	factDep bool
 }
 
+// Rule layers, lowest precedence first (docs/contracts.md section 4).
+const (
+	layerBuiltin = iota // shipped rules (embedded, optionally overridden from rules_dir)
+	layerFeed           // signed central rules feed
+	layerDB             // LLM drafts and user edits stored in the database
+)
+
 type snapshot struct {
-	all      []model.Rule // merged, sorted by ID (includes rejected)
-	active   []*compiled  // applicable rules, sorted by ID
+	all      []model.Rule      // merged, sorted by ID (includes rejected)
+	sources  map[string]string // rule ID -> "builtin", "feed:<seq>" or "db"
+	active   []*compiled       // applicable rules, sorted by ID
 	requests []model.FactRequest
 	problems []RuleProblem
 }
@@ -62,12 +70,42 @@ type snapshot struct {
 // concurrent use.
 type Engine struct {
 	fileRules []model.Rule
+	feed      atomic.Pointer[feedLayer]
 	db        DBSource
 	timeout   time.Duration
 	snap      atomic.Pointer[snapshot]
 }
 
 var _ core.RuleEvaluator = (*Engine)(nil)
+
+type feedLayer struct {
+	seq   uint64
+	rules []model.Rule
+}
+
+// SetFeed installs the rules of the signed rules feed (bundle sequence seq) as the layer
+// between the built-in rules and the DB rules: built-in < feed < DB. A feed rule replaces a
+// built-in rule with the same ID; a DB rule (reviewed or user-written) replaces a feed rule with
+// the same ID, and a reviewed rule for the same CVE/package always beats a lower layer. Call
+// Reload afterwards to recompile. nil rules remove the layer.
+func (e *Engine) SetFeed(seq uint64, rs []model.Rule) {
+	if rs == nil {
+		e.feed.Store(nil)
+		return
+	}
+	e.feed.Store(&feedLayer{seq: seq, rules: append([]model.Rule(nil), rs...)})
+}
+
+// Sources maps each rule ID known to the engine to the layer it comes from: "builtin",
+// "feed:<seq>" or "db".
+func (e *Engine) Sources() map[string]string {
+	src := e.snap.Load().sources
+	out := make(map[string]string, len(src))
+	for k, v := range src {
+		out[k] = v
+	}
+	return out
+}
 
 // New builds an Engine from file rules and an optional DB source (may be nil).
 // DB rules are loaded immediately; a failing DB read is reported in Problems.
@@ -94,11 +132,11 @@ func (e *Engine) Reload(ctx context.Context) error {
 		s.problems = append(s.problems, RuleProblem{Source: "db", Err: fmt.Errorf("list rules: %w", dbErr)})
 	}
 
-	build := func(r model.Rule, fromDB bool) (*compiled, error) {
+	build := func(r model.Rule, layer int) (*compiled, error) {
 		if err := Validate(r); err != nil {
 			return nil, err
 		}
-		c := &compiled{rule: r, fromDB: fromDB, declared: declaredFacts(r), redact: len(r.FactRequests) > 0}
+		c := &compiled{rule: r, layer: layer, declared: declaredFacts(r), redact: len(r.FactRequests) > 0}
 		var err error
 		var r1, r2 []factRef
 		var root celast.Expr
@@ -118,28 +156,36 @@ func (e *Engine) Reload(ctx context.Context) error {
 	}
 
 	byID := map[string]*compiled{}
-	src := func(db bool) string {
-		if db {
-			return "db"
-		}
-		return "file"
+	srcName := []string{"file", "feed", "db"}
+	fl := e.feed.Load()
+	var feedRules []model.Rule
+	if fl != nil {
+		feedRules = fl.rules
 	}
-	for _, grp := range []struct {
-		rules []model.Rule
-		db    bool
-	}{{e.fileRules, false}, {dbRules, true}} {
-		for _, r := range grp.rules {
-			c, err := build(r, grp.db)
+	for layer, rs := range [][]model.Rule{e.fileRules, feedRules, dbRules} {
+		for _, r := range rs {
+			c, err := build(r, layer)
 			if err != nil {
-				s.problems = append(s.problems, RuleProblem{RuleID: r.ID, Source: src(grp.db), Err: err})
+				s.problems = append(s.problems, RuleProblem{RuleID: r.ID, Source: srcName[layer], Err: err})
 				continue
 			}
-			if old := byID[r.ID]; grp.db && old != nil && !old.fromDB && r.Status == model.RuleDraft {
+			if old := byID[r.ID]; layer == layerDB && old != nil && old.layer < layerDB && r.Status == model.RuleDraft {
 				s.problems = append(s.problems, RuleProblem{RuleID: r.ID, Source: "db",
 					Err: errors.New("draft rule cannot override a file rule with the same id; file rule kept")})
 				continue
 			}
-			byID[r.ID] = c // DB processed last: overrides file (except drafts, see above)
+			byID[r.ID] = c // higher layers are processed later and override (except drafts, see above)
+		}
+	}
+	s.sources = make(map[string]string, len(byID))
+	for id, c := range byID {
+		switch c.layer {
+		case layerDB:
+			s.sources[id] = "db"
+		case layerFeed:
+			s.sources[id] = fmt.Sprintf("feed:%d", fl.seq)
+		default:
+			s.sources[id] = "builtin"
 		}
 	}
 
@@ -176,7 +222,7 @@ func (e *Engine) Problems() []RuleProblem {
 	return append([]RuleProblem(nil), e.snap.Load().problems...)
 }
 
-// Rules returns all known rules (file and DB merged, including rejected), sorted by ID.
+// Rules returns all known rules (built-in, feed and DB merged, including rejected), sorted by ID.
 func (e *Engine) Rules() []model.Rule {
 	return append([]model.Rule(nil), e.snap.Load().all...)
 }
@@ -219,13 +265,13 @@ func statusRank(s model.RuleStatus) int {
 	return 1
 }
 
-// better orders candidates: reviewed over draft, then DB over file, then lowest ID.
+// better orders candidates: reviewed over draft, then DB over feed over built-in, then lowest ID.
 func better(a, b *compiled) bool {
 	if ra, rb := statusRank(a.rule.Status), statusRank(b.rule.Status); ra != rb {
 		return ra > rb
 	}
-	if a.fromDB != b.fromDB {
-		return a.fromDB
+	if a.layer != b.layer {
+		return a.layer > b.layer
 	}
 	return a.rule.ID < b.rule.ID
 }

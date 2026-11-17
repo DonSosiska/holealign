@@ -64,6 +64,9 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request, sess *s
 	s.render(w, r, sess, http.StatusOK, "dashboard", map[string]any{
 		"FeedStale": kv("health.feed_stale"), "PipelineErrors": pipeErrs, "NotifyProblems": s.notifyProblems(kv(kvNotifyErrors)),
 		"Counts": counts, "EPSSPct": epssPct(eps), "Top": top, "HostNames": names, "Stale": stale, "HostCount": len(hosts),
+		"RulesFeedStale": kv("health.rules_feed_stale"), "RulesFeedOn": s.cfg.Rules.Feed.Enabled,
+		"RulesFeedSeq": kv("rulesfeed.seq"), "RulesFeedUpdated": kv("rulesfeed.updated_at"),
+		"RulesFeedChecked": kv("rulesfeed.checked_at"), "RulesFeedError": kv("rulesfeed.last_error"),
 		"FeedChecked": kv("feeds.grype.checked_at"), "FeedUpdated": kv("feeds.grype.updated_at"), "FeedError": kv("feeds.grype.last_error"),
 	})
 }
@@ -370,6 +373,7 @@ func (s *Server) handleRules(w http.ResponseWriter, r *http.Request, sess *sessi
 	})
 	s.render(w, r, sess, http.StatusOK, "rules", map[string]any{
 		"Rules": shown, "Filter": filter, "Counts": counts, "Total": len(rules), "NoEngine": s.d.Rules == nil,
+		"Sources": s.ruleSources(),
 	})
 }
 
@@ -432,7 +436,7 @@ func (s *Server) renderRule(w http.ResponseWriter, r *http.Request, sess *sessio
 	}
 	s.render(w, r, sess, status, "rule", map[string]any{
 		"Rule": rule, "YAML": yamlText, "Error": errMsg, "Findings": findings, "HostNames": names, "NoEngine": s.d.Rules == nil,
-		"Version": ruleVersion(stored), "Draft": rule.Status == model.RuleDraft,
+		"Version": ruleVersion(stored), "Draft": rule.Status == model.RuleDraft, "RuleSource": s.ruleSources()[rule.ID],
 		"FactRows": factRows(rule), "Pkgs": pkgs,
 		"LLMTitle": clip(rule.Title, llmTitleMax), "LLMExplanation": clip(rule.Explanation, llmExplanationMax),
 		"LLMUpgrade": clip(rule.Fix.Upgrade, llmFixMax), "LLMMitigation": clip(rule.Fix.Mitigation, llmFixMax),

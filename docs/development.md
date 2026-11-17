@@ -29,10 +29,11 @@ Contents: [Repository layout](#repository-layout) - [Building](#building) - [Tes
 | `internal/server/notify/` | Matrix notifier, grouping, rendering |
 | `internal/server/health/` | Silence, feed and pipeline alerts; delivery-problem recorder |
 | `internal/server/feeds/` | Vulnerability DB updater |
+| `internal/server/rulesfeed/` | Signed central rules feed: bundle build/open, ed25519 signing, poller, persisted bundle |
 | `internal/server/store/` | SQLite store and migrations |
 | `internal/server/web/` | Admin web UI: templates, static files, auth |
 | `internal/server/config/`, `clientip/`, `core/` | Server configuration, client address handling, interfaces between components |
-| `rules/` | The eight shipped rules |
+| `rules/`, `rules-tests/` | The eight shipped rules (embedded in the binary by `rules/embed.go`) and their test cases |
 | `deploy/` | `install.sh`, systemd units, nfpm scripts, Dockerfiles, Compose file, example configs, e2e harness |
 | `docs/` | This documentation and `contracts.md` |
 | `.goreleaser.yaml`, `.github/workflows/` | Release and CI |

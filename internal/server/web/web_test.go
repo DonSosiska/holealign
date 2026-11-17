@@ -28,6 +28,7 @@ type fakeRules struct {
 	validateErr error
 	validated   []model.Rule
 	reloads     int
+	sources     map[string]string
 	st          store.Store // Reload picks up stored rules like the real engine
 }
 

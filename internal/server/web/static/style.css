@@ -94,6 +94,9 @@ tbody tr:hover { background: var(--bg); }
 .st-reviewed { background: var(--green-bg); color: var(--green); }
 .st-draft { background: var(--amber-bg); color: var(--amber); }
 .st-rejected { background: var(--grey-bg); color: var(--grey); }
+.src-builtin { background: var(--grey-bg); color: var(--grey); }
+.src-feed { background: var(--green-bg); color: var(--green); }
+.src-local { background: var(--amber-bg); color: var(--amber); }
 .label { background: var(--grey-bg); color: var(--grey); border-radius: 4px; padding: 0 0.4rem; font-size: 0.85em; }
 
 .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0.75rem; }

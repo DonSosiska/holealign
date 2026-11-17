@@ -22,6 +22,7 @@ panoptes-server [-config FILE] host list
 panoptes-server [-config FILE] host allow-reenroll <id|hostname> [-ttl 1h]
 panoptes-server [-config FILE] host delete <id|hostname>
 panoptes-server [-config FILE] user set-password <user>          # password on stdin
+panoptes-server rules keygen|build|sign|verify|import|status      # signed rules feed, see rules-feed.md
 panoptes-server -version
 ```
 
@@ -39,6 +40,7 @@ running server (`data_dir`), so they use the same configuration.
 | `host allow-reenroll <host> [-ttl 1h]` | Allow **one** re-enrollment of that host without its old key, for the TTL (default 1 h, maximum 168 h). See [Re-enrolling a host](#re-enrolling-a-host). |
 | `host delete <host>` | Delete the host and its findings, notification dedup records and state. `<host>` is the ID or the hostname; an ambiguous hostname needs the ID. |
 | `user set-password <user>` | Set the password of a web user, or create the user. The password (12 or more characters) is read from the first line of stdin, so it stays out of the process list. |
+| `rules keygen`, `build`, `sign`, `verify` | Build and sign rule bundles for the central rules feed; they need no configuration or database. `rules import <tarball>` installs a signed bundle on an air-gapped server and `rules status` shows the installed bundle. See [rules-feed.md](rules-feed.md). |
 
 Tokens and users can also be managed in the web UI (Settings); every sensitive action there asks for
 your current password.
@@ -125,6 +127,7 @@ The server checks itself every minute and reports to Matrix ([notifications.md](
 |---|---|---|
 | Agent silent / back | no check-in for `alerts.agent_silent_after` (30 m) | `0` |
 | Feed stale / OK | vulnerability DB older than `alerts.feed_stale_after` (48 h), or refresh failing | `0` |
+| Feed stale / OK (rules feed) | with `rules.feed.enabled` and a `url`: no successful poll for `rules.feed.stale_after` (7 d), or the last 3 polls failed; detail starts with "rules feed" | `0` |
 | Pipeline error | 3 failed runs for a host, a skipped (poisoned or invalid) target, or a host limit hit | n/a |
 
 The dashboard also shows active feed, pipeline and Matrix-delivery problems as banners. Silence

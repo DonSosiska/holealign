@@ -40,6 +40,29 @@ type RulesService interface {
 	Reload(ctx context.Context) error
 }
 
+// RuleSourcer is optionally implemented by the RulesService: it names the layer each rule comes
+// from ("builtin", "feed:<seq>" or "db").
+type RuleSourcer interface{ Sources() map[string]string }
+
+// sourceBadge turns an engine source into the UI label and the badge CSS class.
+func sourceBadge(src string) (label, class string) {
+	switch {
+	case src == "builtin":
+		return "built-in", "src-builtin"
+	case strings.HasPrefix(src, "feed:"):
+		return "feed #" + strings.TrimPrefix(src, "feed:"), "src-feed"
+	}
+	return "local", "src-local"
+}
+
+// ruleSources maps rule ID to its raw engine source; empty without an engine.
+func (s *Server) ruleSources() map[string]string {
+	if rs, ok := s.d.Rules.(RuleSourcer); ok && rs != nil {
+		return rs.Sources()
+	}
+	return nil
+}
+
 // Triggerer re-runs the pipeline for all hosts (after rule changes).
 type Triggerer interface{ TriggerAll() }
 
@@ -176,6 +199,9 @@ func (s *Server) parseTemplates() error {
 			return listBody{l, names, showHost}
 		},
 		"gfix":         groupFix,
+		"srclabel":     func(src string) string { l, _ := sourceBadge(src); return l },
+		"srcclass":     func(src string) string { _, c := sourceBadge(src); return c },
+		"isfeed":       func(src string) bool { return strings.HasPrefix(src, "feed:") },
 		"rclass":       func(st model.RuleStatus) string { return "st-" + string(st) },
 		"rstatus":      func(st model.RuleStatus) string { return string(st) },
 		"tokenExpired": func(t store.EnrollTokenInfo) bool { return !t.ExpiresAt.IsZero() && s.now().After(t.ExpiresAt) },

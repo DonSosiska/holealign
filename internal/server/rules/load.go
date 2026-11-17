@@ -6,8 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
-	"path/filepath"
+	"path"
 	"sort"
 
 	"gopkg.in/yaml.v3"
@@ -39,16 +40,25 @@ func ParseRule(data []byte) (model.Rule, error) {
 // file name. Parse errors are returned with the file name; semantic validation
 // is left to Validate / the Engine.
 func LoadDir(dir string) ([]model.Rule, error) {
-	entries, err := os.ReadDir(dir)
+	rs, err := LoadFS(os.DirFS(dir), ".")
 	if err != nil {
-		return nil, fmt.Errorf("read rules dir: %w", err)
+		return rs, fmt.Errorf("read rules dir: %w", err)
+	}
+	return rs, nil
+}
+
+// LoadFS is LoadDir over an fs.FS (used for the rules embedded in the binary).
+func LoadFS(fsys fs.FS, dir string) ([]model.Rule, error) {
+	entries, err := fs.ReadDir(fsys, dir)
+	if err != nil {
+		return nil, err
 	}
 	var names []string
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
 		}
-		switch filepath.Ext(e.Name()) {
+		switch path.Ext(e.Name()) {
 		case ".yaml", ".yml":
 			names = append(names, e.Name())
 		}
@@ -57,7 +67,7 @@ func LoadDir(dir string) ([]model.Rule, error) {
 	var out []model.Rule
 	var errs []error
 	for _, n := range names {
-		data, err := os.ReadFile(filepath.Join(dir, n))
+		data, err := fs.ReadFile(fsys, path.Join(dir, n))
 		if err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", n, err))
 			continue

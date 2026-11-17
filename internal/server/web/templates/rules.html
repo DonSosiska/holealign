@@ -16,7 +16,7 @@
   <td><a href="/rules/{{.ID}}">{{.ID}}</a></td>
   <td>{{if eq (rstatus .Status) "draft"}}<span class="muted">(LLM)</span> {{clip .Title 200}}{{else}}{{.Title}}{{end}}</td>
   <td><span class="badge {{rclass .Status}}">{{rstatus .Status}}</span></td>
-  <td class="muted small">{{.Source}}</td>
+  <td class="small">{{with index $.Sources .ID}}<span class="badge {{srcclass .}}">{{srclabel .}}</span>{{else}}<span class="muted">{{.Source}}</span>{{end}}</td>
   <td class="small">{{join .Vulns ", "}}</td>
 </tr>{{end}}</tbody></table></div>
 {{else}}<p class="empty">No rules.</p>{{end}}

@@ -4,6 +4,7 @@
 //	panoptes-server [-config file] token create <name> [-max-hosts N] [-expires 72h] [-labels a,b] | token list | token revoke <name>
 //	panoptes-server [-config file] host list | host allow-reenroll <id|hostname> [-ttl 1h] | host delete <id|hostname>
 //	panoptes-server [-config file] user set-password <user>   (password on stdin)
+//	panoptes-server rules keygen|build|sign|verify|import|status   (signed rules feed, docs/rules-feed.md)
 //	panoptes-server -version
 package main
 
@@ -42,6 +43,7 @@ import (
 	"github.com/DonSosiska/panoptes/internal/server/notify"
 	"github.com/DonSosiska/panoptes/internal/server/pipeline"
 	"github.com/DonSosiska/panoptes/internal/server/rules"
+	"github.com/DonSosiska/panoptes/internal/server/rulesfeed"
 	"github.com/DonSosiska/panoptes/internal/server/store"
 	"github.com/DonSosiska/panoptes/internal/server/web"
 )
@@ -74,6 +76,8 @@ commands:
   token list                  list enrollment tokens
   token revoke <name>         revoke an enrollment token
   user set-password <user>    set (or create) a web user; password is read from stdin
+  rules keygen|build|sign|verify|import|status
+                              central rules feed tooling (see 'rules' for details)
 `)
 		fs.PrintDefaults()
 	}
@@ -100,6 +104,10 @@ commands:
 		return 2
 	}
 	rest = sub.Args()
+	if cmd == "rules" {
+		// keygen/build/sign/verify must work without a server configuration or database
+		return rulesCmd(*cfgPath, rest, stdout, stderr)
+	}
 
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
@@ -139,6 +147,10 @@ type components struct {
 	Evaluator core.RuleEvaluator
 	Notifier  core.Notifier
 	Drafter   core.RuleDrafter
+	// Engine is the rule engine (the rules feed installs its layer into it).
+	Engine *rules.Engine
+	// Feed is the signed rules feed (nil when rules.feed.enabled is false).
+	Feed *rulesfeed.Feed
 	// Mount lets other packages (web UI) register routes on the admin mux (or on the shared mux
 	// in legacy single-port mode).
 	Mount []func(mux *http.ServeMux)
@@ -208,17 +220,33 @@ func wire(cfg *config.Config, st store.Store, log *slog.Logger, trig *lateTrigge
 		Drafter:   core.NoopDrafter{},
 	}
 
-	// Rules: shipped YAML + DB rules (LLM drafts, user edits).
-	fileRules, err := rules.LoadDir(cfg.RulesDir)
-	if err != nil {
-		log.Warn("loading rules dir", "dir", cfg.RulesDir, "err", err)
-	}
-	engine := rules.New(fileRules, st)
+	// Rules, lowest precedence first: built-in (embedded; rules_dir adds/overrides by ID) <
+	// signed rules feed (internal/server/rulesfeed) < DB rules (LLM drafts, user edits).
+	engine := rules.New(builtinRules(cfg, log), st)
 	for _, p := range engine.Problems() {
 		log.Warn("invalid rule skipped", "rule", p.RuleID, "source", p.Source, "err", p.Err)
 	}
 	log.Info("rules loaded", "count", len(engine.Rules()))
 	comp.Evaluator = engine
+	comp.Engine = engine
+	if cfg.Rules.Feed.Enabled {
+		keys, err := rulesfeed.ParsePublicKeys(cfg.Rules.Feed.TrustedKeys)
+		if err != nil { // config validation already checked the keys
+			log.Error("rules feed disabled", "err", err)
+		} else {
+			comp.Feed = rulesfeed.New(rulesfeed.Options{
+				URL: cfg.Rules.Feed.URL, Interval: cfg.Rules.Feed.Interval, Keys: keys, Dir: cfg.RulesFeedDir(),
+				KV: st, Engine: engine, ServerVersion: version, Log: log,
+				OnUpdated: func(context.Context) { trig.TriggerAll() },
+			})
+			// activate the persisted bundle before the first pipeline run
+			comp.Feed.LoadPersisted(context.Background())
+			comp.Start = append(comp.Start, func(ctx context.Context) {
+				go func() { defer recoverLog(log, "rules feed"); comp.Feed.Run(ctx) }()
+			})
+			log.Info("rules feed enabled", "url", cfg.Rules.Feed.URL, "interval", cfg.Rules.Feed.Interval, "installed_seq", comp.Feed.Seq())
+		}
+	}
 
 	// Matrix notifier (optional).
 	if cfg.Matrix.Homeserver != "" {
@@ -361,6 +389,7 @@ func serve(cfg *config.Config) error {
 		AgentSilentAfter: cfg.Alerts.AgentSilentAfter, FeedStaleAfter: cfg.Alerts.FeedStaleAfter,
 		FeedBuilt: func() time.Time { return grypeDB.Status().Built },
 		PublicURL: cfg.PublicURL, Logger: log,
+		RulesFeedStaleAfter: rulesFeedStaleAfter(cfg),
 	})
 	pipe := pipeline.New(st, grypeDB, comp.Evaluator, comp.Notifier, comp.Drafter,
 		pipeline.Options{PublicURL: cfg.PublicURL, Logger: log, UnknownGrace: unknownGrace(cfg),

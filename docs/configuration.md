@@ -37,7 +37,7 @@ variables.
 | Key | Type | Default | Environment | Description |
 |---|---|---|---|---|
 | `data_dir` | string (path) | `/var/lib/panoptes` | `PANOPTES_DATA_DIR` | SQLite database `panoptes.db` and Grype DB cache `grype-db/`. Must not be empty. Must match `StateDirectory` of the systemd unit. |
-| `rules_dir` | string (path) | `/usr/share/panoptes/rules` | `PANOPTES_RULES_DIR` | Directory of shipped rule YAML files. |
+| `rules_dir` | string (path) | `/usr/share/panoptes/rules` | `PANOPTES_RULES_DIR` | Optional directory of rule YAML files. The eight shipped rules are embedded in the binary, so a missing directory is fine; files here add rules and replace embedded ones with the same `id`. |
 | `retention.resolved_findings` | duration | `30d` | `PANOPTES_RETENTION_RESOLVED_FINDINGS` | Delete resolved findings older than this (daily and at start). `0` keeps them forever. |
 | `retention.notifications` | duration | `90d` | `PANOPTES_RETENTION_NOTIFICATIONS` | Delete notification dedup rows older than this. Rows of still-open findings are kept. `0` keeps forever. |
 | `limits.findings_per_host` | int | `20000` | `PANOPTES_LIMITS_FINDINGS_PER_HOST` | Open findings kept per host; the lowest severities are dropped first (WARN and a `pipeline_error` alert). `0` = unlimited. |
@@ -52,6 +52,18 @@ variables.
 | `alerts.agent_silent_after` | duration | `30m` | `PANOPTES_ALERTS_AGENT_SILENT_AFTER` | Alert when a host has not checked in for this long. `0` disables `agent_silent` / `agent_back`. |
 | `alerts.feed_stale_after` | duration | `48h` | `PANOPTES_ALERTS_FEED_STALE_AFTER` | Alert when the vulnerability DB is older than this or refreshing keeps failing. `0` disables `feed_stale` / `feed_ok`. |
 | `alerts.ops_rooms` | list of room IDs | `[]` | `PANOPTES_ALERTS_OPS_ROOMS` | Matrix rooms for server-level events (feed, pipeline, mass silence). Empty: `matrix.default_rooms`. |
+
+### Rules feed
+
+The signed central rules feed ([rules-feed.md](rules-feed.md)). Layers: built-in < feed < local (DB).
+
+| Key | Type | Default | Environment | Description |
+|---|---|---|---|---|
+| `rules.feed.enabled` | bool | `false` | `PANOPTES_RULES_FEED_ENABLED` | Poll, verify and install signed rule bundles. Requires `rules.feed.trusted_keys`. |
+| `rules.feed.url` | string | empty | `PANOPTES_RULES_FEED_URL` | URL of `latest.json`. `https://` is required; `file://` is accepted for tests, mirrors and air-gapped servers. Empty: no polling, only bundles installed with `panoptes-server rules import` are used. |
+| `rules.feed.interval` | duration | `6h` | `PANOPTES_RULES_FEED_INTERVAL` | Poll period, at least `1m`. |
+| `rules.feed.trusted_keys` | list of base64 | `[]` | `PANOPTES_RULES_FEED_TRUSTED_KEYS` (comma separated) | ed25519 public keys (`panoptes-server rules keygen` prints one). A bundle must be signed by one of them; list two keys while rotating. Enabled with an empty list is a configuration error. |
+| `rules.feed.stale_after` | duration | `7d` | `PANOPTES_RULES_FEED_STALE_AFTER` | `feed_stale` alert ("rules feed ...") when no poll succeeded for this long or the last 3 polls failed. `0` disables; the check is also off when `url` is empty. |
 
 ### Triage
 
@@ -93,6 +105,8 @@ The server refuses to start when:
   contains something that is not an IP or CIDR;
 - a `*_env` name does not match `^PANOPTES_[A-Z0-9_]+$`, or `matrix.access_token_env`,
   `llm.api_key_env` and `admin.initial_password_env` are not pairwise different;
+- `rules.feed.enabled` is set without a valid `rules.feed.trusted_keys` entry, `rules.feed.url` is not `https://` or
+  `file://`, or `rules.feed.interval` is below `1m`;
 - `retention.*` or `limits.*` is negative, or `triage.epss_threshold` is outside 0..1;
 - a configured certificate cannot be loaded, or the initial admin password is shorter than 12 characters.
 

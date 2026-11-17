@@ -2,6 +2,7 @@
 {{define "content"}}
 <h1>Dashboard</h1>
 {{if .FeedStale}}<div class="flash err" role="alert"><strong>Vulnerability feed stale:</strong> {{.FeedStale}}</div>{{end}}
+{{if .RulesFeedStale}}<div class="flash err" role="alert"><strong>Rules feed stale:</strong> {{.RulesFeedStale}}</div>{{end}}
 {{if .NotifyProblems}}<div class="flash err" role="alert"><strong>Alert delivery problems:</strong>
 <ul>{{range .NotifyProblems}}<li>{{.}}</li>{{end}}</ul></div>{{end}}
 {{if .PipelineErrors}}<div class="flash err" role="alert"><strong>Pipeline errors:</strong>
@@ -37,5 +38,14 @@
   <dt>Last error</dt><dd>{{if .FeedError}}<span class="err-text">{{.FeedError}}</span>{{else}}<span class="muted">none</span>{{end}}</dd>
 </dl>
 </section>
+{{if .RulesFeedOn}}<section>
+<h2>Rules feed</h2>
+<dl class="kv">
+  <dt>Installed bundle</dt><dd>{{if .RulesFeedSeq}}#{{.RulesFeedSeq}}{{else}}<span class="muted">none (built-in rules only)</span>{{end}}</dd>
+  <dt>Last updated</dt><dd>{{if .RulesFeedUpdated}}{{.RulesFeedUpdated}}{{else}}<span class="muted">never</span>{{end}}</dd>
+  <dt>Last checked</dt><dd>{{if .RulesFeedChecked}}{{.RulesFeedChecked}}{{else}}<span class="muted">never</span>{{end}}</dd>
+  <dt>Last error</dt><dd>{{if .RulesFeedError}}<span class="err-text">{{.RulesFeedError}}</span>{{else}}<span class="muted">none</span>{{end}}</dd>
+</dl>
+</section>{{end}}
 </div>
 {{end}}

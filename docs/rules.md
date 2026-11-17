@@ -24,6 +24,10 @@ evaluates it against the host's facts.
 | `not_affected` | A rule says the package is not affected at all. |
 | `resolved` | The finding is gone (package upgraded or removed). |
 
+Rules come from three layers (built-in < signed rules feed < local DB); see
+[rules-feed.md](rules-feed.md#layers-and-precedence). The UI shows each rule's source as `built-in`,
+`feed #<seq>` or `local`.
+
 Algorithm, per finding:
 
 1. Find the applicable rule. None: `conditions_unknown`, reason "no rule".
@@ -240,8 +244,12 @@ There is no separate "dry run" command. Practical workflow:
    the UI: the verdict reason names the deciding facts and values. A rule that produces
    `conditions_unknown` usually has a fact missing from the host (compare with `-print-facts`) or an
    expression error (the reason shows it).
-4. **Unit tests.** Shipped rules have Go tests in `internal/server/rules/engine_test.go`; see
-   [development.md](development.md). Add a case there when you contribute a rule.
+4. **Rule tests.** Every shipped rule has a test file `rules-tests/<rule-id>.yaml`: a list of cases
+   `{name, finding, facts, host, want}` evaluated by the real engine, see
+   [rules-feed.md](rules-feed.md#rule-tests). `go test ./internal/server/rules/` runs them. Add cases
+   there when you contribute a rule; a rule published through the feed must have at least one
+   `exploitable` and one non-exploitable case. The older per-rule Go tests are in
+   `internal/server/rules/engine_test.go`; see [development.md](development.md).
 
 Do not test on production alert routes: a new `exploitable` verdict sends a Matrix message to the
 rooms of the host's labels.
@@ -273,7 +281,8 @@ approve a rule for it.
 
 ## Shipped rules
 
-All eight have `status: reviewed` and live in [rules/](../rules/).
+All eight have `status: reviewed`, live in [rules/](../rules/) (embedded in the server binary) and have
+tests in [rules-tests/](../rules-tests/).
 
 | Rule | What it decides |
 |---|---|
