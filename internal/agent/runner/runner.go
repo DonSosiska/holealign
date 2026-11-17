@@ -111,6 +111,23 @@ func New(cfg config.Config, version string, log *slog.Logger, src hostdata.Sourc
 	if err != nil {
 		return nil, err
 	}
+	return newWithClient(cfg, version, log, src, client), nil
+}
+
+// NewWithClient is New with a caller-supplied transport client (the server's in-process local
+// agent talks to the API handler through an in-memory http.RoundTripper). TLS options in cfg
+// are ignored.
+func NewWithClient(cfg config.Config, version string, log *slog.Logger, src hostdata.Source, client *transport.Client) *Runner {
+	if src == nil {
+		src = hostdata.NewLocal(cfg, false)
+	}
+	if log == nil {
+		log = slog.Default()
+	}
+	return newWithClient(cfg, version, log, src, client)
+}
+
+func newWithClient(cfg config.Config, version string, log *slog.Logger, src hostdata.Source, client *transport.Client) *Runner {
 	client.AllowInsecureHTTP = cfg.AllowInsecureHTTP
 	if cfg.AllowInsecureHTTP && strings.HasPrefix(cfg.ServerURL, "http://") {
 		log.Warn("allow_insecure_http is set: traffic including the agent key is NOT encrypted")
@@ -124,7 +141,7 @@ func New(cfg config.Config, version string, log *slog.Logger, src hostdata.Sourc
 		log:     log,
 		client:  client,
 		src:     src,
-	}, nil
+	}
 }
 
 // Run loops until ctx is cancelled.

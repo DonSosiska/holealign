@@ -18,7 +18,6 @@ import (
 
 	"github.com/anchore/syft/syft/sbom"
 	"github.com/anchore/syft/syft/source"
-	_ "modernc.org/sqlite" // registers the "sqlite" driver Syft needs for newer RPM databases
 
 	"github.com/DonSosiska/panoptes/internal/agent/config"
 	"github.com/DonSosiska/panoptes/internal/model"

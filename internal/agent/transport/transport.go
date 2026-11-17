@@ -105,6 +105,17 @@ func New(baseURL, key string) *Client {
 	}
 }
 
+// NewWithHTTP creates a client that sends its requests through hc instead of a network
+// transport (used by the server's built-in local agent: hc dispatches straight to the API
+// handler in memory). Redirects are still never followed.
+func NewWithHTTP(baseURL, key string, hc *http.Client) *Client {
+	c := New(baseURL, key)
+	cp := *hc
+	cp.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	c.HTTP = &cp
+	return c
+}
+
 // newHTTPClient builds a client that never follows redirects (a redirect could
 // re-send the bearer key or the body elsewhere) and requires TLS 1.2+.
 func newHTTPClient(baseURL string) *http.Client {

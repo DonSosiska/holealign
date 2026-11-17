@@ -105,6 +105,11 @@ plus `agent.collector_error`; only an unreachable socket skips the cycle.
 
 `panoptes-agent -print-facts` / `-print-inventory` / `-once` always run in-process.
 
+Agentless mode: the server can run this same runner in-process for its own host (`local_agent`, §6); there the
+"sender" is the server process, the transport is an in-memory `RoundTripper` to the agent API, and the data source
+is either the collector socket above or `hostdata.Local`. `panoptes-agent -mode collector` on such a host still reads
+`/etc/panoptes/agent.yaml` (which requires a `server_url`; `deploy/install.sh --collector-only` writes a placeholder).
+
 Server identity: TLS 1.2+, chain and host name are always verified (`InsecureSkipVerify` is never set). With `ca_file`
 only that bundle is trusted. With `server_cert_sha256` the presented leaf's SPKI SHA-256 must be in the list (colons
 and upper case are accepted); if `ca_file` is absent the chain is still validated against the system roots. A mismatch
@@ -409,6 +414,16 @@ retention:                            # 0 = keep forever; accepts "30d" and Go d
 limits:                               # 0 = unlimited
   findings_per_host: 20000            # open findings per host; excess dropped by lowest severity
   match_seconds_per_host_hour: 900    # matcher time per host per rolling hour; over budget -> runs deferred
+local_agent:                          # agentless mode: the server monitors its own host (see below)
+  enabled: false                      # env PANOPTES_LOCAL_AGENT_ENABLED
+  source: auto                        # collector | inprocess | auto
+  collector_socket: /run/panoptes/collector.sock
+  labels: [server]                    # authoritative (locked) labels of the local host
+  checkin_interval: 5m                # >= 1m
+  inventory_interval: 6h              # >= 1m
+  scan_language_packages: true
+  exclude_paths: []                   # empty = agent defaults (§2)
+  docker_socket: /var/run/docker.sock
 ```
 
 Validation: `*_env` names must match `^PANOPTES_[A-Z0-9_]+$` and `matrix.access_token_env`, `llm.api_key_env`,
@@ -427,13 +442,54 @@ port. `trusted_proxies`: only when the TCP peer is in the list is the client IP 
 zoned (`fe80::1%eth0`) entry makes the peer address the client.
 `panoptes-server user set-password` needs at least 12 characters.
 
+### Agentless mode (`local_agent`)
+
+With `local_agent.enabled: true` the installed `panoptes-server` monitors **its own host** without a separately
+installed `panoptes-agent`; the host appears like any other host (findings, rules, Matrix alerts, silence alerts).
+`internal/server/localagent` runs the normal agent runner (§2) in the server process and gives it an `http.Client`
+whose `RoundTripper` calls the agent API handler (the mux the agent listener serves) directly in memory (base URL
+`https://panoptes.local`, `RemoteAddr` `127.0.0.1:0`, nothing touches the network). Every server-side validation,
+limit, authentication and pipeline path therefore applies exactly as for a remote agent; gzip request bodies work.
+
+- **Data source** (`local_agent.source`): `collector` connects to the root collector's unix socket
+  (`collector_socket`; recommended: the server stays unprivileged, the host runs only `panoptes-collector.service`);
+  `inprocess` collects in the server process with the server's privileges (`hostdata.Local`; one WARN that facts may
+  be incomplete when euid != 0; meant for dev and single-box setups; inside a container it scans the container, not
+  the host); `auto` (default) uses `collector` when a probe request on the socket succeeds, otherwise `inprocess`,
+  and logs the choice. The collector accepts only root and `collector_user` (SO_PEERCRED), so with `collector` the
+  server must run as that user (`panoptes`), not as a systemd `DynamicUser`.
+- **data_dir is never scanned**: the in-process scanner always excludes `data_dir` (on top of `exclude_paths`).
+  Closing any file descriptor of a file drops the process's POSIX locks on it, so a scanner that merely opens
+  the server's own SQLite files would corrupt the database that the store holds open (observed in the e2e run).
+- **Enrollment without tokens**: at start the server provisions the host itself (direct store call, not an enroll
+  token; the host's token name is `local-agent`). `machine_id` is the same hashed machine id an agent computes
+  (`hostinfo.MachineID`, from the collector when `source` is `collector`), hostname the OS hostname, labels
+  `local_agent.labels` (authoritative and locked like enrollment-token labels; a change of the setting is applied
+  at the next start and rotates the key). The plain agent key is stored only in
+  `data_dir/local-agent/credentials.json` (0600); the DB holds its hash. A restart reuses it. The host id is kept
+  in kv `local_host`, which makes the web UI show a "local (built-in)" badge on the hosts list and the host page.
+- **Conflict rule**: if a host with the same machine id already exists that these credentials do not
+  authenticate (e.g. a standalone agent was installed on this box first), the local agent does NOT take it over:
+  it logs one ERROR (`panoptes-server host delete <hostname>` and uninstall the agent, or disable `local_agent`)
+  and does not start. A host this server provisioned itself is recovered after a crash mid-rotation.
+- **Lifecycle**: started after the pipeline and both listeners are up, stopped on shutdown; a panic or error is
+  logged and the agent restarts with backoff (5 s doubling to 5 min); it never takes the server down. The local host
+  is subject to the normal health logic: a stalled local agent raises `agent_silent`. A `host delete` of the local
+  host while the server runs is only noticed after a restart (the in-process agent retries unauthorised calls
+  hourly).
+
 Environment variable `PANOPTES_CONFIG` points to the file; every scalar can be overridden by
 `PANOPTES_<SECTION>_<KEY>` (e.g. `PANOPTES_MATRIX_HOMESERVER`).
 
 ## 7. Build constraints
 
-- SQLite drivers: the **server** uses `github.com/glebarez/go-sqlite` (Grype already links it and it registers
-  the driver name `sqlite`); importing `modernc.org/sqlite` directly in any server package panics at start-up
-  ("Register called twice"). The **agent** does not link Grype and imports `modernc.org/sqlite` for Syft's RPM
-  cataloger. Never import agent packages from the server or vice versa (except `internal/model`).
+- SQLite drivers: both SQLite drivers register the `database/sql` name `sqlite`, and a second registration panics
+  at start-up ("Register called twice"). The **server** links `github.com/glebarez/go-sqlite` (Grype and the
+  store); it also links the agent's inventory scanner (Syft) for the built-in local agent (§6), and Syft's RPM
+  cataloger then uses that same driver. `modernc.org/sqlite` is therefore imported **only** by the agent binary,
+  in `cmd/panoptes-agent/sqlite_driver.go` (never in `internal/agent/inventory` or any other library package).
+  `cmd/panoptes-server/sqlite_driver_test.go` asserts that the server's dependency graph does not contain
+  `modernc.org/sqlite`, that the agent's does, and that `sql.Drivers()` lists `sqlite` exactly once.
+- Package boundaries: the server and the agent share only `internal/model`, with one exception: the built-in
+  local agent, `internal/server/localagent` (imports `agent/{config,hostdata,runner,transport}`).
 - Grype DB v6 provides KEV and EPSS; there are no separate CISA/FIRST fetchers.

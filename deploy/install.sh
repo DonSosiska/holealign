@@ -23,6 +23,10 @@
 #   --min-version X.Y.Z  refuse to install a release older than this (default: no minimum).
 #   --allow-downgrade install a release older than the one that is installed (refused by default).
 #   --binary PATH     install this local panoptes-agent binary instead of downloading (air-gapped).
+#   --collector-only  install only the root collector (panoptes-collector.service) and the "panoptes"
+#                     group/user: no sender, no --server / token needed. For a host whose
+#                     panoptes-server runs the built-in local agent with `local_agent.source: collector`
+#                     (agentless mode, see the README). Writes a minimal agent.yaml when none exists.
 #   --force           overwrite an existing /etc/panoptes/agent.yaml.
 #                     With --uninstall, also remove the config and state.
 #   --uninstall       stop the service and remove the unit and binary (/usr/bin and the old
@@ -64,6 +68,7 @@ ALLOW_DOWNGRADE=0
 BINARY_SRC=""
 FORCE=0
 UNINSTALL=0
+COLLECTOR_ONLY=0
 
 BIN_PATH="/usr/bin/panoptes-agent"
 OLD_BIN_PATH="/usr/local/bin/panoptes-agent" # group-writable on some distros; removed on install/uninstall
@@ -87,7 +92,7 @@ log() {
 }
 
 usage() {
-    sed -n '2,49p' "$0" 2>/dev/null | sed 's/^# \{0,1\}//' || true
+    sed -n '2,52p' "$0" 2>/dev/null | sed 's/^# \{0,1\}//' || true
 }
 
 # --- argument parsing -------------------------------------------------------
@@ -130,6 +135,8 @@ while [ $# -gt 0 ]; do
             BINARY_SRC="$2"; shift 2 ;;
         --force)
             FORCE=1; shift ;;
+        --collector-only)
+            COLLECTOR_ONLY=1; shift ;;
         --uninstall)
             UNINSTALL=1; shift ;;
         -h|--help)
@@ -225,7 +232,7 @@ if [ "$CONFIG_EXISTS" -eq 1 ]; then
     chmod 0640 "$CONF_FILE"
 fi
 
-if [ "$WRITE_CONFIG" -eq 1 ]; then
+if [ "$WRITE_CONFIG" -eq 1 ] && [ "$COLLECTOR_ONLY" -eq 0 ]; then
     [ -n "$SERVER" ] || die "--server is required"
     case "$SERVER" in
         https://*) ;;
@@ -466,21 +473,32 @@ if [ "$WRITE_CONFIG" -eq 1 ]; then
     old_umask="$(umask)"
     umask 077
     tmp_conf="$CONF_FILE.tmp.$$"
-    cat > "$tmp_conf" <<EOF
+    if [ "$COLLECTOR_ONLY" -eq 1 ]; then
+        # The config parser insists on a server_url, but -mode collector never contacts it.
+        cat > "$tmp_conf" <<EOF
+# Written by install.sh --collector-only: this host runs only the collector for the built-in
+# local agent of panoptes-server (local_agent.source: collector). server_url is required by the
+# config parser and is never contacted in -mode collector.
+server_url: "https://panoptes.invalid"
+state_dir: $STATE_DIR
+EOF
+    else
+        cat > "$tmp_conf" <<EOF
 # Written by install.sh. See deploy/agent.yaml.example for all keys.
 server_url: "$SERVER"
 enroll_token: "$TOKEN"
 labels: $yaml_labels
 state_dir: $STATE_DIR
 EOF
-    if [ "$ALLOW_HTTP" -eq 1 ]; then
+    fi
+    if [ "$ALLOW_HTTP" -eq 1 ] && [ "$COLLECTOR_ONLY" -eq 0 ]; then
         printf 'allow_insecure_http: true\n' >> "$tmp_conf"
     fi
-    if [ -n "$CA_FILE" ]; then
+    if [ -n "$CA_FILE" ] && [ "$COLLECTOR_ONLY" -eq 0 ]; then
         install -o root -g "$SVC_USER" -m 0640 "$CA_FILE" "$CA_DEST"
         printf 'ca_file: %s\n' "$CA_DEST" >> "$tmp_conf"
     fi
-    if [ -n "$PINS" ]; then
+    if [ -n "$PINS" ] && [ "$COLLECTOR_ONLY" -eq 0 ]; then
         yaml_pins=""
         for pin in $PINS; do
             pin_clean="$(printf '%s' "$pin" | tr -d ':' | tr 'A-F' 'a-f')"
@@ -604,6 +622,7 @@ MemoryMax=1G
 [Install]
 WantedBy=multi-user.target
 EOF
+if [ "$COLLECTOR_ONLY" -eq 0 ]; then
 cat > "$UNIT_PATH" <<'EOF'
 [Unit]
 Description=Panoptes agent (unprivileged sender: talks to the server)
@@ -664,7 +683,9 @@ MemoryMax=512M
 [Install]
 WantedBy=multi-user.target
 EOF
-chmod 0644 "$UNIT_PATH" "$COLLECTOR_UNIT_PATH"
+chmod 0644 "$UNIT_PATH"
+fi
+chmod 0644 "$COLLECTOR_UNIT_PATH"
 
 # state from an older (root) install becomes owned by the service user; systemd also does this
 # for StateDirectory=, this keeps a manual run working too
@@ -673,6 +694,13 @@ if [ -d "$STATE_DIR" ]; then
 fi
 
 systemctl daemon-reload
+if [ "$COLLECTOR_ONLY" -eq 1 ]; then
+    systemctl enable --now "$COLLECTOR_UNIT_NAME"
+    systemctl restart "$COLLECTOR_UNIT_NAME"
+    log "panoptes-collector (root, no network) is running; socket /run/panoptes/collector.sock"
+    log "set local_agent.enabled: true and source: collector in server.yaml (the server must run as user $SVC_USER, see deploy/systemd/panoptes-server.service)"
+    exit 0
+fi
 systemctl enable --now "$COLLECTOR_UNIT_NAME" "$UNIT_NAME"
 # Restart so an upgraded binary or a rewritten config takes effect.
 systemctl restart "$COLLECTOR_UNIT_NAME" "$UNIT_NAME"

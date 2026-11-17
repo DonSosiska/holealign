@@ -37,6 +37,7 @@ import (
 	"github.com/DonSosiska/panoptes/internal/server/feeds"
 	"github.com/DonSosiska/panoptes/internal/server/health"
 	"github.com/DonSosiska/panoptes/internal/server/llm"
+	"github.com/DonSosiska/panoptes/internal/server/localagent"
 	"github.com/DonSosiska/panoptes/internal/server/match"
 	"github.com/DonSosiska/panoptes/internal/server/notify"
 	"github.com/DonSosiska/panoptes/internal/server/pipeline"
@@ -431,6 +432,9 @@ func serve(cfg *config.Config) error {
 		}()
 	}
 
+	// Agentless mode: the built-in agent monitors this host through the API handler in memory.
+	localDone := startLocalAgent(ctx, cfg, st, apiMux, log)
+
 	var serveErr error
 	select {
 	case serveErr = <-errCh:
@@ -446,6 +450,11 @@ func serve(cfg *config.Config) error {
 		}
 	}
 	serving.Wait()
+	select {
+	case <-localDone:
+	case <-time.After(30 * time.Second):
+		log.Warn("local agent did not stop in time")
+	}
 	<-feedsDone
 	<-monDone
 	<-pruneDone
@@ -454,6 +463,19 @@ func serve(cfg *config.Config) error {
 		return fmt.Errorf("listen: %w", serveErr)
 	}
 	return nil
+}
+
+// startLocalAgent starts the built-in local agent when local_agent.enabled is set. The returned
+// channel is closed when it has stopped (immediately when disabled).
+func startLocalAgent(ctx context.Context, cfg *config.Config, st store.Store, apiHandler http.Handler, log *slog.Logger) <-chan struct{} {
+	if !cfg.LocalAgent.Enabled {
+		done := make(chan struct{})
+		close(done)
+		return done
+	}
+	return localagent.New(localagent.Options{
+		Config: cfg.LocalAgent, DataDir: cfg.DataDir, Store: st, Handler: apiHandler, Version: version, Log: log,
+	}).Start(ctx)
 }
 
 // minAdminPassword is the minimum length of the initial admin password.

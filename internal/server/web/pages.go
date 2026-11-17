@@ -2,6 +2,7 @@ package web
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -93,7 +94,9 @@ func (s *Server) handleHosts(w http.ResponseWriter, r *http.Request, sess *sessi
 	type row struct {
 		model.Host
 		Exploitable, Unknown int
+		Local                bool
 	}
+	localID := s.localHostID(ctx)
 	rows := make([]row, 0, len(hosts))
 	for _, h := range hosts {
 		fs, err := s.d.Store.HostFindings(ctx, h.ID)
@@ -101,7 +104,7 @@ func (s *Server) handleHosts(w http.ResponseWriter, r *http.Request, sess *sessi
 			s.storeErr(w, r, sess, err)
 			return
 		}
-		rw := row{Host: h}
+		rw := row{Host: h, Local: localID != "" && h.ID == localID}
 		for _, f := range fs {
 			switch f.Verdict {
 			case model.VerdictExploitable:
@@ -119,6 +122,15 @@ func (s *Server) handleHosts(w http.ResponseWriter, r *http.Request, sess *sessi
 		return rows[i].Hostname < rows[j].Hostname
 	})
 	s.render(w, r, sess, http.StatusOK, "hosts", map[string]any{"Rows": rows})
+}
+
+// localHostID is the id of the server's own (built-in agent) host, or "".
+func (s *Server) localHostID(ctx context.Context) string {
+	id, err := s.d.Store.KVGet(ctx, "local_host")
+	if err != nil {
+		return ""
+	}
+	return id
 }
 
 func (s *Server) handleHost(w http.ResponseWriter, r *http.Request, sess *session) {
@@ -151,6 +163,7 @@ func (s *Server) handleHost(w http.ResponseWriter, r *http.Request, sess *sessio
 	sortFindings(shown)
 	s.render(w, r, sess, http.StatusOK, "host", map[string]any{
 		"Host": h, "Targets": targets, "Findings": shown, "Hidden": hidden, "All": all,
+		"Local": s.localHostID(ctx) == h.ID,
 		"Stale": h.LastCheckin.IsZero() || s.now().Sub(h.LastCheckin) > staleAfter,
 	})
 }

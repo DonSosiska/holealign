@@ -49,6 +49,9 @@ services:
       PANOPTES_MATRIX_DEFAULT_ROOMS: ${E2E_ROOM_DEFAULT:-}
       PANOPTES_E2E_MATRIX_BOT_TOKEN: ${E2E_BOT_TOKEN:-}
       PANOPTES_ADMIN_PASSWORD: ${PANOPTES_ADMIN_PASSWORD:-}
+      # built-in local agent (assertion g): the server container monitors itself in-process
+      PANOPTES_LOCAL_AGENT_ENABLED: ${E2E_LOCAL_AGENT:-true}
+      PANOPTES_LOCAL_AGENT_SOURCE: inprocess
     volumes:
       - ${E2E_TMP:-/tmp}/server.yaml:/etc/panoptes/server.yaml:ro
       - ${E2E_GRYPE_MOUNT:-e2e-grype-db}:/var/lib/panoptes/grype-db

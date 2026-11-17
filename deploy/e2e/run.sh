@@ -266,6 +266,20 @@ else
   fi
 fi
 
+# g: built-in local agent (agentless mode): the server container monitors itself in-process (no token,
+# no agent installed there) and shows up as a "local (built-in)" host labelled "server".
+ghost() {
+  curl -fs -b "$JAR" -o "$E2E_TMP/hosts.html" "$ADMIN/hosts" &&
+    grep -q 'class="label">server</span>' "$E2E_TMP/hosts.html" &&
+    grep -q 'local (built-in)' "$E2E_TMP/hosts.html"
+}
+if wait_for localhost 90 ghost; then
+  pass "g. built-in local agent: the server host is listed with label 'server' and the local (built-in) badge"
+else
+  fail "g. built-in local agent: no 'server'-labelled local host on /hosts within 90s"; dump=1
+  dc logs --no-color --tail 40 panoptes-server 2>&1 | grep -i 'local' >&2 || true
+fi
+
 if [[ "$dump" == 1 ]]; then
   transcript prod "$ROOM_PROD"; transcript staging "$ROOM_STAGING"; transcript default "$ROOM_DEFAULT"
   dc logs --no-color --tail 40 panoptes-server >&2 2>&1 || true

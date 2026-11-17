@@ -7,7 +7,7 @@
 <tbody>
 {{range .Rows}}
 <tr>
-  <td><a href="/hosts/{{.ID}}">{{.Hostname}}</a></td>
+  <td><a href="/hosts/{{.ID}}">{{.Hostname}}</a>{{if .Local}} <span class="label" title="monitored by the server's built-in agent">local (built-in)</span>{{end}}</td>
   <td>{{range .Labels}}<span class="label">{{.}}</span> {{end}}</td>
   <td>{{.OS.PrettyName}}</td>
   <td class="mono small">{{.AgentVersion}}</td>
