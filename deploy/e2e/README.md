@@ -37,6 +37,7 @@ starts the server with the bot token and the default room, creates an enrollment
 | `E2E_WAIT_TIMEOUT` | `180` | Seconds to wait for the first alerts. |
 | `E2E_KEEP` | `0` | `1` leaves the stack running afterwards (the cleanup trap otherwise runs `docker compose down -v`). |
 | `E2E_MATRIX_PORT` / `E2E_SERVER_PORT` | `18008` / `18080` | Host ports (bound to 127.0.0.1). |
+| `E2E_ADMIN_PORT` | `18081` | Host port of the admin web UI (container port 8081, bound to 127.0.0.1); used by assertion f. |
 | `MATRIX_IMAGE` | `ghcr.io/continuwuity/continuwuity:latest` | Alternative homeserver image (must honour `CONDUWUIT_*` env). |
 
 ## Assertions
@@ -44,7 +45,7 @@ starts the server with the bot token and the default room, creates an enrollment
 a. prod room has exactly one message with `CVE-2024-6387` and `EXPLOITABLE`; it names `web-default`, lists `openssh-server` and contains `apt-get install --only-upgrade`.
 b. No `EXPLOITABLE` CVE-2024-6387 message in any room mentions `web-lgt0` (LoginGraceTime 0 -> `affected_not_exploitable`).
 c. The staging room has the EXPLOITABLE message for `staging-1`; nothing about `staging-1` reaches prod.
-d. Dedup: re-running all agents and restarting the server (which re-runs the whole pipeline) adds no messages.
+d. Dedup: re-running all agents and restarting the server (which re-runs the whole pipeline) adds no messages. A failed agent re-run fails this assertion.
 e. Fix flow: on `web-default` apt sources are switched to the current Debian repos, `apt-get install --only-upgrade openssh-server`, agent re-run -> a `RESOLVED` message for CVE-2024-6387 on `web-default` arrives in prod.
 f. Web UI: `GET /login` is 200, form login as `admin` (CSRF cookie + hidden field, random `PANOPTES_ADMIN_PASSWORD`) redirects, and `GET /findings?q=CVE-2024-6387` is 200 and lists `web-default`.
 

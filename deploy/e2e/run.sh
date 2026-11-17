@@ -14,8 +14,10 @@ done
 export E2E_MATRIX_PORT="${E2E_MATRIX_PORT:-18008}"
 export E2E_SERVER_PORT="${E2E_SERVER_PORT:-18080}"
 export E2E_ADMIN_PORT="${E2E_ADMIN_PORT:-18081}"
-export E2E_REG_TOKEN="e2e-$(openssl rand -hex 8)"
-export PANOPTES_ADMIN_PASSWORD="$(openssl rand -hex 12)"
+export E2E_REG_TOKEN
+E2E_REG_TOKEN="e2e-$(openssl rand -hex 8)"
+export PANOPTES_ADMIN_PASSWORD
+PANOPTES_ADMIN_PASSWORD="$(openssl rand -hex 12)"
 WAIT_TIMEOUT="${E2E_WAIT_TIMEOUT:-180}"
 KEEP="${E2E_KEEP:-0}"
 HS="http://127.0.0.1:${E2E_MATRIX_PORT}"
@@ -211,13 +213,17 @@ fi
 
 # d: re-run agents and restart the server (re-runs the whole pipeline) -> no new messages
 before=$(counts)
-for h in web-default web-lgt0 staging-1; do dc exec -T "$h" panoptes-agent -once >/dev/null 2>&1 || echo "   agent re-run on $h failed" >&2; done
+rerun_ok=1
+for h in web-default web-lgt0 staging-1; do
+  dc exec -T "$h" panoptes-agent -once >/dev/null 2>&1 || { echo "   agent re-run on $h failed" >&2; rerun_ok=0; }
+done
 sleep 15
 dc restart panoptes-server >/dev/null 2>&1
 wait_for server 90 curl -fsS "$SRV/healthz" -o /dev/null || die "panoptes-server did not come back after restart"
 sleep 30
 after=$(counts)
-if [[ "$before" == "$after" ]]; then pass "d. dedup: agent re-run + server restart produced no new messages (counts prod,staging,default = $before)"
+if [[ "$rerun_ok" == 1 && "$before" == "$after" ]]; then pass "d. dedup: agent re-run + server restart produced no new messages (counts prod,staging,default = $before)"
+elif [[ "$rerun_ok" != 1 ]]; then fail "d. dedup: an agent re-run failed (see above); identical inventories must be accepted"; dump=1
 else fail "d. dedup: message counts (prod,staging,default) changed from $before to $after"; dump=1; fi
 
 # e: fix flow
@@ -266,7 +272,7 @@ if [[ "$dump" == 1 ]]; then
 fi
 
 # ---- 5. summary --------------------------------------------------------------------------
-FINISHED=done
+FINISHED=1
 echo
 echo "================ E2E SUMMARY ================"
 printf '%s\n' "${RESULTS[@]}"

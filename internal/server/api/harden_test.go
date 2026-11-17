@@ -179,26 +179,67 @@ func TestInventoryRateLimitAndDuplicateHash(t *testing.T) {
 		resp, _ := e.do(t, "POST", "/api/v1/inventory", er.AgentKey, js, nil)
 		return resp.StatusCode, resp.Header.Get("Retry-After")
 	}
-	if c, _ := inv("h1"); c != 202 {
-		t.Fatal(c)
+	// burst 3: three distinct inventories in a row are accepted
+	for i := 1; i <= 3; i++ {
+		if c, _ := inv(fmt.Sprintf("h%d", i)); c != 202 {
+			t.Fatalf("distinct inventory %d: %d", i, c)
+		}
 	}
-	if e.trig.count() != 1 {
+	if e.trig.count() != 3 {
 		t.Fatalf("triggers=%d", e.trig.count())
 	}
-	c, ra := inv("h2")
-	if c != 429 || ra == "" {
-		t.Fatalf("second upload within 5 min: %d Retry-After=%q", c, ra)
+	// the 4th has no token left: 429 with Retry-After = time to the next token (5 min)
+	if c, ra := inv("h4"); c != 429 || ra != "300" {
+		t.Fatalf("4th inventory: %d Retry-After=%q", c, ra)
 	}
-	now = now.Add(6 * time.Minute)
-	if c, _ := inv("h1"); c != 202 { // identical to the stored hash? stored is h1
-		t.Fatal(c)
+	// one token refills after 5 min
+	now = now.Add(5 * time.Minute)
+	if c, _ := inv("h4"); c != 202 {
+		t.Fatalf("after refill: %d", c)
 	}
-	if e.trig.count() != 1 {
+	if e.trig.count() != 4 {
+		t.Fatalf("triggers=%d", e.trig.count())
+	}
+	// the bucket is empty again and the same hash repeated is still 202 without matching
+	for i := 0; i < 10; i++ {
+		if c, _ := inv("h4"); c != 202 {
+			t.Fatalf("identical hash %d: %d", i, c)
+		}
+	}
+	if e.trig.count() != 4 {
 		t.Fatalf("identical hash re-ran matching: triggers=%d", e.trig.count())
 	}
-	now = now.Add(6 * time.Minute)
-	if c, _ := inv("h3"); c != 202 || e.trig.count() != 2 {
-		t.Fatalf("new hash: %d triggers=%d", c, e.trig.count())
+}
+
+func TestIdenticalInventorySpendsNoToken(t *testing.T) {
+	now := time.Now()
+	e := setupWith(t, func(d *Deps) {
+		d.Now = func() time.Time { return now }
+		d.CheckinInterval, d.EnrollPerMinute, d.BadAuthPerMinute = -1, -1, -1
+	})
+	er := e.enroll(t, "m")
+	inv := func(hash string) int {
+		js, _ := json.Marshal(model.InventoryPayload{Hash: hash, Targets: []model.InventoryTarget{{Kind: model.TargetHost, Name: "host", SBOM: json.RawMessage(`{}`)}}})
+		resp, _ := e.do(t, "POST", "/api/v1/inventory", er.AgentKey, js, nil)
+		return resp.StatusCode
+	}
+	if c := inv("same"); c != 202 {
+		t.Fatal(c)
+	}
+	for i := 0; i < 10; i++ {
+		if c := inv("same"); c != 202 {
+			t.Fatalf("duplicate %d: %d", i, c)
+		}
+	}
+	// no token was spent by the duplicates: two more distinct inventories still fit the burst
+	if c := inv("a"); c != 202 {
+		t.Fatalf("a: %d", c)
+	}
+	if c := inv("b"); c != 202 {
+		t.Fatalf("b: %d", c)
+	}
+	if c := inv("c"); c != 429 {
+		t.Fatalf("c: %d", c)
 	}
 }
 
@@ -209,11 +250,13 @@ func TestCheckinRateLimit(t *testing.T) {
 		d.InventoryInterval, d.EnrollPerMinute, d.BadAuthPerMinute = -1, -1, -1
 	})
 	er := e.enroll(t, "m")
-	if resp, _ := e.do(t, "POST", "/api/v1/checkin", er.AgentKey, model.CheckinRequest{}, nil); resp.StatusCode != 200 {
-		t.Fatal(resp.StatusCode)
+	for i := 0; i < 3; i++ { // burst 3
+		if resp, _ := e.do(t, "POST", "/api/v1/checkin", er.AgentKey, model.CheckinRequest{}, nil); resp.StatusCode != 200 {
+			t.Fatalf("check-in %d: %d", i, resp.StatusCode)
+		}
 	}
 	resp, _ := e.do(t, "POST", "/api/v1/checkin", er.AgentKey, model.CheckinRequest{}, nil)
-	if resp.StatusCode != 429 || resp.Header.Get("Retry-After") == "" {
+	if resp.StatusCode != 429 || resp.Header.Get("Retry-After") != "20" {
 		t.Fatalf("%d %q", resp.StatusCode, resp.Header.Get("Retry-After"))
 	}
 	now = now.Add(21 * time.Second)
