@@ -52,10 +52,18 @@ services:
       # built-in local agent (assertion g): the server container monitors itself in-process
       PANOPTES_LOCAL_AGENT_ENABLED: ${E2E_LOCAL_AGENT:-true}
       PANOPTES_LOCAL_AGENT_SOURCE: inprocess
+      # Optional LLM rule drafting for demos (e.g. a local Ollama on the host):
+      # E2E_LLM_PROVIDER=openai-compatible E2E_LLM_BASE_URL=http://host.docker.internal:11434/v1 E2E_LLM_MODEL=<model>
+      PANOPTES_LLM_PROVIDER: ${E2E_LLM_PROVIDER:-none}
+      PANOPTES_LLM_MODEL: ${E2E_LLM_MODEL:-claude-sonnet-5-5}
+      PANOPTES_LLM_BASE_URL: ${E2E_LLM_BASE_URL:-}
+      PANOPTES_LLM_DAILY_LIMIT: ${E2E_LLM_DAILY_LIMIT:-50}
     volumes:
       - ${E2E_TMP:-/tmp}/server.yaml:/etc/panoptes/server.yaml:ro
       - ${E2E_GRYPE_MOUNT:-e2e-grype-db}:/var/lib/panoptes/grype-db
       - e2e-data:/var/lib/panoptes
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # reach an LLM on the host (Linux; built in on Docker Desktop)
     ports:
       - "127.0.0.1:${E2E_SERVER_PORT:-18080}:8080"
       - "127.0.0.1:${E2E_ADMIN_PORT:-18081}:8081"
