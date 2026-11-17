@@ -23,6 +23,8 @@ func TestClientIP(t *testing.T) {
 		{"no header", "10.1.1.1:80", nil, "10.1.1.1"},
 		{"malformed right-most entry", "10.1.1.1:80", []string{"198.51.100.7, garbage"}, "10.1.1.1"},
 		{"all trusted", "10.1.1.1:80", []string{"10.3.3.3"}, "10.1.1.1"},
+		{"zoned entry rejected", "10.1.1.1:80", []string{"fe80::1%eth0"}, "10.1.1.1"},
+		{"zoned entry behind a real one rejected", "10.1.1.1:80", []string{"198.51.100.7, fe80::1%25eth0"}, "10.1.1.1"},
 		{"ipv6 client", "10.1.1.1:80", []string{"2001:db8::1"}, "2001:db8::1"},
 	}
 	for _, c := range cases {

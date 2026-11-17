@@ -48,8 +48,8 @@ func New(trusted []*net.IPNet) func(*http.Request) string {
 		}
 		for i := len(entries) - 1; i >= 0; i-- {
 			a, err := netip.ParseAddr(entries[i])
-			if err != nil {
-				return peer // malformed entry: do not guess
+			if err != nil || a.Zone() != "" {
+				return peer // malformed (or zoned, e.g. "fe80::1%eth0") entry: do not guess
 			}
 			a = a.Unmap()
 			if !isTrusted(a) {

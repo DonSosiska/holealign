@@ -42,10 +42,65 @@ type Config struct {
 
 	Alerts Alerts `yaml:"alerts"`
 
+	Retention Retention `yaml:"retention"`
+	Limits    Limits    `yaml:"limits"`
+
 	Feeds  Feeds  `yaml:"feeds"`
 	Matrix Matrix `yaml:"matrix"`
 	LLM    LLM    `yaml:"llm"`
 	Admin  Admin  `yaml:"admin"`
+}
+
+// Duration is a time.Duration that also accepts a "d" (days) suffix in YAML and environment
+// overrides, e.g. "30d" or "36h". It is used for retention periods.
+type Duration time.Duration
+
+// Std returns the value as time.Duration.
+func (d Duration) Std() time.Duration { return time.Duration(d) }
+
+// ParseDuration parses a Go duration with an optional days component ("30d", "1d12h").
+func ParseDuration(s string) (time.Duration, error) {
+	s = strings.TrimSpace(s)
+	if i := strings.IndexByte(s, 'd'); i > 0 {
+		days, err := strconv.ParseFloat(s[:i], 64)
+		if err != nil {
+			return 0, fmt.Errorf("invalid duration %q", s)
+		}
+		rest := time.Duration(0)
+		if s[i+1:] != "" {
+			if rest, err = time.ParseDuration(s[i+1:]); err != nil {
+				return 0, err
+			}
+		}
+		return time.Duration(days*24*float64(time.Hour)) + rest, nil
+	}
+	return time.ParseDuration(s)
+}
+
+// UnmarshalYAML accepts "30d", "720h", or a bare 0.
+func (d *Duration) UnmarshalYAML(n *yaml.Node) error {
+	var s string
+	if err := n.Decode(&s); err != nil {
+		return err
+	}
+	v, err := ParseDuration(s)
+	if err != nil {
+		return err
+	}
+	*d = Duration(v)
+	return nil
+}
+
+// Retention bounds the growth of the database (0 = keep forever).
+type Retention struct {
+	ResolvedFindings Duration `yaml:"resolved_findings"` // delete resolved findings after this age
+	Notifications    Duration `yaml:"notifications"`     // delete notification dedup rows after this age
+}
+
+// Limits protects the server from single hosts (0 = unlimited).
+type Limits struct {
+	FindingsPerHost         int `yaml:"findings_per_host"`           // open findings kept per host; excess dropped by lowest severity
+	MatchSecondsPerHostHour int `yaml:"match_seconds_per_host_hour"` // cumulative matcher time per host per hour
 }
 
 // Feeds configures vulnerability data refresh.
@@ -100,6 +155,8 @@ func Default() Config {
 		RulesDir:    "/usr/share/panoptes/rules",
 		Alerts:      Alerts{AgentSilentAfter: 30 * time.Minute, FeedStaleAfter: 48 * time.Hour},
 		Feeds:       Feeds{Interval: 6 * time.Hour, Update: true},
+		Retention:   Retention{ResolvedFindings: Duration(30 * 24 * time.Hour), Notifications: Duration(90 * 24 * time.Hour)},
+		Limits:      Limits{FindingsPerHost: 20000, MatchSecondsPerHostHour: 900},
 		Matrix:      Matrix{AccessTokenEnv: "PANOPTES_MATRIX_TOKEN"},
 		LLM: LLM{
 			Provider:   "none",
@@ -181,10 +238,25 @@ func (c *Config) validate() error {
 			return fmt.Errorf("%s %q must match %s", e.key, e.val, envNameRe)
 		}
 	}
-	if adm := c.Admin.InitialPasswordEnv; adm != "" {
-		if c.Matrix.AccessTokenEnv == adm || c.LLM.APIKeyEnv == adm {
-			return fmt.Errorf("matrix.access_token_env and llm.api_key_env must not be the admin password variable %s", adm)
+	// The three secret variables must be pairwise different: one leaked/misused name must not
+	// expose a second secret (e.g. the admin password used as a Matrix or LLM token).
+	envs := []struct{ key, val string }{
+		{"matrix.access_token_env", c.Matrix.AccessTokenEnv},
+		{"llm.api_key_env", c.LLM.APIKeyEnv},
+		{"admin.initial_password_env", c.Admin.InitialPasswordEnv},
+	}
+	for i := range envs {
+		for j := i + 1; j < len(envs); j++ {
+			if envs[i].val != "" && envs[i].val == envs[j].val {
+				return fmt.Errorf("%s and %s must name different environment variables (both %s)", envs[i].key, envs[j].key, envs[i].val)
+			}
 		}
+	}
+	if c.Retention.ResolvedFindings < 0 || c.Retention.Notifications < 0 {
+		return errors.New("retention.* must not be negative")
+	}
+	if c.Limits.FindingsPerHost < 0 || c.Limits.MatchSecondsPerHostHour < 0 {
+		return errors.New("limits.* must not be negative")
 	}
 	return nil
 }
@@ -239,7 +311,35 @@ func (c *Config) Warnings() []string {
 	check("public_url", c.PublicURL)
 	check("matrix.homeserver", c.Matrix.Homeserver)
 	check("llm.base_url", c.LLM.BaseURL)
+
+	if nets, err := ParseCIDRs(c.TrustedProxies); err == nil {
+		for _, n := range nets {
+			ones, bits := n.Mask.Size()
+			switch {
+			case ones == 0:
+				w = append(w, fmt.Sprintf("trusted_proxies contains %s: every client could spoof X-Forwarded-For (rate limits, audit log)", n))
+			case bits == 32 && ones < 16, bits == 128 && ones < 48:
+				w = append(w, fmt.Sprintf("trusted_proxies entry %s is very broad (wider than /16 for IPv4 or /48 for IPv6); list only the reverse proxy addresses", n))
+			}
+		}
+	}
+	if !c.SharedListener() && !isLoopbackListen(c.AdminListen) && c.AdminTLSCert == "" {
+		w = append(w, fmt.Sprintf("admin_listen %s is not loopback and has no admin_tls_cert/admin_tls_key: the web UI (logins, session cookies) is served in cleartext", c.AdminListen))
+	}
+	// "public-facing" = no trusted reverse proxy configured in front of the agent listener.
+	if !isLoopbackListen(c.Listen) && c.TLSCert == "" && len(c.TrustedProxies) == 0 {
+		w = append(w, fmt.Sprintf("listen %s is not loopback, has no tls_cert/tls_key and no trusted_proxies (no TLS-terminating reverse proxy): agent keys and inventories travel in cleartext", c.Listen))
+	}
 	return w
+}
+
+// isLoopbackListen reports whether a listen address binds loopback only; ":8080" and "0.0.0.0:80" do not.
+func isLoopbackListen(addr string) bool {
+	h, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		h = addr
+	}
+	return h != "" && isLoopbackHost(h)
 }
 
 func isLoopbackHost(h string) bool {
@@ -285,6 +385,12 @@ func walk(v reflect.Value, prefix string, lookup func(string) (string, bool)) er
 
 func setScalar(f reflect.Value, val string) error {
 	switch {
+	case f.Type() == reflect.TypeOf(Duration(0)):
+		d, err := ParseDuration(val)
+		if err != nil {
+			return err
+		}
+		f.SetInt(int64(d))
 	case f.Type() == reflect.TypeOf(time.Duration(0)):
 		d, err := time.ParseDuration(val)
 		if err != nil {

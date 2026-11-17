@@ -11,18 +11,19 @@ Server stores only a SHA-256 hash of agent keys and enrollment tokens.
 
 | Method & path | Body → Response | Notes |
 |---|---|---|
-| `POST /api/v1/enroll` | `EnrollRequest` → `EnrollResponse` | `machine_id` must match `^[0-9a-f]{32,64}$` (agents send a sha256 hex) else 400; labels ≤ 32 entries matching `^[a-z0-9][a-z0-9._-]{0,63}$` else 400; hostname truncated to 253 chars, control chars stripped. 401 on unknown/revoked/expired token; 403 when the token's `max_hosts` is reached. **409** `{"error":"host exists; previous key required (admin: panoptes-server host allow-reenroll <host>)"}` when the `machine_id` is already enrolled and the request carries neither `Authorization: Bearer <current agent key of that host>` nor an admin `allow-reenroll` flag (cleared on use). A permitted re-enroll reuses the host record and rotates the key. 429 beyond 10 requests/min per client IP. |
+| `POST /api/v1/enroll` | `EnrollRequest` → `EnrollResponse` | `machine_id` must match `^[0-9a-f]{32,64}$` (agents send a sha256 hex) else 400; labels ≤ 32 entries matching `^[a-z0-9][a-z0-9._-]{0,63}$` else 400; hostname truncated to 253 chars, control chars stripped. 401 on unknown/revoked/expired token; 403 when the token's `max_hosts` is reached. **409** `{"error":"host exists; previous key required (admin: panoptes-server host allow-reenroll <host>)"}` when the `machine_id` is already enrolled and the request carries neither `Authorization: Bearer <current agent key of that host>` nor an admin `allow-reenroll` flag (cleared on use). A permitted re-enroll reuses the host record and rotates the key; it keeps the host's `token_name`, labels and `labels_locked` unless the new token itself carries labels (then the token's labels apply, its `max_hosts` is checked and the host moves to it). The admin permission (`reenroll_allowed_until`) expires (default 1 h). 429 only for **invalid** requests (unknown token, bad body/machine_id/labels): 10/min per client, where a client is an IPv4 address or an IPv6 /64; requests with a valid token are never counted against it (separate cap of 600/min per client). Bodies declaring `Content-Length` > 1 MiB get 413 before reading. |
 | `POST /api/v1/checkin` | `CheckinRequest` → `CheckinResponse` | Every 5 min (default); per host a token bucket: burst 3, one token refilled per 20 s (else 429 + `Retry-After`). Updates labels, OS, facts, `last_checkin`. Labels sent here are ignored for hosts enrolled with a token that has labels. Facts after merge: ≤ 1000 keys, ≤ 1 MiB JSON, each value ≤ 64 KiB, else 413. |
-| `POST /api/v1/inventory` | `InventoryPayload` (gzip, `Content-Encoding: gzip`) → `202` | Max body 64 MiB decompressed (413); ≤ 50 000 CycloneDX components per target SBOM (413). Per host a token bucket: burst 3, one token refilled per 5 min (429 + `Retry-After` = seconds until the next token; the agent retries later). An inventory whose `hash` equals the stored one is answered `202` before the limiter, spends no token and does not re-match. Otherwise the server replaces all targets of the host and re-runs matching asynchronously. |
+| `POST /api/v1/inventory` | `InventoryPayload` (gzip, `Content-Encoding: gzip`) → `202` | Max body 64 MiB decompressed (413; a `Content-Length` above it is refused before reading). Every target SBOM must be a CycloneDX JSON document: top-level `"bomFormat":"CycloneDX"` (exact, case-sensitive); keys that equal `components`/`bomFormat` only case-insensitively anywhere in the document are rejected; ≤ 50 000 components (nested ones counted); the matcher enforces the same package cap after decoding. Targets are validated **one by one**: a target that is invalid (unknown kind, empty name, `name` > 512 bytes, `image_id` > 128, > 200 containers or a container name > 256, not CycloneDX, duplicate) or oversized is **skipped**, the valid targets are stored and the response is `202 {"status":"accepted","skipped":[{"kind","name","reason"}]}` (`skipped` omitted when empty; repeated for an identical re-upload). Only payload-level errors (no/oversized `hash`, > 1000 targets, bad JSON/gzip) are 400/413, and `415` (with the `skipped` list) when no target is a CycloneDX document. The previous findings of a skipped target are kept (not resolved) and the skip is reported to the health loop (`pipeline_error`). A host whose uploads keep failing validation gets 429 (6 invalid uploads/min, checked before the body is read). Per host a token bucket: burst 3, one token refilled per 5 min (429 + `Retry-After` = seconds until the next token; the agent retries later). An inventory whose `hash` equals the stored one is answered `202` before the limiter, spends no token and does not re-match. Otherwise the server replaces all targets of the host and re-runs matching asynchronously. |
 | `GET /healthz` | → `200 ok` | No auth. |
 
-Any request failing Bearer authentication counts against a per-client-IP limit (30/min, then 429); valid agents are never throttled by it.
+Any request failing Bearer authentication counts against a per-client limit (30/min, then 429); valid agents are never throttled by it. The per-client limiter maps (IPv4 address / IPv6 /64) are bounded LRUs: under key pressure the oldest idle entry is evicted, a new client is never denied for lack of space.
 
 Enrollment tokens (`panoptes-server token create <name> [-max-hosts N] [-expires 72h] [-labels prod,web]`):
 optional `max_hosts` (hosts that may enroll), `expires_at`, and `labels`. Token labels are **authoritative**:
 hosts enrolled with such a token get exactly these labels (the token name is stored on the host) and
 check-in labels are ignored, so alert routing cannot be steered by self-asserted labels.
-Admin CLI: `host list`, `host allow-reenroll <id|hostname>` (one re-enroll without the old key), `host delete <id|hostname>`.
+Token names match `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`.
+Admin CLI: `host list`, `host allow-reenroll <id|hostname> [-ttl 1h]` (one re-enroll without the old key, valid for the TTL, max 168 h), `host delete <id|hostname>` (also removes the host's findings, notification dedup rows and kv state such as `poison.*`). `token`/`host`/`user` run as root drop to the uid/gid owning the data directory (or DB) before touching it, so no root-owned files appear; if that is impossible they refuse and suggest `sudo -u <service-user>`.
 
 Error responses: `{"error": "<message>"}` with a 4xx/5xx status.
 Agents retry 5xx, 429 (honouring `Retry-After`) and network errors with exponential backoff (max 5 min); 401 → re-enroll (sending the old key as Bearer) if an enroll token is still configured, else log and keep retrying hourly; 409 → log and wait for an admin `host allow-reenroll`.
@@ -278,6 +279,14 @@ rule changes, the server (re)computes findings for affected hosts:
    capped at 8 KiB; for draft (unreviewed LLM) rules only a warning and the server-generated fix command are shown.
    Each pipeline run has a 10 min timeout; a panic in any background goroutine is logged and recovered, and a
    target whose matching panicked is flagged (`kv poison.<host>.<target-hash>`) and skipped until a new inventory arrives.
+   A target whose matching fails or exceeds its own 5 min timeout is isolated the same way (previous findings carried over,
+   error recorded, `Options.OnProblem` -> health `pipeline_error`) and the other targets are still processed; the run fails
+   only when no target could be matched at all. At most 2 hosts match concurrently, slots are granted FIFO, so a host that
+   just finished queues behind hosts already waiting. Per host: matcher time is budgeted per rolling hour
+   (`limits.match_seconds_per_host_hour`; over budget -> runs deferred, WARN + hook) and open findings are capped
+   (`limits.findings_per_host`; lowest severity dropped first, WARN + hook).
+   Retention: a daily job (and one at start) deletes resolved findings older than `retention.resolved_findings` and
+   `notifications_sent` rows older than `retention.notifications` (rows of still-open findings are kept so alerts are not repeated).
 
 ### Health events (silence alerts)
 
@@ -329,18 +338,28 @@ llm:
   daily_limit: 50                     # max drafting calls per day
 admin:
   initial_password_env: PANOPTES_ADMIN_PASSWORD  # creates user "admin" on first start
+retention:                            # 0 = keep forever; accepts "30d" and Go durations
+  resolved_findings: 30d              # delete resolved findings after this age
+  notifications: 90d                  # delete notification dedup rows after this age
+limits:                               # 0 = unlimited
+  findings_per_host: 20000            # open findings per host; excess dropped by lowest severity
+  match_seconds_per_host_hour: 900    # matcher time per host per rolling hour; over budget -> runs deferred
 ```
 
-Validation: `*_env` names must match `^PANOPTES_[A-Z0-9_]+$` and must not equal the admin password variable.
+Validation: `*_env` names must match `^PANOPTES_[A-Z0-9_]+$` and `matrix.access_token_env`, `llm.api_key_env`,
+`admin.initial_password_env` must be pairwise different; retention/limits must not be negative.
 The initial admin password needs ≥ 12 characters and may come from the file named by
 `PANOPTES_ADMIN_PASSWORD_FILE`. Startup logs a WARN when `public_url`, `matrix.homeserver` or `llm.base_url`
-use `http://` for a non-loopback host, and when the Grype DB is older than 5 days. The server runs with
+use `http://` for a non-loopback host, when the Grype DB is older than 5 days, when `trusted_proxies` has an entry wider
+than /16 (IPv4) or /48 (IPv6) or `0.0.0.0/0`/`::/0`, when `admin_listen` is non-loopback without admin TLS, and when
+the agent listener is non-loopback without `tls_cert` and without `trusted_proxies` (public-facing, no TLS-terminating proxy). The server runs with
 `umask 077` and a 0600 database file; HTTP limits: header ≤ 64 KiB, read timeout 5 min, write timeout 2 min.
 
 Listeners: the agent listener serves only `/api/v1/*` and `/healthz` (everything else is 404); the admin listener
 serves the web UI and `/healthz` and not the agent API. With `admin_listen` empty or equal to `listen` both share one
 port. `trusted_proxies`: only when the TCP peer is in the list is the client IP taken from the right-most
-`X-Forwarded-For` entry that is not itself a trusted proxy (used for rate limits and the audit log).
+`X-Forwarded-For` entry that is not itself a trusted proxy (used for rate limits and the audit log); a malformed or
+zoned (`fe80::1%eth0`) entry makes the peer address the client.
 `panoptes-server user set-password` needs at least 12 characters.
 
 Environment variable `PANOPTES_CONFIG` points to the file; every scalar can be overridden by

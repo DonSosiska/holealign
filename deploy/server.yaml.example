@@ -23,8 +23,23 @@ public_url: "http://localhost:8081"
 
 # CIDRs / IPs of reverse proxies whose X-Forwarded-For header is trusted for the client address
 # (rate limiting, audit log). Empty: always the TCP peer address. Never list networks that
-# untrusted clients can reach directly.
+# untrusted clients can reach directly. A WARN is logged for entries wider than /16 (IPv4) or /48
+# (IPv6) and for 0.0.0.0/0 or ::/0.
 trusted_proxies: []
+
+# Growth limits. Resolved findings and notification dedup records older than this are deleted
+# (daily, and once at start). 0 keeps them forever. Accepts d (days) and Go durations.
+retention:
+  resolved_findings: 30d
+  notifications: 90d
+
+# Per-host protection against one host starving or flooding the server (0 = unlimited).
+limits:
+  # Open findings kept per host; the lowest severities are dropped first (WARN + pipeline_error alert).
+  findings_per_host: 20000
+  # Cumulative matcher (Grype) time one host may use per rolling hour; runs of a host over budget are
+  # deferred (WARN + pipeline_error alert).
+  match_seconds_per_host_hour: 900
 
 # SQLite database and Grype DB cache. Must match StateDirectory in the systemd unit.
 data_dir: /var/lib/panoptes
@@ -73,7 +88,8 @@ llm:
   # Maximum rule-drafting calls per day.
   daily_limit: 50
 
-# Names in *_env keys must match ^PANOPTES_[A-Z0-9_]+$ and differ from the admin password variable.
+# Names in *_env keys must match ^PANOPTES_[A-Z0-9_]+$ and be pairwise different (Matrix token, LLM
+# key, admin password).
 # A WARN is logged at startup for http:// public_url / matrix.homeserver / llm.base_url on
 # non-loopback hosts.
 admin:

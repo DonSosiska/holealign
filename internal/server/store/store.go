@@ -62,7 +62,15 @@ type EnrollParams struct {
 type HostAdmin struct {
 	model.Host
 	TokenName       string
-	ReenrollAllowed bool
+	ReenrollAllowed bool      // a key-less re-enrollment is currently permitted (not expired)
+	ReenrollUntil   time.Time // expiry of that permission (zero = none)
+}
+
+// SkippedTarget is an inventory target the server refused (oversized, malformed, not CycloneDX).
+type SkippedTarget struct {
+	Kind   model.TargetKind `json:"kind"`
+	Name   string           `json:"name"`
+	Reason string           `json:"reason"`
 }
 
 // EnrollTokenOpts are the creation options of an enrollment token.
@@ -138,11 +146,16 @@ type Store interface {
 	ListHosts(ctx context.Context) ([]model.Host, error)
 	DeleteHost(ctx context.Context, id string) error
 	ListHostsAdmin(ctx context.Context) ([]HostAdmin, error)
+	// SetReenrollAllowed permits (DefaultReenrollTTL) or forbids a key-less re-enrollment.
 	SetReenrollAllowed(ctx context.Context, id string, allowed bool) error
+	SetReenrollAllowedUntil(ctx context.Context, id string, until time.Time) error
 
 	// Inventory.
 	ReplaceInventory(ctx context.Context, hostID string, p model.InventoryPayload) error
+	// ReplaceInventorySkipped is ReplaceInventory plus the refused targets (kept with their reason).
+	ReplaceInventorySkipped(ctx context.Context, hostID string, p model.InventoryPayload, skipped []SkippedTarget) error
 	ListTargets(ctx context.Context, hostID string) ([]model.InventoryTarget, error)
+	ListSkippedTargets(ctx context.Context, hostID string) ([]SkippedTarget, error)
 
 	// Enrollment tokens (hash only).
 	CreateEnrollToken(ctx context.Context, name, tokenHash string) error
@@ -159,6 +172,9 @@ type Store interface {
 	HostFindings(ctx context.Context, hostID string) ([]model.Finding, error) // all rows including resolved
 	GetFinding(ctx context.Context, id int64) (model.Finding, error)
 	ListFindings(ctx context.Context, f FindingFilter) ([]model.Finding, int, error)
+	// Retention: delete resolved findings / notification dedup rows older than cutoff.
+	PruneResolvedFindings(ctx context.Context, cutoff time.Time) (int64, error)
+	PruneNotifications(ctx context.Context, cutoff time.Time) (int64, error)
 
 	// Notification dedup. A finding key identifies host+target+package+vuln; a dedup key adds the event kind.
 	NotificationSent(ctx context.Context, dedupKey string) (bool, error)

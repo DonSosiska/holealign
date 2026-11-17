@@ -1,63 +1,93 @@
 package api
 
 import (
+	"container/list"
 	"math"
 	"net"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"sync"
 	"time"
 )
 
-// ipLimiter is a per-key token bucket (burst = perMinute, refill perMinute/min).
+// maxIPKeys bounds the per-client limiter maps; beyond it the least recently used key is evicted
+// (an attacker can reset only buckets, never lock other clients out).
+const maxIPKeys = 10000
+
+// ipLimiter is a per-key token bucket (burst = perMinute, refill perMinute/min) over a bounded
+// LRU map.
 type ipLimiter struct {
 	mu        sync.Mutex
 	perMinute float64
-	buckets   map[string]*bucket
+	max       int
+	ll        *list.List // front = most recently used
+	idx       map[string]*list.Element
 }
 
-type bucket struct {
+type ipEntry struct {
+	key    string
 	tokens float64
 	last   time.Time
 }
 
 func newIPLimiter(perMinute int) *ipLimiter {
-	return &ipLimiter{perMinute: float64(perMinute), buckets: map[string]*bucket{}}
+	return &ipLimiter{perMinute: float64(perMinute), max: maxIPKeys, ll: list.New(), idx: map[string]*list.Element{}}
 }
 
-// allow takes one token for key; false when the bucket is empty. A nil limiter allows everything.
-func (l *ipLimiter) allow(key string, now time.Time) bool {
+// limitKey normalises a client address into a limiter key: IPv4 by address, IPv6 by /64 (one
+// customer typically owns a whole /64, so per-address keys would be free to mint), zones stripped.
+func limitKey(ip string) string {
+	a, err := netip.ParseAddr(ip)
+	if err != nil {
+		return ip
+	}
+	a = a.WithZone("").Unmap()
+	if a.Is4() {
+		return a.String()
+	}
+	return netip.PrefixFrom(a, 64).Masked().String()
+}
+
+// allow takes one token for the client; false when its bucket is empty. A nil limiter allows everything.
+func (l *ipLimiter) allow(client string, now time.Time) bool {
 	if l == nil || l.perMinute <= 0 {
 		return true
 	}
+	key := limitKey(client)
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	b := l.buckets[key]
-	if b == nil {
-		if len(l.buckets) > 10000 { // bound memory: drop idle buckets
-			for k, o := range l.buckets {
-				if now.Sub(o.last) > 10*time.Minute {
-					delete(l.buckets, k)
-				}
-			}
-			if len(l.buckets) > 10000 {
-				return false
-			}
+	var e *ipEntry
+	if el := l.idx[key]; el != nil {
+		l.ll.MoveToFront(el)
+		e = el.Value.(*ipEntry)
+	} else {
+		for l.ll.Len() >= l.max {
+			old := l.ll.Back()
+			l.ll.Remove(old)
+			delete(l.idx, old.Value.(*ipEntry).key)
 		}
-		b = &bucket{tokens: l.perMinute, last: now}
-		l.buckets[key] = b
+		e = &ipEntry{key: key, tokens: l.perMinute, last: now}
+		l.idx[key] = l.ll.PushFront(e)
 	}
-	b.tokens = min(l.perMinute, b.tokens+now.Sub(b.last).Seconds()*l.perMinute/60)
-	b.last = now
-	if b.tokens < 1 {
+	e.tokens = min(l.perMinute, e.tokens+now.Sub(e.last).Seconds()*l.perMinute/60)
+	e.last = now
+	if e.tokens < 1 {
 		return false
 	}
-	b.tokens--
+	e.tokens--
 	return true
 }
 
+func (l *ipLimiter) size() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.ll.Len()
+}
+
 // tokenBucketLimiter is a per-key token bucket: up to burst events at once, refilled at one
-// token per interval. A non-positive interval disables the limiter.
+// token per interval. A non-positive interval disables the limiter. Buckets that are full and idle
+// are dropped, so state of deleted hosts disappears on its own.
 type tokenBucketLimiter struct {
 	mu       sync.Mutex
 	interval time.Duration
@@ -74,6 +104,25 @@ func newTokenBucketLimiter(interval time.Duration, burst int) *tokenBucketLimite
 	return &tokenBucketLimiter{interval: interval, burst: float64(burst), buckets: map[string]*tokenBucket{}}
 }
 
+const sweepAbove = 1024
+
+// sweepLocked drops buckets that have refilled completely.
+func (l *tokenBucketLimiter) sweepLocked(now time.Time) {
+	full := time.Duration(l.burst+1) * l.interval
+	for k, b := range l.buckets {
+		if now.Sub(b.last) > full {
+			delete(l.buckets, k)
+		}
+	}
+}
+
+func (l *tokenBucketLimiter) refillLocked(b *tokenBucket, now time.Time) {
+	if el := now.Sub(b.last); el > 0 {
+		b.tokens = math.Min(l.burst, b.tokens+float64(el)/float64(l.interval))
+		b.last = now
+	}
+}
+
 // take spends one token for key. It returns 0 when the event is allowed, else the time until
 // the next token is available. Nothing is spent when the event is refused.
 func (l *tokenBucketLimiter) take(key string, now time.Time) time.Duration {
@@ -84,15 +133,33 @@ func (l *tokenBucketLimiter) take(key string, now time.Time) time.Duration {
 	defer l.mu.Unlock()
 	b := l.buckets[key]
 	if b == nil {
+		if len(l.buckets) >= sweepAbove {
+			l.sweepLocked(now)
+		}
 		b = &tokenBucket{tokens: l.burst, last: now}
 		l.buckets[key] = b
 	}
-	if el := now.Sub(b.last); el > 0 {
-		b.tokens = math.Min(l.burst, b.tokens+float64(el)/float64(l.interval))
-		b.last = now
-	}
+	l.refillLocked(b, now)
 	if b.tokens >= 1 {
 		b.tokens--
+		return 0
+	}
+	return time.Duration(math.Ceil((1 - b.tokens) * float64(l.interval)))
+}
+
+// peek is take without spending: 0 when an event would be allowed now.
+func (l *tokenBucketLimiter) peek(key string, now time.Time) time.Duration {
+	if l.interval <= 0 {
+		return 0
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	b := l.buckets[key]
+	if b == nil {
+		return 0
+	}
+	l.refillLocked(b, now)
+	if b.tokens >= 1 {
 		return 0
 	}
 	return time.Duration(math.Ceil((1 - b.tokens) * float64(l.interval)))
@@ -108,6 +175,12 @@ func (l *tokenBucketLimiter) refund(key string) {
 	if b := l.buckets[key]; b != nil {
 		b.tokens = math.Min(l.burst, b.tokens+1)
 	}
+}
+
+func (l *tokenBucketLimiter) size() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.buckets)
 }
 
 func tooMany(w http.ResponseWriter, wait time.Duration, msg string) {

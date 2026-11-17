@@ -50,6 +50,7 @@ func mid(s string) string {
 func setup(t *testing.T) *env {
 	return setupWith(t, func(d *Deps) {
 		d.InventoryInterval, d.CheckinInterval, d.EnrollPerMinute, d.BadAuthPerMinute = -1, -1, -1, -1
+		d.InvalidInventoryPerMinute = 1000
 	})
 }
 
@@ -279,14 +280,19 @@ func TestInventoryValidationAndLimits(t *testing.T) {
 	if resp, _ := e.do(t, "POST", "/api/v1/inventory", er.AgentKey, []byte(`{}`), map[string]string{"Content-Encoding": "br"}); resp.StatusCode != 415 {
 		t.Fatalf("br: %d", resp.StatusCode)
 	}
-	// missing hash / bad target
-	for _, js := range []string{
-		`{"targets":[]}`,
-		`{"hash":"h","targets":[{"kind":"weird","name":"x","sbom":{}}]}`,
-		`{"hash":"h","targets":[{"kind":"host","name":"","sbom":{}}]}`,
-		`{"hash":"h","targets":[{"kind":"host","name":"host"}]}`,
+	// missing hash is a payload error
+	if resp, body := e.do(t, "POST", "/api/v1/inventory", er.AgentKey, gz(t, []byte(`{"targets":[]}`)), gzh); resp.StatusCode != 400 {
+		t.Fatalf("no hash: %d %s", resp.StatusCode, body)
+	}
+	// bad targets are skipped one by one (202 + list); all-not-CycloneDX is 415
+	for js, want := range map[string]int{
+		`{"hash":"h1","targets":[{"kind":"weird","name":"x","sbom":{"bomFormat":"CycloneDX"}}]}`: 202,
+		`{"hash":"h2","targets":[{"kind":"host","name":"","sbom":{"bomFormat":"CycloneDX"}}]}`:   202,
+		`{"hash":"h3","targets":[{"kind":"host","name":"host"}]}`:                                415,
+		`{"hash":"h4","targets":[{"kind":"host","name":"host","sbom":{}}]}`:                      415,
 	} {
-		if resp, body := e.do(t, "POST", "/api/v1/inventory", er.AgentKey, gz(t, []byte(js)), gzh); resp.StatusCode != 400 {
+		resp, body := e.do(t, "POST", "/api/v1/inventory", er.AgentKey, gz(t, []byte(js)), gzh)
+		if resp.StatusCode != want || !strings.Contains(string(body), "skipped") {
 			t.Fatalf("%s: %d %s", js, resp.StatusCode, body)
 		}
 	}
@@ -305,11 +311,11 @@ func TestInventoryValidationAndLimits(t *testing.T) {
 	if resp, body := e.do(t, "POST", "/api/v1/inventory", er.AgentKey, zipped, gzh); resp.StatusCode != 413 {
 		t.Fatalf("gzip bomb: %d %s", resp.StatusCode, body)
 	}
-	if e.trig.count() != 0 {
+	if e.trig.count() != 2 { // only the two accepted-with-skips uploads
 		t.Fatal("rejected uploads must not trigger the pipeline")
 	}
 	// a body just under the cap is accepted (uncompressed, identity encoding)
-	ok := model.InventoryPayload{Hash: "h", Targets: []model.InventoryTarget{{Kind: model.TargetHost, Name: "host", SBOM: json.RawMessage(`{}`)}}}
+	ok := model.InventoryPayload{Hash: "h", Targets: []model.InventoryTarget{{Kind: model.TargetHost, Name: "host", SBOM: cdxMin}}}
 	js, _ := json.Marshal(ok)
 	if resp, body := e.do(t, "POST", "/api/v1/inventory", er.AgentKey, js, nil); resp.StatusCode != 202 {
 		t.Fatalf("identity body: %d %s", resp.StatusCode, body)

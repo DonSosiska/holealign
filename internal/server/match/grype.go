@@ -34,6 +34,13 @@ import (
 	"panoptes/internal/model"
 )
 
+// MaxPackages caps the packages Grype may decode from one SBOM; the API pre-parser enforces the same
+// limit on CycloneDX components, this one does not depend on it.
+const MaxPackages = 50000
+
+// ErrTooManyPackages is returned by Match when a decoded SBOM has more than MaxPackages packages.
+var ErrTooManyPackages = errors.New("sbom has too many packages")
+
 // ErrNoDB is returned by Match when no Grype database has been loaded yet.
 var ErrNoDB = errors.New("grype vulnerability DB not available")
 
@@ -213,6 +220,9 @@ func (g *Grype) Match(ctx context.Context, kind model.TargetKind, sbom []byte, o
 	if err != nil {
 		return nil, fmt.Errorf("decode sbom: %w", err)
 	}
+	if err := checkPackageCap(len(pkgs)); err != nil {
+		return nil, err
+	}
 	vm := &grype.VulnerabilityMatcher{
 		VulnerabilityProvider: provider,
 		Matchers:              matcher.NewDefaultMatchers(matcherConfig()),
@@ -246,6 +256,13 @@ func (g *Grype) Match(ctx context.Context, kind model.TargetKind, sbom []byte, o
 		out = append(out, f)
 	}
 	return dedupe(out), nil
+}
+
+func checkPackageCap(n int) error {
+	if n > MaxPackages {
+		return fmt.Errorf("%w: %d > %d", ErrTooManyPackages, n, MaxPackages)
+	}
+	return nil
 }
 
 // toFinding maps a Grype match to a model.Finding (matcher-derived fields only).
