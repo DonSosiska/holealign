@@ -45,12 +45,26 @@ func pathTrust(p string) error {
 	return fileTrust(p, fi)
 }
 
-// binaryTrust requires an already symlink-resolved binary and its directory to be trusted.
+// binaryTrust requires an already symlink-resolved binary and EVERY ancestor directory up to
+// "/" to be trusted (root-owned, not group/world-writable): a writable grandparent lets a
+// local user rename the trusted directory away and plant their own.
 func binaryTrust(resolved string) error {
+	return binaryTrustAbove(resolved, "/")
+}
+
+// binaryTrustAbove is binaryTrust with the ancestor walk ending at (and including) top.
+func binaryTrustAbove(resolved, top string) error {
 	if err := pathTrust(resolved); err != nil {
 		return err
 	}
-	return pathTrust(filepath.Dir(resolved))
+	for d := filepath.Dir(resolved); ; d = filepath.Dir(d) {
+		if err := pathTrust(d); err != nil {
+			return err
+		}
+		if d == top || d == filepath.Dir(d) {
+			return nil
+		}
+	}
 }
 
 // treeTrusted checks every root (globs allowed; missing roots are skipped), its

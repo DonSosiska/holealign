@@ -251,7 +251,7 @@ func socketSource(t *testing.T, fake hostdata.Source) hostdata.Source {
 	t.Cleanup(func() { os.RemoveAll(dir) })
 	sock := filepath.Join(dir, "c.sock")
 	srv := &collector.Server{
-		Backend: fake, SocketPath: sock, InventoryMinGap: -1,
+		Backend: fake, SocketPath: sock, InventoryMinGap: -1, FactsCacheTTL: -1,
 		AllowedUIDs: []uint32{uint32(os.Getuid())},
 		PeerUID:     func(net.Conn) (uint32, error) { return uint32(os.Getuid()), nil },
 		Log:         slog.New(slog.NewTextHandler(io.Discard, nil)),

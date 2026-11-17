@@ -26,7 +26,20 @@ const (
 	OpInventory = "inventory"
 	OpOSInfo    = "osinfo"
 	OpChanged   = "changed"
+
+	// OpForgetEnrollToken asks the root collector to blank enroll_token in agent.yaml.
+	OpForgetEnrollToken = "forget_enroll_token"
 )
+
+// ErrUnavailable is wrapped by errors from a collector that cannot be reached at all (socket
+// missing or refused), as opposed to one that answered with an error.
+var ErrUnavailable = errors.New("collector unavailable")
+
+// EnrollTokenForgetter is implemented by sources that can remove the enrollment token from
+// the config file (the socket Client asks the root collector; Local does it when root).
+type EnrollTokenForgetter interface {
+	ForgetEnrollToken(ctx context.Context) error
+}
 
 // Request is one newline-terminated JSON line.
 type Request struct {
@@ -66,7 +79,7 @@ func (c *Client) call(ctx context.Context, req Request, timeout time.Duration) (
 	var d net.Dialer
 	conn, err := d.DialContext(ctx, "unix", c.Path)
 	if err != nil {
-		return resp, fmt.Errorf("collector unavailable: %w", err)
+		return resp, fmt.Errorf("%w: %w", ErrUnavailable, err)
 	}
 	defer conn.Close()
 	// abort blocked I/O when the context ends
@@ -151,4 +164,10 @@ func (c *Client) Changed(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	return resp.Changed, nil
+}
+
+// ForgetEnrollToken asks the collector to blank the enrollment token in the config file.
+func (c *Client) ForgetEnrollToken(ctx context.Context) error {
+	_, err := c.call(ctx, Request{Op: OpForgetEnrollToken}, c.QuickTimeout)
+	return err
 }

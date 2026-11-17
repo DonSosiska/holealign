@@ -51,10 +51,97 @@ type Server struct {
 	PeerUID func(net.Conn) (uint32, error)
 	Log     *slog.Logger
 
-	invMu    sync.Mutex
-	invAt    time.Time
-	invCache *model.InventoryPayload
-	invErr   error
+	// ChangeMinGap: when a package change is pending, the cached inventory is bypassed, but at
+	// most one real scan per this interval (0 = DefaultChangeMinGap, negative = no limit).
+	ChangeMinGap time.Duration
+	// FactsCacheTTL: identical facts requests within this window get the previous result
+	// (0 = DefaultFactsCacheTTL, negative disables the cache).
+	FactsCacheTTL time.Duration
+
+	initOnce sync.Once
+	factsSem chan struct{} // concurrent facts collections
+	invSem   chan struct{} // concurrent inventory scans
+
+	factsMu    sync.Mutex
+	factsCache map[string]factsEntry
+
+	invMu         sync.Mutex
+	invAt         time.Time
+	invCache      *model.InventoryPayload
+	invErr        error
+	changePending bool // a package change was reported and no real scan has run since
+}
+
+// Bounds against a compromised sender (it may ask as often as it likes).
+const (
+	DefaultChangeMinGap  = 2 * time.Minute
+	DefaultFactsCacheTTL = 30 * time.Second
+	maxFactsOps          = 2
+	maxInventoryOps      = 1
+	maxFactsCacheEntries = 4
+)
+
+// errBusy is returned (instead of queueing) when too many collections already run.
+var errBusy = errors.New("busy: too many concurrent operations, try again later")
+
+type factsEntry struct {
+	at    time.Time
+	facts model.Facts
+}
+
+func (s *Server) init() {
+	s.initOnce.Do(func() {
+		s.factsSem = make(chan struct{}, maxFactsOps)
+		s.invSem = make(chan struct{}, maxInventoryOps)
+		s.factsCache = map[string]factsEntry{}
+	})
+}
+
+// facts serves the facts of a request set: identical sets within FactsCacheTTL share one
+// collection, and at most maxFactsOps collections run at once (others fail fast).
+func (s *Server) facts(ctx context.Context, reqs []model.FactRequest) (model.Facts, error) {
+	s.init()
+	ttl := s.FactsCacheTTL
+	if ttl == 0 {
+		ttl = DefaultFactsCacheTTL
+	}
+	key := ""
+	if ttl > 0 {
+		kb, err := json.Marshal(reqs)
+		if err != nil {
+			return nil, err
+		}
+		key = string(kb)
+		s.factsMu.Lock()
+		if e, ok := s.factsCache[key]; ok && time.Since(e.at) < ttl {
+			s.factsMu.Unlock()
+			return e.facts, nil
+		}
+		s.factsMu.Unlock()
+	}
+	select {
+	case s.factsSem <- struct{}{}:
+		defer func() { <-s.factsSem }()
+	default:
+		return nil, errBusy
+	}
+	f, err := s.Backend.Facts(ctx, reqs)
+	if err != nil || ttl <= 0 {
+		return f, err
+	}
+	s.factsMu.Lock()
+	defer s.factsMu.Unlock()
+	now := time.Now()
+	for k, e := range s.factsCache {
+		if now.Sub(e.at) >= ttl {
+			delete(s.factsCache, k)
+		}
+	}
+	if len(s.factsCache) >= maxFactsCacheEntries {
+		clear(s.factsCache)
+	}
+	s.factsCache[key] = factsEntry{at: now, facts: f}
+	return f, nil
 }
 
 // PeerAllowed is the authorisation decision: root, or one of the allowed uids.
@@ -127,16 +214,45 @@ func (s *Server) Listen() (net.Listener, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := os.Chmod(s.SocketPath, 0o660); err != nil {
+	if err := s.fixSocket(gid); err != nil {
 		l.Close()
 		return nil, err
 	}
-	if gid >= 0 {
-		if err := os.Chown(s.SocketPath, -1, gid); err != nil {
-			s.log().Warn("cannot set socket group", "err", err)
+	return l, nil
+}
+
+// fixSocket makes the socket 0660 and, when a group is configured, group-owned by it. Under
+// systemd (Group=panoptes, UMask=0007) the socket is created that way already, and the
+// unit's seccomp filter denies chown (@chown is part of @privileged): both calls are skipped
+// when the result is already right, and EPERM is not fatal when the end state is correct.
+func (s *Server) fixSocket(gid int) error {
+	state := func() (mode os.FileMode, g int, gok bool, err error) {
+		fi, err := os.Lstat(s.SocketPath)
+		if err != nil {
+			return 0, 0, false, err
+		}
+		g, gok = fileGID(fi)
+		return fi.Mode().Perm(), g, gok, nil
+	}
+	mode, g, gok, err := state()
+	if err != nil {
+		return err
+	}
+	if mode != 0o660 {
+		if err := os.Chmod(s.SocketPath, 0o660); err != nil {
+			if m2, _, _, serr := state(); !(errors.Is(err, os.ErrPermission) && serr == nil && m2 == 0o660) {
+				return err
+			}
 		}
 	}
-	return l, nil
+	if gid >= 0 && !(gok && g == gid) {
+		if err := os.Chown(s.SocketPath, -1, gid); err != nil {
+			if _, g2, ok2, serr := state(); !(errors.Is(err, os.ErrPermission) && serr == nil && ok2 && g2 == gid) {
+				s.log().Warn("cannot set socket group", "err", err)
+			}
+		}
+	}
+	return nil
 }
 
 // Serve listens and serves until ctx ends.
@@ -218,7 +334,7 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 	resp := hostdata.Response{OK: true}
 	switch req.Op {
 	case hostdata.OpFacts:
-		f, err := s.Backend.Facts(ctx, req.FactRequests)
+		f, err := s.facts(ctx, req.FactRequests)
 		resp.Facts = f
 		resp = fail(resp, err)
 	case hostdata.OpInventory:
@@ -231,8 +347,17 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 		resp = fail(resp, err)
 	case hostdata.OpChanged:
 		c, err := s.Backend.Changed(ctx)
-		resp.Changed = c
+		// The backend consumes its change signal when it reports it. Keep it here until a real
+		// scan has run, otherwise a cached inventory would swallow the change.
+		s.invMu.Lock()
+		if err == nil && c {
+			s.changePending = true
+		}
+		resp.Changed = s.changePending
+		s.invMu.Unlock()
 		resp = fail(resp, err)
+	case hostdata.OpForgetEnrollToken:
+		resp = fail(resp, s.forgetEnrollToken(ctx))
 	default:
 		resp = hostdata.Response{Error: "unknown op"}
 	}
@@ -246,25 +371,78 @@ func fail(r hostdata.Response, err error) hostdata.Response {
 	return r
 }
 
-// inventory runs at most one scan per InventoryMinGap; requests inside the window get the
-// previous result (payload or error). Concurrent requests wait for the running scan.
+// forgetEnrollToken asks the backend to blank the enrollment token in the config file.
+func (s *Server) forgetEnrollToken(ctx context.Context) error {
+	f, ok := s.Backend.(hostdata.EnrollTokenForgetter)
+	if !ok {
+		return errors.New("forgetting the enrollment token is not supported by this backend")
+	}
+	return f.ForgetEnrollToken(ctx)
+}
+
+// inventory runs at most one real scan per InventoryMinGap; requests inside the window get
+// the previous result (payload or error), except that a pending package change bypasses the
+// cache (still at most one real scan per ChangeMinGap). At most one scan runs at a time;
+// other requests that need a scan fail fast with a "busy" error instead of queueing.
 func (s *Server) inventory(ctx context.Context) (*model.InventoryPayload, error) {
+	s.init()
 	gap := s.InventoryMinGap
 	if gap == 0 {
 		gap = DefaultInventoryMinGap
 	}
-	s.invMu.Lock()
-	defer s.invMu.Unlock()
-	if gap > 0 && !s.invAt.IsZero() && time.Since(s.invAt) < gap {
+	changeGap := s.ChangeMinGap
+	if changeGap == 0 {
+		changeGap = DefaultChangeMinGap
+	}
+	// cached reports whether the previous result may be served; call with invMu held.
+	cached := func() bool {
+		if gap <= 0 || s.invAt.IsZero() {
+			return false
+		}
+		since := time.Since(s.invAt)
+		if since >= gap {
+			return false
+		}
+		return !(s.changePending && since >= changeGap)
+	}
+	serve := func() (*model.InventoryPayload, error) {
 		if s.invErr != nil {
 			return nil, s.invErr
 		}
 		return s.invCache, nil
 	}
+
+	s.invMu.Lock()
+	if cached() {
+		defer s.invMu.Unlock()
+		return serve()
+	}
+	s.invMu.Unlock()
+
+	select {
+	case s.invSem <- struct{}{}:
+		defer func() { <-s.invSem }()
+	default:
+		return nil, errBusy
+	}
+
+	s.invMu.Lock()
+	if cached() { // a scan finished while we waited for the slot
+		defer s.invMu.Unlock()
+		return serve()
+	}
 	s.invAt = time.Now()
+	pending := s.changePending
+	s.changePending = false // a real scan sees the change
+	s.invMu.Unlock()
+
 	p, err := s.Backend.Inventory(ctx)
+
+	s.invMu.Lock()
+	defer s.invMu.Unlock()
 	if err != nil {
 		s.invCache, s.invErr = nil, err
+		s.changePending = s.changePending || pending // not scanned after all
 		return nil, err
 	}
 	s.invCache, s.invErr = &p, nil

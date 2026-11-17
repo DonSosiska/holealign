@@ -64,11 +64,11 @@ func TestCollectSSHDAndNginx(t *testing.T) {
 	env := &Env{
 		Runner: fakeRunner{
 			out: map[string]string{
-				"sshd -T":  string(fixture(t, "sshd_T.txt")),
-				"ssh -V":   "OpenSSH_9.6p1 Ubuntu-3ubuntu13.5, OpenSSL 3.0.13 30 Jan 2024\n",
-				"nginx -v": "nginx version: nginx/1.24.0 (Ubuntu)\n",
-				"nginx -V": string(fixture(t, "nginx_V.txt")),
-				"nginx -T": string(fixture(t, "nginx_T_http2_on.txt")),
+				"sshd -T":                  string(fixture(t, "sshd_T.txt")),
+				"ssh -V":                   "OpenSSH_9.6p1 Ubuntu-3ubuntu13.5, OpenSSL 3.0.13 30 Jan 2024\n",
+				"nginx -v":                 "nginx version: nginx/1.24.0 (Ubuntu)\n",
+				"nginx -V":                 string(fixture(t, "nginx_V.txt")),
+				"nginx -T -q -e /dev/null": string(fixture(t, "nginx_T_http2_on.txt")),
 			},
 			errs: map[string]error{"sshd -V": errMissing},
 		},
@@ -99,8 +99,8 @@ func TestCollectSSHDAndNginx(t *testing.T) {
 func TestCollectNginxConfigTestFailureOmitsDirectives(t *testing.T) {
 	env := &Env{
 		Runner: fakeRunner{
-			out:  map[string]string{"nginx -v": "nginx version: nginx/1.24.0\n", "nginx -T": "nginx: [emerg] bad\n"},
-			errs: map[string]error{"nginx -T": errMissing},
+			out:  map[string]string{"nginx -v": "nginx version: nginx/1.24.0\n", "nginx -T -q -e /dev/null": "nginx: [emerg] bad\n"},
+			errs: map[string]error{"nginx -T -q -e /dev/null": errMissing},
 		},
 		FS: fstest.MapFS{},
 	}

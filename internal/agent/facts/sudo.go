@@ -15,6 +15,11 @@ func parseSudoVersion(out []byte) string {
 }
 
 func collectSudo(ctx context.Context, env *Env) model.Facts {
+	// sudo -V reads /etc/sudo.conf, which can name plugins to load as root: it must be
+	// root-owned and not group/world-writable (a missing file is fine).
+	if !env.treeOK("sudo", "/etc/sudo.conf") {
+		return model.Facts{}
+	}
 	out, err := env.run(ctx, "sudo", "-V")
 	if err != nil {
 		return model.Facts{}

@@ -85,8 +85,17 @@ func apacheConfigEnablesH2(fsys fs.FS) bool {
 	return found
 }
 
+// apacheConfigRoots are the trees apachectl/httpd read (envvars and LoadModule included).
+var apacheConfigRoots = []string{"/etc/apache2", "/etc/httpd", "/usr/local/apache2/conf", "/usr/local/etc/apache24"}
+
 func collectApache(ctx context.Context, env *Env) model.Facts {
 	f := model.Facts{}
+
+	// apachectl is a shell script that sources envvars, and httpd -M loads every configured
+	// module: both execute as root what the config trees say. Verify them first.
+	if !env.treeOK("apache", apacheConfigRoots...) {
+		return f
+	}
 
 	bin := ""
 	var verOut []byte

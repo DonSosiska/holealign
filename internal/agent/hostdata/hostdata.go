@@ -8,6 +8,8 @@ package hostdata
 
 import (
 	"context"
+	"errors"
+	"os"
 	"sync"
 
 	"panoptes/internal/agent/config"
@@ -40,8 +42,9 @@ type Local struct {
 	cfg  config.Config
 	opts facts.Options
 
-	mu  sync.Mutex
-	det *inventory.ChangeDetector
+	mu      sync.Mutex
+	det     *inventory.ChangeDetector
+	pending bool // a change was reported and no scan has started since
 }
 
 // NewLocal returns an in-process Source. With hostNetNS the sockets facts come from /proc/1/net
@@ -58,8 +61,17 @@ func (l *Local) Inventory(ctx context.Context) (model.InventoryPayload, error) {
 	// baseline before the scan: a package change during the scan is seen by the next Changed
 	l.mu.Lock()
 	l.det.Reset(ctx)
+	was := l.pending
+	l.pending = false
 	l.mu.Unlock()
-	return inventory.Scan(ctx, l.cfg)
+	p, err := inventory.Scan(ctx, l.cfg)
+	if err != nil && was {
+		// the change is not reflected in any inventory yet
+		l.mu.Lock()
+		l.pending = true
+		l.mu.Unlock()
+	}
+	return p, err
 }
 
 func (l *Local) Info(context.Context) (HostInfo, error) {
@@ -69,5 +81,21 @@ func (l *Local) Info(context.Context) (HostInfo, error) {
 func (l *Local) Changed(ctx context.Context) (bool, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return l.det.Changed(ctx), nil
+	// the signal stays set until a real scan has started (see Inventory)
+	if l.det.Changed(ctx) {
+		l.pending = true
+	}
+	return l.pending, nil
+}
+
+// ForgetEnrollToken blanks enroll_token in the config file. Only root may do it in process
+// (mode all as root, or the root collector); an unprivileged process leaves the file alone.
+func (l *Local) ForgetEnrollToken(context.Context) error {
+	if os.Geteuid() != 0 {
+		return errors.New("not running as root: enroll_token left in the config file")
+	}
+	if l.cfg.Path == "" {
+		return errors.New("config path unknown")
+	}
+	return config.ForgetEnrollToken(l.cfg.Path)
 }

@@ -46,6 +46,9 @@ SystemCallArchitectures=native
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 SystemCallFilter=@system-service
 SystemCallFilter=~@privileged @resources @mount
+# EPERM instead of SIGSYS for denied calls: the Go runtime calls prlimit64 (@resources) at start
+# and ignores the failure; with the default kill action a single denied call would crash the sender.
+SystemCallErrorNumber=EPERM
 
 Nice=10
 CPUQuota=25%

@@ -35,7 +35,7 @@ Agents retry 5xx, 429 (honouring `Retry-After`) and network errors with exponent
 ```yaml
 server_url: https://panoptes.example.com   # https required; no userinfo; redirects are never followed
 allow_insecure_http: false      # true permits an http:// server_url (WARN logged; testing only)
-enroll_token: "pt_..."          # used only until enrolled
+enroll_token: "pt_..."          # used only until enrolled; blanked in this file after the first successful check-in (below)
 labels: [prod, web, team-a]
 state_dir: /var/lib/panoptes-agent  # agent_id + agent_key stored here (0600)
 checkin_interval: 5m
@@ -64,7 +64,10 @@ that talks to the network is not root.
   `RestrictAddressFamilies=AF_UNIX`): listens on `collector_socket` (`/run/panoptes/collector.sock`; directory
   `0750 root:panoptes`, socket `0660 root:panoptes`). It applies every collection policy itself (file.match allow/deny
   lists and budgets, binary trust checks, scan timeouts) and runs at most one inventory scan per 10 minutes whoever
-  asks (later requests get the previous result). Its code lives in packages that do not import the HTTP transport
+  asks (later requests get the previous result). A package change reported by `changed` stays pending (and keeps
+  being reported) until a real scan has run: while it is pending the cached inventory is bypassed, but never more
+  than one real scan per 2 minutes. `facts` results are cached for 30 s per identical request set; at most 2 facts
+  collections and 1 inventory scan run concurrently, further requests fail immediately with `busy` instead of queueing. Its code lives in packages that do not import the HTTP transport
   (`go list -deps` test). In a private network namespace `/proc/net` is empty, so `-mode collector` reads
   `sockets.listening` from `/proc/1/net/*` (the host namespace of PID 1); if that is unreadable the sockets facts are
   omitted (unknown), never reported empty.
@@ -80,7 +83,25 @@ that talks to the network is not root.
 | `{"op":"inventory","gzip":true}` | `{"ok":true,"inventory":<InventoryPayload>}` |
 | `{"op":"osinfo"}` | `{"ok":true,"os":<OSInfo>,"machine_id":"<sha256 hex>"}` |
 | `{"op":"changed"}` | `{"ok":true,"changed":<bool>}` |
+| `{"op":"forget_enroll_token"}` | `{"ok":true}`; the root collector atomically rewrites the config file with `enroll_token: ""` |
 | anything else / too large / bad JSON | `{"ok":false,"error":"..."}` |
+
+`forget_enroll_token`: the enrollment token would otherwise stay readable by group `panoptes` in `agent.yaml` forever.
+After a successful enrollment and the first successful check-in the sender asks the collector once; the collector
+rewrites the file (temp file in `/etc/panoptes/`, `fsync`, `rename`; other content, mode and owner/group are kept)
+replacing only the top-level `enroll_token` value with `""`. It refuses any path that is not a regular file (not a
+symlink) directly in `/etc/panoptes/`, and the unit grants it `ReadWritePaths=-/etc/panoptes`. In `-mode all` the
+process does the same itself when it runs as root (otherwise it logs a WARN and leaves the file; remove the token by
+hand). Consequence: after the token is gone the agent cannot re-enroll by itself (a 401 is retried hourly); a host
+that lost its credentials needs a fresh token in `agent.yaml`. At start the agent logs a WARN when `agent.yaml` or
+`client_key` is readable beyond mode 0640, or the credentials file beyond 0600.
+
+Sender hardening against a malicious server: `fact_requests` from a check-in response are filtered before they are
+stored (only `file.match` with name `file.match:<id>` of at most 128 bytes, absolute `path` of at most 512,
+`pattern` of at most 512, at most 20, unique names; the rest is dropped with one WARN). If the collector rejects the
+request (`request too large` / `bad request`) the stored requests are cleared and the call is retried once without
+them. A collector that answers with an error does not stop the check-in: it is sent with the facts still known
+plus `agent.collector_error`; only an unreachable socket skips the cycle.
 
 `panoptes-agent -print-facts` / `-print-inventory` / `-once` always run in-process.
 
@@ -148,7 +169,8 @@ sets `<x>.installed = false` and omits the other `<x>.*` facts.
 | `runc.version` | string | `runc --version` |
 | `sudo.version` | string | `sudo -V` |
 | `agent.inventory_error` | string | last inventory scan error (truncated to 200 chars); absent when the last scan succeeded |
-| `agent.skipped` | list<string> | tools not run because their config tree is not trustworthy, e.g. `nginx: /etc/nginx/conf.d writable by gid 33`. Before `nginx -V/-T`, `php -i` and `sshd -T` the agent verifies that `/etc/nginx` (+ `/usr/local/etc/nginx`, `/usr/local/nginx/conf`), `/etc/php/*/cli` (+ `/etc/php.ini`, `/etc/php.d`, `/usr/local/etc/php`) and `/etc/ssh/sshd_config{,.d}` and their parents are root-owned and not group/world-writable (≤ 2000 entries walked); otherwise the command is skipped and its facts omitted |
+| `agent.collector_error` | string | last error the root collector answered with (truncated to 200 chars); the check-in carried the previously known facts; absent when the collector answered normally |
+| `agent.skipped` | list<string> | tools not run because their config tree is not trustworthy, e.g. `nginx: /etc/nginx/conf.d writable by gid 33`. Before `nginx -V/-T`, `php -i`, `sshd -T`, `apachectl/httpd -v/-M` and `sudo -V` the agent verifies that `/etc/nginx` (+ `/usr/local/etc/nginx`, `/usr/local/nginx/conf`), `/etc/php/*/cli` (+ `/etc/php.ini`, `/etc/php.d`, `/usr/local/etc/php`), `/etc/ssh/sshd_config{,.d}`, `/etc/apache2` (+ `/etc/httpd`, `/usr/local/apache2/conf`, `/usr/local/etc/apache24`; includes `envvars`) and `/etc/sudo.conf` and their parents are root-owned and not group/world-writable (≤ 2000 entries walked); otherwise the command is skipped and its facts omitted. Before `nginx -T` the `include`/`load_module` directives of the verified tree are scanned (≤ 200 files of ≤ 1 MiB); every location outside the verified roots is verified the same way, else `nginx -T` is skipped. Helper binaries must have EVERY ancestor directory up to `/` root-owned and not group/world-writable |
 | `file.match:<id>` | list<string> | **parametrised**, see below |
 
 Command execution rules for collectors: fixed argv (no shell), 10 s timeout, stdout capped at 4 MiB,
@@ -170,14 +192,22 @@ Command execution rules for collectors: fixed argv (no shell), 10 s timeout, std
   resolved physical paths.
 - Only regular, world-readable (`mode & 0o004`) files are read; files are opened with
   `O_NOFOLLOW|O_NONBLOCK|O_CLOEXEC` (Linux: `openat2` `RESOLVE_NO_SYMLINKS|RESOLVE_BENEATH`, fallback to an
-  `openat` component walk), the mode is checked on the open fd. Files with a NUL byte or `-----BEGIN ` in the
-  first 64 KiB are skipped; crypt-hash lines (`^[^:]+:\$id\$`) are dropped.
-- `pattern` is RE2 (Go `regexp`), max 512 chars. Per file max 1 MiB.
+  `openat` component walk), the mode is checked on the open fd, and every ancestor directory of the physical path
+  must have the "other" execute bit (a 0644 file below a 0700/0750 directory is not readable by an unprivileged
+  user and is skipped). Files with a NUL byte or `-----BEGIN ` anywhere in what is read (≤ 1 MiB) are skipped;
+  crypt-hash lines (`^[^:]+:\$id\$`) are dropped.
+- `pattern` is RE2 (Go `regexp`), max 512 chars, repeat counts ≤ 100 and a compiled program of ≤ 2000
+  instructions (larger patterns are rejected). Per file max 1 MiB.
+- Order per line: cut to 4 KiB, drop crypt-hash lines, **mask secrets, then match the pattern against the masked
+  text** (so a pattern cannot probe secret values character by character), return the masked text.
 - Value: matched lines, trimmed, prefixed with `<file>:`; each line truncated to 512 bytes.
-- Secret masking: values after keys matching
-  `(?i)(["']?)(pass(wd|word|phrase)?|pwd|psk|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|credential|auth(orization)?|requirepass|masterauth)\1\s*[:=\s]\s*\S.*`
-  are replaced with `***` (the key is kept; a bare `pass` needs `:`/`=`); URL userinfo becomes `://***@`;
-  tokens of 32+ chars from `[A-Za-z0-9+/=_-]` mixing letters and digits/cases become `***`.
+- Secret masking: the value (rest of the line) after a key that contains `key`, `secret`, `token`, `pass`, `pw`,
+  `psk`, `credential`, `auth` or `community` anywhere (case-insensitive; optional quotes; separator `:`, `=` or
+  whitespace) is replaced with `***`, the key is kept. Not masked: booleans (`on/off/yes/no/true/false/enabled/
+  disabled`), numbers (for keys that contain only `key`/`auth`, or end in a tuning suffix such as `_size`,
+  `_timeout`, `_max`), system paths (`/etc/...`, `/var/...`), and `proxy_pass`-style/`auth_basic`/`passenger*`
+  directives. `Bearer <anything>` anywhere on a line is masked; URL userinfo becomes `://***@`; tokens of 32+ chars
+  from `[A-Za-z0-9+/=_-]` mixing letters and digits/cases become `***`.
 - Budgets: per check-in at most 20 requests (deduplicated by name and by (path, pattern)), 2 MiB read in total,
   500 lines in total (200 per request), 5 s wall time. Requests beyond a budget yield no fact.
 

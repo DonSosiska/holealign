@@ -46,6 +46,9 @@ type Config struct {
 	// CollectorUser is the unprivileged user whose uid may use the socket (plus root);
 	// its primary group owns the socket.
 	CollectorUser string `yaml:"collector_user"`
+
+	// Path is the file this configuration was loaded from (not a YAML key).
+	Path string `yaml:"-"`
 }
 
 // DefaultExcludePaths are excluded from the host scan unless configured otherwise.
@@ -87,7 +90,12 @@ func Load(path string) (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("read config: %w", err)
 	}
-	return Parse(data)
+	cfg, err := Parse(data)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.Path = path
+	return cfg, nil
 }
 
 // Parse parses YAML bytes, applies defaults and validates.
