@@ -112,7 +112,7 @@ Do these in a real deployment.
   (`affected_not_exploitable`). Missing facts and missing rules fail towards `conditions_unknown`,
   not towards "safe", and drafts cannot lower verdicts, but a reviewed rule can.
 - **One known dependency advisory.** `govulncheck` reports GO-2026-6905, which has no fixed upstream
-  release yet; it is tracked until one exists.
+  release yet; it is tracked in [`.govulncheck-allow`](../.govulncheck-allow) until one exists.
 - **Matrix, LLM and OSV are external services.** Matrix alerts are not end-to-end encrypted; LLM
   prompts include package names and versions from your hosts.
 - **Agents run as root.** The collector is hardened and isolated, but anything that runs as root on

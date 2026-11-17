@@ -54,7 +54,7 @@ make release-snapshot   # local goreleaser dry run: archives, .deb/.rpm, checksu
 
 | Kind | Command | Notes |
 |---|---|---|
-| Unit | `go test ./...` | This is what CI runs, after `go vet ./...`, `go build ./...` and `govulncheck ./...`. |
+| Unit | `go test ./...` | This is what CI runs, after `go vet ./...`, `go build ./...` and `bash scripts/govulncheck.sh`. |
 | Linux-only | `go test ./internal/agent/...` on Linux | Some tests use `//go:build linux` (symlink-safe opens, ancestor permission checks). On macOS or Windows, run them in a Linux container, for example `docker run --rm -v "$PWD":/src -w /src golang:1.27.4 go test ./internal/agent/...`. |
 | Matcher integration | `PANOPTES_TEST_GRYPE_DB=<dir> go test -tags integration ./internal/server/match/` | Needs a Grype DB; skips when none is available. |
 | Shell checks | `sh -n deploy/install.sh`, `shellcheck deploy/install.sh deploy/e2e/*.sh` | Also in CI. |
@@ -64,6 +64,8 @@ make release-snapshot   # local goreleaser dry run: archives, .deb/.rpm, checksu
 Add a unit test for every behaviour change; rules get cases in `internal/server/rules/engine_test.go`
 (shipped rules are loaded by that test), and parsers get fixtures under
 `internal/agent/facts/testdata/`.
+
+**Vulnerability check.** `make vulncheck` (also run in CI) builds `panoptes-agent` and `panoptes-server` and runs `govulncheck -mode=binary` on each. Source-mode `govulncheck ./...` does not finish in CI, so it is not used. The check fails on any finding not listed in `.govulncheck-allow`. To accept a finding that has no fix, add a line `ID  # reason, reviewed YYYY-MM-DD`; to drop one, delete its line once it is no longer reported (the script warns about stale entries). Review each entry at least when its date is old, and always after a dependency upgrade.
 
 ## Coding constraints
 
@@ -89,7 +91,7 @@ Add a unit test for every behaviour change; rules get cases in `internal/server/
 Releases are made by the release workflow ([.github/workflows/release.yml](../.github/workflows/release.yml))
 using [GoReleaser](../.goreleaser.yaml). You do not build releases locally.
 
-1. Merge to `main` and wait for CI (`go vet`, `go test`, `go build`, `govulncheck`, shell checks).
+1. Merge to `main` and wait for CI (`go vet`, `go test`, `go build`, vulnerability check, shell checks).
 2. Tag a commit that is on `main` and push the tag: `git tag vX.Y.Z && git push origin vX.Y.Z`.
 3. The workflow re-runs the checks (`test` job). The `goreleaser` job then **waits for approval**
    because it runs in the `release` environment; a designated reviewer approves it in the GitHub

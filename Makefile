@@ -1,7 +1,7 @@
 GO ?= go
 export CGO_ENABLED=0
 
-.PHONY: build test vet lint tidy release-snapshot docker
+.PHONY: build test vet lint vulncheck tidy release-snapshot docker
 
 build:
 	$(GO) build -trimpath -o bin/ ./cmd/...
@@ -14,6 +14,10 @@ vet:
 
 lint: vet
 	@command -v staticcheck >/dev/null 2>&1 && staticcheck ./... || echo "staticcheck not installed, skipped"
+
+# Binary-mode govulncheck against .govulncheck-allow (see docs/development.md).
+vulncheck:
+	bash scripts/govulncheck.sh
 
 tidy:
 	$(GO) mod tidy

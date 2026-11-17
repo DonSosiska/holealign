@@ -1,0 +1,4 @@
+# Reviewed govulncheck findings accepted for binary-mode CI (scripts/govulncheck.sh).
+# Format: ID  # reason, reviewed YYYY-MM-DD
+# Remove an entry as soon as the finding is no longer reported.
+GO-2026-6905  # github.com/blakesmith/ar via Syft deb parser; no upstream fix; agent recovers panics in scans; reviewed 2026-11-17
