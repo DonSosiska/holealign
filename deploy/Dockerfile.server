@@ -17,7 +17,8 @@ COPY --from=prep --chown=65532:65532 /var/lib/panoptes /var/lib/panoptes
 # defaults plus PANOPTES_* environment overrides. PANOPTES_CONFIG is deliberately
 # not set here, because an explicit path that does not exist is a startup error.
 VOLUME /var/lib/panoptes
-EXPOSE 8080
+# 8080 agent API, 8081 admin UI
+EXPOSE 8080 8081
 
 # -version works as: docker run --rm <image> -version
 ENTRYPOINT ["/usr/bin/panoptes-server"]

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"math"
 	"net"
 	"net/http"
 	"strconv"
@@ -55,34 +56,58 @@ func (l *ipLimiter) allow(key string, now time.Time) bool {
 	return true
 }
 
-// intervalLimiter enforces a minimum interval between accepted events per key.
-type intervalLimiter struct {
-	mu   sync.Mutex
-	last map[string]time.Time
+// tokenBucketLimiter is a per-key token bucket: up to burst events at once, refilled at one
+// token per interval. A non-positive interval disables the limiter.
+type tokenBucketLimiter struct {
+	mu       sync.Mutex
+	interval time.Duration
+	burst    float64
+	buckets  map[string]*tokenBucket
 }
 
-func newIntervalLimiter() *intervalLimiter { return &intervalLimiter{last: map[string]time.Time{}} }
+type tokenBucket struct {
+	tokens float64
+	last   time.Time
+}
 
-// take returns 0 and records now when the event is allowed, else the time left to wait.
-func (l *intervalLimiter) take(key string, every time.Duration, now time.Time) time.Duration {
-	if every <= 0 {
+func newTokenBucketLimiter(interval time.Duration, burst int) *tokenBucketLimiter {
+	return &tokenBucketLimiter{interval: interval, burst: float64(burst), buckets: map[string]*tokenBucket{}}
+}
+
+// take spends one token for key. It returns 0 when the event is allowed, else the time until
+// the next token is available. Nothing is spent when the event is refused.
+func (l *tokenBucketLimiter) take(key string, now time.Time) time.Duration {
+	if l.interval <= 0 {
 		return 0
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if t, ok := l.last[key]; ok {
-		if wait := every - now.Sub(t); wait > 0 {
-			return wait
-		}
+	b := l.buckets[key]
+	if b == nil {
+		b = &tokenBucket{tokens: l.burst, last: now}
+		l.buckets[key] = b
 	}
-	l.last[key] = now
-	return 0
+	if el := now.Sub(b.last); el > 0 {
+		b.tokens = math.Min(l.burst, b.tokens+float64(el)/float64(l.interval))
+		b.last = now
+	}
+	if b.tokens >= 1 {
+		b.tokens--
+		return 0
+	}
+	return time.Duration(math.Ceil((1 - b.tokens) * float64(l.interval)))
 }
 
-func (l *intervalLimiter) forget(key string) {
+// refund gives back one token for key (an accepted event that failed after the check).
+func (l *tokenBucketLimiter) refund(key string) {
+	if l.interval <= 0 {
+		return
+	}
 	l.mu.Lock()
-	delete(l.last, key)
-	l.mu.Unlock()
+	defer l.mu.Unlock()
+	if b := l.buckets[key]; b != nil {
+		b.tokens = math.Min(l.burst, b.tokens+1)
+	}
 }
 
 func tooMany(w http.ResponseWriter, wait time.Duration, msg string) {

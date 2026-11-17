@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -31,6 +32,7 @@ const (
 
 	defaultInventoryInterval = 5 * time.Minute
 	defaultCheckinInterval   = 20 * time.Second
+	defaultBurst             = 3
 	maxHostname              = 253
 	maxLabels                = 32
 )
@@ -54,8 +56,10 @@ type Deps struct {
 	Now       func() time.Time
 
 	// Rate limits; zero selects the default, a negative value disables the limit.
-	InventoryInterval time.Duration // per host, default 5m
-	CheckinInterval   time.Duration // per host, default 20s
+	InventoryInterval time.Duration // per host: one token refilled per interval, default 5m
+	InventoryBurst    int           // per host bucket size, default 3
+	CheckinInterval   time.Duration // per host: one token refilled per interval, default 20s
+	CheckinBurst      int           // per host bucket size, default 3
 	EnrollPerMinute   int           // per client IP, default 10
 	BadAuthPerMinute  int           // failed Bearer auth per client IP, default 30
 	// ClientIP overrides how the client address is derived (e.g. from X-Forwarded-For behind a
@@ -66,7 +70,8 @@ type Deps struct {
 type server struct {
 	Deps
 	log       *slog.Logger
-	rates     *intervalLimiter
+	checkinLim   *tokenBucketLimiter
+	inventoryLim *tokenBucketLimiter
 	enrollLim *ipLimiter
 	authLim   *ipLimiter
 }
@@ -92,12 +97,16 @@ func NewMux(d Deps) *http.ServeMux {
 	}
 	d.InventoryInterval = orDefault(d.InventoryInterval, defaultInventoryInterval)
 	d.CheckinInterval = orDefault(d.CheckinInterval, defaultCheckinInterval)
+	d.InventoryBurst = orDefault(d.InventoryBurst, defaultBurst)
+	d.CheckinBurst = orDefault(d.CheckinBurst, defaultBurst)
 	d.EnrollPerMinute = orDefault(d.EnrollPerMinute, 10)
 	d.BadAuthPerMinute = orDefault(d.BadAuthPerMinute, 30)
 	if d.ClientIP == nil {
 		d.ClientIP = remoteIP
 	}
-	s := &server{Deps: d, log: d.Logger, rates: newIntervalLimiter(),
+	s := &server{Deps: d, log: d.Logger,
+		checkinLim:   newTokenBucketLimiter(d.CheckinInterval, d.CheckinBurst),
+		inventoryLim: newTokenBucketLimiter(d.InventoryInterval, d.InventoryBurst),
 		enrollLim: newIPLimiter(d.EnrollPerMinute), authLim: newIPLimiter(d.BadAuthPerMinute)}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -301,8 +310,8 @@ func (s *server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) handleCheckin(w http.ResponseWriter, r *http.Request) {
 	host := hostFrom(r.Context())
-	if wait := s.rates.take("c:"+host.ID, s.CheckinInterval, s.Now()); wait > 0 {
-		tooMany(w, wait, "check-in rate limit: at most one per "+s.CheckinInterval.String())
+	if wait := s.checkinLim.take(host.ID, s.Now()); wait > 0 {
+		tooMany(w, wait, "check-in rate limit: burst "+strconv.Itoa(s.CheckinBurst)+", one per "+s.CheckinInterval.String())
 		return
 	}
 	var req model.CheckinRequest
@@ -365,10 +374,6 @@ func (c *capReader) Read(p []byte) (int, error) {
 
 func (s *server) handleInventory(w http.ResponseWriter, r *http.Request) {
 	host := hostFrom(r.Context())
-	if wait := s.rates.take("i:"+host.ID, s.InventoryInterval, s.Now()); wait > 0 {
-		tooMany(w, wait, "inventory rate limit: at most one per "+s.InventoryInterval.String())
-		return
-	}
 	body := io.Reader(http.MaxBytesReader(w, r.Body, MaxInventoryBytes)) // compressed size cap
 	switch enc := strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Encoding"))); enc {
 	case "gzip", "x-gzip":
@@ -400,12 +405,17 @@ func (s *server) handleInventory(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, code, err.Error())
 		return
 	}
+	// An identical inventory is answered before the limiter and spends no token: nothing changes.
 	if host.InventoryHash != "" && host.InventoryHash == p.Hash {
 		writeJSON(w, http.StatusAccepted, map[string]string{"status": "accepted"}) // unchanged: no re-matching
 		return
 	}
+	if wait := s.inventoryLim.take(host.ID, s.Now()); wait > 0 {
+		tooMany(w, wait, "inventory rate limit: burst "+strconv.Itoa(s.InventoryBurst)+", one per "+s.InventoryInterval.String())
+		return
+	}
 	if err := s.Store.ReplaceInventory(r.Context(), host.ID, p); err != nil {
-		s.rates.forget("i:" + host.ID)
+		s.inventoryLim.refund(host.ID)
 		s.internal(w, "store inventory", err)
 		return
 	}
