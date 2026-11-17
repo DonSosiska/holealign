@@ -12,7 +12,11 @@
 </dl>
 
 <h2>Findings</h2>
-{{template "findingsTable" (tbl .Findings nil false)}}
+<p class="muted">
+  <span class="badge v-exploitable">{{.Counts.Exploitable}}</span> exploitable &middot;
+  <span class="badge v-unknown">{{.Counts.Attention}}</span> need attention &middot;
+  <span class="badge v-neutral">{{.Counts.Background}}</span> background (per CVE)</p>
+{{template "listBody" (lbody .L nil false)}}
 {{if .Hidden}}<p class="muted"><a href="/hosts/{{.Host.ID}}?all=1">Show {{.Hidden}} resolved</a></p>{{end}}
 {{if .All}}<p class="muted"><a href="/hosts/{{.Host.ID}}">Hide resolved</a></p>{{end}}
 

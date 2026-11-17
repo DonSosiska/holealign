@@ -53,6 +53,12 @@ variables.
 | `alerts.feed_stale_after` | duration | `48h` | `PANOPTES_ALERTS_FEED_STALE_AFTER` | Alert when the vulnerability DB is older than this or refreshing keeps failing. `0` disables `feed_stale` / `feed_ok`. |
 | `alerts.ops_rooms` | list of room IDs | `[]` | `PANOPTES_ALERTS_OPS_ROOMS` | Matrix rooms for server-level events (feed, pipeline, mass silence). Empty: `matrix.default_rooms`. |
 
+### Triage
+
+| Key | Type | Default | Environment | Description |
+|---|---|---|---|---|
+| `triage.epss_threshold` | float 0..1 | `0.1` | `PANOPTES_TRIAGE_EPSS_THRESHOLD` | A `conditions_unknown` finding with EPSS at or above this value goes to the web UI's "needs attention" tier (see [Reading the dashboard](rules.md#reading-the-dashboard-attention-vs-background)). Display only: alerts are not affected. |
+
 ### Matrix
 
 | Key | Type | Default | Environment | Description |
@@ -87,7 +93,7 @@ The server refuses to start when:
   contains something that is not an IP or CIDR;
 - a `*_env` name does not match `^PANOPTES_[A-Z0-9_]+$`, or `matrix.access_token_env`,
   `llm.api_key_env` and `admin.initial_password_env` are not pairwise different;
-- `retention.*` or `limits.*` is negative;
+- `retention.*` or `limits.*` is negative, or `triage.epss_threshold` is outside 0..1;
 - a configured certificate cannot be loaded, or the initial admin password is shorter than 12 characters.
 
 Warnings logged at start (non-fatal): `http://` `public_url`, `matrix.homeserver` or `llm.base_url` on a

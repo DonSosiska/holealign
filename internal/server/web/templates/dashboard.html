@@ -7,17 +7,17 @@
 {{if .PipelineErrors}}<div class="flash err" role="alert"><strong>Pipeline errors:</strong>
 <ul>{{range .PipelineErrors}}<li>{{.}}</li>{{end}}</ul></div>{{end}}
 <div class="cards">
-{{range .Counts}}
-  <a class="card {{vclass .Verdict}}" href="/findings?verdict={{.Verdict}}">
-    <div class="big">{{.N}}</div>
-    <div>{{vlabel .Verdict}}</div>
-  </a>
-{{end}}
-  <a class="card v-neutral" href="/hosts"><div class="big">{{.HostCount}}</div><div>hosts</div></a>
+  <a class="card v-exploitable" href="/findings?verdict=exploitable"><div class="big">{{.Counts.Exploitable}}</div><div>Exploitable</div></a>
+  <a class="card v-unknown" href="/findings?verdict=conditions_unknown&amp;tier=attention"><div class="big">{{.Counts.Attention}}</div><div>Needs attention</div></a>
+  <a class="card card-bg" href="/findings?verdict=conditions_unknown&amp;tier=background"><div class="big">{{.Counts.Background}}</div><div>Background</div></a>
+  <a class="card v-neutral" href="/findings?verdict=affected_not_exploitable"><div class="big">{{.Counts.NotExploitable}}</div><div>Not exploitable</div></a>
+  <a class="card v-neutral" href="/hosts"><div class="big">{{.HostCount}}</div><div>Hosts</div></a>
 </div>
+<p class="muted small">Counts are per CVE per host. Background = no exploitation signal (no KEV, EPSS below {{.EPSSPct}}%, no fix or low severity) and no rule yet &mdash; see docs/rules.md</p>
 
-<h2>Top exploitable findings</h2>
-{{template "findingsTable" (tbl .Top .HostNames true)}}
+<h2>Needs attention</h2>
+{{template "groupsTable" (gtbl .Top .HostNames true)}}
+<p class="muted small"><a href="/findings">All findings needing attention &rarr;</a></p>
 
 <div class="two-col">
 <section>

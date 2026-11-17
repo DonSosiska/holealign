@@ -97,8 +97,37 @@ type FindingFilter struct {
 	KEV             *bool
 	VulnID          string // matches vuln_id or any alias
 	HostID          string
-	Limit           int // default 100, max 1000
-	Offset          int
+	// Tier is "", "attention" or "background" (see TierAttention). EPSSThreshold (0..1) is the
+	// triage.epss_threshold used to decide it; callers must pass the configured value.
+	Tier          string
+	EPSSThreshold float64
+	Limit         int // default 100, max 1000
+	Offset        int
+}
+
+// Priority tiers of open findings (computed from stored columns, never stored).
+const (
+	TierAttention  = "attention"
+	TierBackground = "background"
+)
+
+// TierCounts counts distinct (host, vuln_id) pairs of open findings. Each pair is counted once, in
+// the first matching bucket: Exploitable (any package exploitable), Attention (conditions_unknown
+// and in the attention tier), Background (other conditions_unknown), NotExploitable
+// (affected_not_exploitable), NotAffected.
+type TierCounts struct {
+	Exploitable, Attention, Background, NotExploitable, NotAffected int
+}
+
+// FindingGroup is one (host, vuln_id) with the packages it affects.
+type FindingGroup struct {
+	HostID, VulnID string
+	Verdict        model.Verdict // worst verdict of the packages
+	Severity       string        // highest severity
+	CVSS, EPSS     float64       // maxima
+	KEV            bool
+	Attention      bool            // group is in the attention tier
+	Findings       []model.Finding // the packages (those matching the non-tier filters)
 }
 
 // EnrollTokenInfo is the listing view of an enrollment token (never the secret).
@@ -172,6 +201,11 @@ type Store interface {
 	HostFindings(ctx context.Context, hostID string) ([]model.Finding, error) // all rows including resolved
 	GetFinding(ctx context.Context, id int64) (model.Finding, error)
 	ListFindings(ctx context.Context, f FindingFilter) ([]model.Finding, int, error)
+	// ListFindingGroups is ListFindings grouped by (host, vuln_id); total counts groups. A group is in
+	// the attention tier when any of its matching packages is.
+	ListFindingGroups(ctx context.Context, f FindingFilter) ([]FindingGroup, int, error)
+	// CountByTier counts open findings per distinct (host, vuln_id): global and per host.
+	CountByTier(ctx context.Context, epssThreshold float64) (TierCounts, map[string]TierCounts, error)
 	// Retention: delete resolved findings / notification dedup rows older than cutoff.
 	PruneResolvedFindings(ctx context.Context, cutoff time.Time) (int64, error)
 	PruneNotifications(ctx context.Context, cutoff time.Time) (int64, error)

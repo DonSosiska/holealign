@@ -21,32 +21,16 @@ import (
 
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request, sess *session) {
 	ctx := r.Context()
-	type count struct {
-		Verdict model.Verdict
-		N       int
-	}
-	var counts []count
-	for _, v := range allVerdicts[:4] {
-		_, n, err := s.d.Store.ListFindings(ctx, store.FindingFilter{Verdict: v, Limit: 1})
-		if err != nil {
-			s.storeErr(w, r, sess, err)
-			return
-		}
-		counts = append(counts, count{v, n})
-	}
-	top, _, err := s.d.Store.ListFindings(ctx, store.FindingFilter{Verdict: model.VerdictExploitable, Limit: 1000})
+	eps := s.cfg.Triage.EPSSThreshold
+	counts, _, err := s.d.Store.CountByTier(ctx, eps)
 	if err != nil {
 		s.storeErr(w, r, sess, err)
 		return
 	}
-	sort.SliceStable(top, func(i, j int) bool {
-		if top[i].KEV != top[j].KEV {
-			return top[i].KEV
-		}
-		return top[i].CVSS > top[j].CVSS
-	})
-	if len(top) > 10 {
-		top = top[:10]
+	top, _, err := s.d.Store.ListFindingGroups(ctx, store.FindingFilter{Tier: store.TierAttention, EPSSThreshold: eps, Limit: 10})
+	if err != nil {
+		s.storeErr(w, r, sess, err)
+		return
 	}
 	names, hosts, err := s.hostNames(ctx)
 	if err != nil {
@@ -79,7 +63,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request, sess *s
 	}
 	s.render(w, r, sess, http.StatusOK, "dashboard", map[string]any{
 		"FeedStale": kv("health.feed_stale"), "PipelineErrors": pipeErrs, "NotifyProblems": s.notifyProblems(kv(kvNotifyErrors)),
-		"Counts": counts, "Top": top, "HostNames": names, "Stale": stale, "HostCount": len(hosts),
+		"Counts": counts, "EPSSPct": epssPct(eps), "Top": top, "HostNames": names, "Stale": stale, "HostCount": len(hosts),
 		"FeedChecked": kv("feeds.grype.checked_at"), "FeedUpdated": kv("feeds.grype.updated_at"), "FeedError": kv("feeds.grype.last_error"),
 	})
 }
@@ -91,29 +75,22 @@ func (s *Server) handleHosts(w http.ResponseWriter, r *http.Request, sess *sessi
 		s.storeErr(w, r, sess, err)
 		return
 	}
+	_, per, err := s.d.Store.CountByTier(ctx, s.cfg.Triage.EPSSThreshold)
+	if err != nil {
+		s.storeErr(w, r, sess, err)
+		return
+	}
 	type row struct {
 		model.Host
-		Exploitable, Unknown int
-		Local                bool
+		Exploitable, Attention, Background int
+		Local                              bool
 	}
 	localID := s.localHostID(ctx)
 	rows := make([]row, 0, len(hosts))
 	for _, h := range hosts {
-		fs, err := s.d.Store.HostFindings(ctx, h.ID)
-		if err != nil {
-			s.storeErr(w, r, sess, err)
-			return
-		}
-		rw := row{Host: h, Local: localID != "" && h.ID == localID}
-		for _, f := range fs {
-			switch f.Verdict {
-			case model.VerdictExploitable:
-				rw.Exploitable++
-			case model.VerdictConditionsUnknown:
-				rw.Unknown++
-			}
-		}
-		rows = append(rows, rw)
+		c := per[h.ID]
+		rows = append(rows, row{Host: h, Exploitable: c.Exploitable, Attention: c.Attention, Background: c.Background,
+			Local: localID != "" && h.ID == localID})
 	}
 	sort.SliceStable(rows, func(i, j int) bool {
 		if rows[i].Exploitable != rows[j].Exploitable {
@@ -150,19 +127,37 @@ func (s *Server) handleHost(w http.ResponseWriter, r *http.Request, sess *sessio
 		s.storeErr(w, r, sess, err)
 		return
 	}
-	all := r.URL.Query().Get("all") == "1"
-	var shown []model.Finding
+	q := r.URL.Query()
+	all := q.Get("all") == "1"
 	hidden := 0
 	for _, f := range fs {
 		if f.Verdict == model.VerdictResolved && !all {
 			hidden++
-			continue
 		}
-		shown = append(shown, f)
 	}
-	sortFindings(shown)
+	eq := url.Values{}
+	for k, v := range q {
+		if k != "host" && k != "q" && k != "all" && k != "label" {
+			eq[k] = v
+		}
+	}
+	if all {
+		eq.Set("resolved", "1")
+	}
+	f, page := parseFilter(eq)
+	f.HostID, f.EPSSThreshold = h.ID, s.cfg.Triage.EPSSThreshold
+	lv, err := s.loadListing(ctx, "/hosts/"+url.PathEscape(h.ID), q, f, page)
+	if err != nil {
+		s.storeErr(w, r, sess, err)
+		return
+	}
+	_, per, err := s.d.Store.CountByTier(ctx, f.EPSSThreshold)
+	if err != nil {
+		s.storeErr(w, r, sess, err)
+		return
+	}
 	s.render(w, r, sess, http.StatusOK, "host", map[string]any{
-		"Host": h, "Targets": targets, "Findings": shown, "Hidden": hidden, "All": all,
+		"Host": h, "Targets": targets, "L": lv, "Counts": per[h.ID], "Hidden": hidden, "All": all,
 		"Local": s.localHostID(ctx) == h.ID,
 		"Stale": h.LastCheckin.IsZero() || s.now().Sub(h.LastCheckin) > staleAfter,
 	})
@@ -186,6 +181,18 @@ func parseFilter(q url.Values) (store.FindingFilter, int) {
 		t := false
 		f.KEV = &t
 	}
+	// Tier: explicit tier=attention|background|all wins. Otherwise the default is "attention",
+	// unless the request names something specific (an ID search, a verdict, resolved findings or a
+	// host), which switches the default to "all" so old links keep showing what they point at.
+	switch q.Get("tier") {
+	case store.TierAttention, store.TierBackground:
+		f.Tier = q.Get("tier")
+	case "all":
+	default:
+		if f.VulnID == "" && f.Verdict == "" && !f.IncludeResolved && f.HostID == "" {
+			f.Tier = store.TierAttention
+		}
+	}
 	page, _ := strconv.Atoi(q.Get("page"))
 	if page < 1 {
 		page = 1
@@ -194,11 +201,76 @@ func parseFilter(q url.Values) (store.FindingFilter, int) {
 	return f, page
 }
 
+// listing is what the findings pages render: grouped rows (default) or per-package rows.
+type listing struct {
+	Groups             []store.FindingGroup
+	Findings           []model.Finding
+	Total, Page, Pages int
+	PrevURL, NextURL   string
+	Tier               string // effective: attention, background or all
+	PerPackage         bool
+	AllURL, AttnURL    string // tier switches
+	BgURL              string
+	GroupedURL         string // view switches
+	PackageURL         string
+}
+
+// withParams copies q without "page", then sets (or, for "", removes) the key/value pairs.
+func withParams(base string, q url.Values, kv ...string) string {
+	v := url.Values{}
+	for k, vs := range q {
+		if k != "page" {
+			v[k] = vs
+		}
+	}
+	for i := 0; i+1 < len(kv); i += 2 {
+		if kv[i+1] == "" {
+			v.Del(kv[i])
+		} else {
+			v.Set(kv[i], kv[i+1])
+		}
+	}
+	if len(v) == 0 {
+		return base
+	}
+	return base + "?" + v.Encode()
+}
+
+func (s *Server) loadListing(ctx context.Context, base string, q url.Values, f store.FindingFilter, page int) (listing, error) {
+	lv := listing{Page: page, Tier: f.Tier, PerPackage: q.Get("view") == "package"}
+	if lv.Tier == "" {
+		lv.Tier = "all"
+	}
+	var err error
+	if lv.PerPackage {
+		lv.Findings, lv.Total, err = s.d.Store.ListFindings(ctx, f)
+	} else {
+		lv.Groups, lv.Total, err = s.d.Store.ListFindingGroups(ctx, f)
+	}
+	if err != nil {
+		return lv, err
+	}
+	lv.Pages = (lv.Total + pageSize - 1) / pageSize
+	if page > 1 {
+		lv.PrevURL = withParams(base, q, "page", strconv.Itoa(page-1))
+	}
+	if page < lv.Pages {
+		lv.NextURL = withParams(base, q, "page", strconv.Itoa(page+1))
+	}
+	lv.AllURL = withParams(base, q, "tier", "all")
+	lv.AttnURL = withParams(base, q, "tier", store.TierAttention)
+	lv.BgURL = withParams(base, q, "tier", store.TierBackground)
+	lv.GroupedURL = withParams(base, q, "view", "")
+	lv.PackageURL = withParams(base, q, "view", "package")
+	return lv, nil
+}
+
 func (s *Server) handleFindings(w http.ResponseWriter, r *http.Request, sess *session) {
 	ctx := r.Context()
 	q := r.URL.Query()
 	f, page := parseFilter(q)
-	list, total, err := s.d.Store.ListFindings(ctx, f)
+	f.EPSSThreshold = s.cfg.Triage.EPSSThreshold
+	lv, err := s.loadListing(ctx, "/findings", q, f, page)
 	if err != nil {
 		s.storeErr(w, r, sess, err)
 		return
@@ -219,29 +291,11 @@ func (s *Server) handleFindings(w http.ResponseWriter, r *http.Request, sess *se
 		labels = append(labels, l)
 	}
 	sort.Strings(labels)
-	pageURL := func(p int) string {
-		v := url.Values{}
-		for k, vs := range q {
-			if k != "page" {
-				v[k] = vs
-			}
-		}
-		v.Set("page", strconv.Itoa(p))
-		return "/findings?" + v.Encode()
-	}
-	pages := (total + pageSize - 1) / pageSize
-	data := map[string]any{
-		"Findings": list, "Total": total, "Page": page, "Pages": pages, "HostNames": names, "Hosts": hosts, "Labels": labels,
+	s.render(w, r, sess, http.StatusOK, "findings", map[string]any{
+		"L": lv, "HostNames": names, "Hosts": hosts, "Labels": labels,
 		"Verdicts": allVerdicts, "Q": q.Get("q"), "FVerdict": string(f.Verdict), "FLabel": f.Label, "FHost": f.HostID,
-		"FKEV": q.Get("kev"), "FResolved": f.IncludeResolved,
-	}
-	if page > 1 {
-		data["PrevURL"] = pageURL(page - 1)
-	}
-	if page < pages {
-		data["NextURL"] = pageURL(page + 1)
-	}
-	s.render(w, r, sess, http.StatusOK, "findings", data)
+		"FKEV": q.Get("kev"), "FResolved": f.IncludeResolved, "FTier": q.Get("tier"),
+	})
 }
 
 func (s *Server) handleFinding(w http.ResponseWriter, r *http.Request, sess *session) {
@@ -271,12 +325,12 @@ func (s *Server) handleFinding(w http.ResponseWriter, r *http.Request, sess *ses
 func (s *Server) handleVuln(w http.ResponseWriter, r *http.Request, sess *session) {
 	ctx := r.Context()
 	id := r.PathValue("id")
-	list, _, err := s.d.Store.ListFindings(ctx, store.FindingFilter{VulnID: id, IncludeResolved: true, Limit: 1000})
+	groups, total, err := s.d.Store.ListFindingGroups(ctx, store.FindingFilter{VulnID: id, IncludeResolved: true, Limit: 1000})
 	if err != nil {
 		s.storeErr(w, r, sess, err)
 		return
 	}
-	if len(list) == 0 {
+	if total == 0 {
 		s.notFound(w, r, sess)
 		return
 	}
@@ -285,24 +339,11 @@ func (s *Server) handleVuln(w http.ResponseWriter, r *http.Request, sess *sessio
 		s.storeErr(w, r, sess, err)
 		return
 	}
-	type group struct {
-		Verdict  model.Verdict
-		Findings []model.Finding
+	pkgs := 0
+	for _, g := range groups {
+		pkgs += len(g.Findings)
 	}
-	var groups []group
-	for _, v := range allVerdicts {
-		var fs []model.Finding
-		for _, f := range list {
-			if f.Verdict == v {
-				fs = append(fs, f)
-			}
-		}
-		if len(fs) > 0 {
-			sortFindings(fs)
-			groups = append(groups, group{v, fs})
-		}
-	}
-	s.render(w, r, sess, http.StatusOK, "vuln", map[string]any{"VulnID": id, "Groups": groups, "HostNames": hn, "Total": len(list)})
+	s.render(w, r, sess, http.StatusOK, "vuln", map[string]any{"VulnID": id, "Groups": groups, "HostNames": hn, "Total": total, "Pkgs": pkgs})
 }
 
 // ---------------------------------------------------------------------------
@@ -617,3 +658,6 @@ func (s *Server) notifyProblems(raw string) []string {
 	}
 	return out
 }
+
+// epssPct formats the EPSS threshold as a percentage for the dashboard explainer (0.1 -> "10").
+func epssPct(f float64) string { return strconv.FormatFloat(f*100, 'f', -1, 64) }

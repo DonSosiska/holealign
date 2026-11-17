@@ -2,10 +2,7 @@
 {{define "content"}}
 <p class="crumbs"><a href="/findings">Findings</a> /</p>
 <h1>{{.VulnID}}</h1>
-<p class="muted">{{.Total}} affected package instance{{if ne .Total 1}}s{{end}} &middot;
+<p class="muted">{{.Total}} host{{if ne .Total 1}}s{{end}} &middot; {{.Pkgs}} affected package instance{{if ne .Pkgs 1}}s{{end}} &middot;
 {{if isCVE .VulnID}}<a href="{{nvd .VulnID}}" rel="noopener noreferrer" target="_blank">NVD</a> &middot; {{end}}<a href="{{osv .VulnID}}" rel="noopener noreferrer" target="_blank">OSV</a></p>
-{{range .Groups}}
-<h2>{{template "badge" .Verdict}} <span class="muted">({{len .Findings}})</span></h2>
-{{template "findingsTable" (tbl .Findings $.HostNames true)}}
-{{end}}
+{{template "groupsTable" (gtbl .Groups .HostNames true)}}
 {{end}}

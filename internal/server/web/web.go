@@ -169,6 +169,13 @@ func (s *Server) parseTemplates() error {
 		"tbl": func(f []model.Finding, names map[string]string, showHost bool) findingsTbl {
 			return findingsTbl{f, names, showHost}
 		},
+		"gtbl": func(g []store.FindingGroup, names map[string]string, showHost bool) groupsTbl {
+			return groupsTbl{g, names, showHost}
+		},
+		"lbody": func(l listing, names map[string]string, showHost bool) listBody {
+			return listBody{l, names, showHost}
+		},
+		"gfix":         groupFix,
 		"rclass":       func(st model.RuleStatus) string { return "st-" + string(st) },
 		"rstatus":      func(st model.RuleStatus) string { return string(st) },
 		"tokenExpired": func(t store.EnrollTokenInfo) bool { return !t.ExpiresAt.IsZero() && s.now().After(t.ExpiresAt) },
@@ -191,6 +198,31 @@ func (s *Server) parseTemplates() error {
 		s.pages[name] = t
 	}
 	return nil
+}
+
+type listBody struct {
+	L         listing
+	HostNames map[string]string
+	ShowHost  bool
+}
+
+type groupsTbl struct {
+	Groups    []store.FindingGroup
+	HostNames map[string]string
+	ShowHost  bool
+}
+
+// groupFix summarises the fix of a group: a fixed version when any package has one.
+func groupFix(g store.FindingGroup) string {
+	for _, f := range g.Findings {
+		if len(f.FixedVersions) > 0 {
+			return "fix available"
+		}
+	}
+	if len(g.Findings) > 0 && g.Findings[0].FixState != "" {
+		return g.Findings[0].FixState
+	}
+	return ""
 }
 
 type findingsTbl struct {

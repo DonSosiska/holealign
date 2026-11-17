@@ -3,7 +3,7 @@
 <h1>Hosts</h1>
 {{if .Rows}}
 <div class="table-wrap"><table>
-<thead><tr><th>Hostname</th><th>Labels</th><th>OS</th><th>Agent</th><th>Last check-in</th><th>Exploitable</th><th>Unknown</th></tr></thead>
+<thead><tr><th>Hostname</th><th>Labels</th><th>OS</th><th>Agent</th><th>Last check-in</th><th>Exploitable</th><th>Attention</th><th>Background</th></tr></thead>
 <tbody>
 {{range .Rows}}
 <tr>
@@ -13,9 +13,11 @@
   <td class="mono small">{{.AgentVersion}}</td>
   <td>{{age .LastCheckin}}</td>
   <td class="num">{{if .Exploitable}}<span class="badge v-exploitable">{{.Exploitable}}</span>{{else}}0{{end}}</td>
-  <td class="num">{{if .Unknown}}<span class="badge v-unknown">{{.Unknown}}</span>{{else}}0{{end}}</td>
+  <td class="num">{{if .Attention}}<span class="badge v-unknown">{{.Attention}}</span>{{else}}0{{end}}</td>
+  <td class="num muted">{{.Background}}</td>
 </tr>
 {{end}}
 </tbody></table></div>
+<p class="muted small">Counts are per CVE per host. Background: conditions unknown, no exploitation signal.</p>
 {{else}}<p class="empty">No hosts have enrolled yet. Create an enrollment token under Settings.</p>{{end}}
 {{end}}

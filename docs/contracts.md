@@ -395,6 +395,8 @@ alerts:
   agent_silent_after: 30m             # 0 disables agent_silent / agent_back
   feed_stale_after: 48h               # 0 disables feed_stale / feed_ok
   ops_rooms: []                       # Matrix rooms for server-level events; empty: matrix.default_rooms
+triage:
+  epss_threshold: 0.1                 # 0..1; web UI tier: conditions_unknown with EPSS >= this needs attention
 data_dir: /var/lib/panoptes           # SQLite DB + Grype DB cache
 feeds:
   interval: 6h                        # vuln DB / KEV / EPSS refresh

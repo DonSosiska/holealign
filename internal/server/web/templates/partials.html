@@ -23,3 +23,56 @@
 </div>
 {{else}}<p class="empty">No findings.</p>{{end}}
 {{end}}
+
+{{define "groupsTable"}}
+{{if .Groups}}
+<div class="table-wrap">
+<table>
+<thead><tr><th>Verdict</th><th>Vulnerability</th><th>Packages</th>{{if .ShowHost}}<th>Host</th>{{end}}<th>Sev</th><th>CVSS</th><th>EPSS</th><th>Fix</th></tr></thead>
+<tbody>
+{{range .Groups}}
+<tr>
+  <td>{{template "badge" .Verdict}}{{if .KEV}} <span class="badge kev" title="Known exploited (CISA KEV)">KEV</span>{{end}}</td>
+  <td><a href="/vulns/{{.VulnID}}">{{.VulnID}}</a></td>
+  <td>{{template "pkgList" .Findings}}</td>
+  {{if $.ShowHost}}<td><a href="/hosts/{{.HostID}}">{{with index $.HostNames .HostID}}{{.}}{{else}}{{.HostID}}{{end}}</a></td>{{end}}
+  <td>{{.Severity}}</td>
+  <td class="num">{{score .CVSS}}</td>
+  <td class="num">{{pct .EPSS}}</td>
+  <td class="muted small">{{gfix .}}</td>
+</tr>
+{{end}}
+</tbody>
+</table>
+</div>
+{{else}}<p class="empty">No findings.</p>{{end}}
+{{end}}
+
+{{define "pkgLine"}}<a href="/findings/{{.ID}}"><span class="mono">{{.PackageName}}</span> <span class="muted">{{.PackageVer}}</span></a>{{if .FixedVersions}} <span class="muted small">&rarr; {{join .FixedVersions ", "}}</span>{{else if .FixState}} <span class="muted small">({{.FixState}})</span>{{end}}{{if ne .Target "host"}} <span class="muted small">in {{.Target}}</span>{{end}}{{end}}
+
+{{define "pkgList"}}
+{{if eq (len .) 1}}{{range .}}{{template "pkgLine" .}}{{end}}
+{{else}}<details><summary>{{len .}} packages</summary><ul class="pkgs">{{range .}}<li>{{template "pkgLine" .}}</li>{{end}}</ul></details>{{end}}
+{{end}}
+
+{{define "tierSwitch"}}
+<p class="tier-switch muted">Showing:
+{{if eq .Tier "attention"}}<strong>needs attention</strong> &middot; <a href="{{.AllURL}}">show all</a> &middot; <a href="{{.BgURL}}">background only</a>
+{{else if eq .Tier "background"}}<strong>background</strong> &middot; <a href="{{.AttnURL}}">needs attention</a> &middot; <a href="{{.AllURL}}">show all</a>
+{{else}}<strong>all</strong> &middot; <a href="{{.AttnURL}}">needs attention only</a> &middot; <a href="{{.BgURL}}">background only</a>{{end}}
+&nbsp;|&nbsp; View: {{if .PerPackage}}<a href="{{.GroupedURL}}">grouped by CVE</a> &middot; <strong>per package</strong>{{else}}<strong>grouped by CVE</strong> &middot; <a href="{{.PackageURL}}">per package</a>{{end}}
+</p>
+{{end}}
+
+{{define "listBody"}}
+{{template "tierSwitch" .L}}
+<p class="muted">{{.L.Total}} {{if .L.PerPackage}}finding{{else}}CVE{{end}}{{if ne .L.Total 1}}s{{end}}{{if not .L.PerPackage}} (per host){{end}}</p>
+{{if .L.PerPackage}}{{template "findingsTable" (tbl .L.Findings .HostNames .ShowHost)}}{{else}}{{template "groupsTable" (gtbl .L.Groups .HostNames .ShowHost)}}{{end}}
+{{if gt .L.Pages 1}}
+<div class="pager">
+  {{if .L.PrevURL}}<a class="btn" href="{{.L.PrevURL}}">&larr; Previous</a>{{end}}
+  <span class="muted">Page {{.L.Page}} of {{.L.Pages}}</span>
+  {{if .L.NextURL}}<a class="btn" href="{{.L.NextURL}}">Next &rarr;</a>{{end}}
+</div>
+{{end}}
+{{end}}

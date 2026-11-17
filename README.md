@@ -42,7 +42,9 @@ missing) the verdict is `conditions_unknown`, never "safe".
   [docs/llm.md](docs/llm.md).
 - Matrix/Element alerts routed by host label, with dedup, grouping and burst summaries:
   [docs/notifications.md](docs/notifications.md).
-- Admin web UI: hosts, findings, rule review, enrollment tokens, Matrix routes, users.
+- Admin web UI: hosts, findings grouped per CVE with a "needs attention" vs "background" triage
+  ([docs/rules.md](docs/rules.md#reading-the-dashboard-attention-vs-background)), rule review,
+  enrollment tokens, Matrix routes, users.
 - Health alerts: silent agents, stale vulnerability feed, failing pipeline.
 - Agentless mode (server monitors its own host): [docs/installation.md](docs/installation.md#agentless-mode).
 - Signed releases: cosign signatures, SBOMs, build provenance.

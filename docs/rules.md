@@ -9,7 +9,7 @@ normative text is [contracts.md section 4](contracts.md#4-rules).
 Contents: [How verdicts work](#how-verdicts-work) - [Writing a rule](#writing-a-rule) -
 [CEL environment](#cel-environment) - [Fact catalog](#fact-catalog) -
 [file.match policy](#filematch-policy) - [Testing a rule locally](#testing-a-rule-locally) -
-[Shipped rules](#shipped-rules) - [Review workflow for LLM drafts](#review-workflow-for-llm-drafts)
+[Reading the dashboard](#reading-the-dashboard-attention-vs-background) - [Shipped rules](#shipped-rules) - [Review workflow for LLM drafts](#review-workflow-for-llm-drafts)
 
 ## How verdicts work
 
@@ -245,6 +245,31 @@ There is no separate "dry run" command. Practical workflow:
 
 Do not test on production alert routes: a new `exploitable` verdict sends a Matrix message to the
 rooms of the host's labels.
+
+## Reading the dashboard: attention vs background
+
+Most findings of a fresh host are `conditions_unknown`: there is no rule for them yet. Hundreds of
+them are not equally urgent, so the web UI sorts every open finding into a **tier** (computed on
+the fly from stored columns, nothing extra is stored):
+
+- **attention**: verdict `exploitable`; or `conditions_unknown` and (the CVE is in CISA KEV, or its
+  EPSS is at least `triage.epss_threshold` (default 10%), or its severity is Critical/High and a fix
+  is available, `fix_state = fixed`).
+- **background**: every other open finding: `conditions_unknown` without any of those signals (no fix,
+  or low severity), `affected_not_exploitable`, `not_affected`.
+
+Counts and lists are per **CVE per host**: sibling packages of one source (`openssl` + `libssl3`,
+three `openssh-*` packages) are one entry with the packages listed inside. The dashboard cards are
+Exploitable, Needs attention (unknown in the attention tier), Background (other unknown),
+Not exploitable and Hosts. The Findings and host pages show "needs attention" by default; "show all"
+(`tier=all`) and the per-package view (`view=package`) are one click away. An explicit `q`, `verdict`,
+`resolved` or `host` filter switches the default to all, so links such as `/findings?q=CVE-...`
+keep working. A group is "worst verdict wins" (exploitable, then conditions_unknown, then not
+exploitable, then not affected) with the maximum severity, CVSS and EPSS of its packages.
+
+The tier only changes what the UI emphasises. Matrix alerts follow the verdict rules in
+[notifications.md](notifications.md), and the way to move a CVE out of "unknown" is to write or
+approve a rule for it.
 
 ## Shipped rules
 

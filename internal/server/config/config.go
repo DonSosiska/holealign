@@ -42,6 +42,9 @@ type Config struct {
 
 	Alerts Alerts `yaml:"alerts"`
 
+	// Triage tunes how the web UI splits findings into "needs attention" and "background".
+	Triage Triage `yaml:"triage"`
+
 	Retention Retention `yaml:"retention"`
 	Limits    Limits    `yaml:"limits"`
 
@@ -136,6 +139,12 @@ type Feeds struct {
 	Update   bool          `yaml:"update"`   // false disables all network updates (tests, air-gapped)
 }
 
+// Triage configures the priority tiers of the web UI (docs/rules.md, "Reading the dashboard").
+type Triage struct {
+	// EPSSThreshold (0..1): a conditions_unknown finding with EPSS at or above it needs attention.
+	EPSSThreshold float64 `yaml:"epss_threshold"`
+}
+
 // Alerts configures silence/health alerts.
 type Alerts struct {
 	AgentSilentAfter time.Duration `yaml:"agent_silent_after"` // 0 disables agent_silent/agent_back
@@ -181,6 +190,7 @@ func Default() Config {
 		DataDir:     "/var/lib/panoptes",
 		RulesDir:    "/usr/share/panoptes/rules",
 		Alerts:      Alerts{AgentSilentAfter: 30 * time.Minute, FeedStaleAfter: 48 * time.Hour},
+		Triage:      Triage{EPSSThreshold: 0.1},
 		Feeds:       Feeds{Interval: 6 * time.Hour, Update: true},
 		Retention:   Retention{ResolvedFindings: Duration(30 * 24 * time.Hour), Notifications: Duration(90 * 24 * time.Hour)},
 		Limits:      Limits{FindingsPerHost: 20000, MatchSecondsPerHostHour: 900},
@@ -253,6 +263,9 @@ func (c *Config) validate() error {
 	c.PublicURL = strings.TrimRight(c.PublicURL, "/")
 	if c.Alerts.AgentSilentAfter < 0 || c.Alerts.FeedStaleAfter < 0 {
 		return errors.New("alerts.agent_silent_after and alerts.feed_stale_after must not be negative")
+	}
+	if !(c.Triage.EPSSThreshold >= 0 && c.Triage.EPSSThreshold <= 1) {
+		return errors.New("triage.epss_threshold must be between 0 and 1")
 	}
 	if (c.TLSCert == "") != (c.TLSKey == "") {
 		return errors.New("tls_cert and tls_key must be set together")
@@ -472,6 +485,12 @@ func setScalar(f reflect.Value, val string) error {
 			return err
 		}
 		f.SetBool(b)
+	case f.Kind() == reflect.Float64:
+		x, err := strconv.ParseFloat(val, 64)
+		if err != nil {
+			return err
+		}
+		f.SetFloat(x)
 	case f.Kind() == reflect.Int || f.Kind() == reflect.Int64:
 		n, err := strconv.ParseInt(val, 10, 64)
 		if err != nil {

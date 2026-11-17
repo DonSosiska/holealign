@@ -799,65 +799,6 @@ func (s *SQLite) GetFinding(ctx context.Context, id int64) (model.Finding, error
 	return f, notFound(err)
 }
 
-func (s *SQLite) ListFindings(ctx context.Context, fl FindingFilter) ([]model.Finding, int, error) {
-	var where []string
-	var args []any
-	switch {
-	case fl.Verdict != "":
-		where = append(where, "f.verdict=?")
-		args = append(args, string(fl.Verdict))
-	case !fl.IncludeResolved:
-		where = append(where, "f.verdict<>'resolved'")
-	}
-	if fl.HostID != "" {
-		where = append(where, "f.host_id=?")
-		args = append(args, fl.HostID)
-	}
-	if fl.KEV != nil {
-		where = append(where, "f.kev=?")
-		args = append(args, b2i(*fl.KEV))
-	}
-	if fl.VulnID != "" {
-		where = append(where, "(f.vuln_id=? OR EXISTS (SELECT 1 FROM json_each(f.aliases) WHERE value=?))")
-		args = append(args, fl.VulnID, fl.VulnID)
-	}
-	if fl.Label != "" {
-		where = append(where, "EXISTS (SELECT 1 FROM hosts h, json_each(h.labels) WHERE h.id=f.host_id AND value=?)")
-		args = append(args, fl.Label)
-	}
-	cond := ""
-	if len(where) > 0 {
-		cond = " WHERE " + strings.Join(where, " AND ")
-	}
-	var total int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM findings f`+cond, args...).Scan(&total); err != nil {
-		return nil, 0, err
-	}
-	limit := fl.Limit
-	if limit <= 0 {
-		limit = 100
-	}
-	if limit > 1000 {
-		limit = 1000
-	}
-	q := `SELECT ` + prefixCols("f", findingCols) + ` FROM findings f` + cond +
-		` ORDER BY (f.verdict='exploitable') DESC, f.kev DESC, f.cvss DESC, f.id LIMIT ? OFFSET ?`
-	rows, err := s.db.QueryContext(ctx, q, append(args, limit, max(fl.Offset, 0))...)
-	if err != nil {
-		return nil, 0, err
-	}
-	defer rows.Close()
-	var out []model.Finding
-	for rows.Next() {
-		f, err := scanFinding(rows)
-		if err != nil {
-			return nil, 0, err
-		}
-		out = append(out, f)
-	}
-	return out, total, rows.Err()
-}
-
 // --- notifications ---------------------------------------------------------
 
 func (s *SQLite) NotificationSent(ctx context.Context, dedupKey string) (bool, error) {

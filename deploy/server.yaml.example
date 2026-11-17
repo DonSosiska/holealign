@@ -64,6 +64,12 @@ alerts:
   # Rooms for server-level events (feed, pipeline, mass silence). Empty: matrix.default_rooms.
   ops_rooms: []
 
+# Web UI triage: which unknown findings "need attention" (the rest is "background").
+triage:
+  # conditions_unknown findings with EPSS >= this (0..1) need attention, besides KEV and
+  # Critical/High with a fix available. Env: PANOPTES_TRIAGE_EPSS_THRESHOLD.
+  epss_threshold: 0.1
+
 matrix:
   # Homeserver for alerts, e.g. https://matrix.example.com. Empty disables Matrix.
   homeserver: ""

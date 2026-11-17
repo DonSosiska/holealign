@@ -14,17 +14,15 @@
   <label>KEV
     <select name="kev"><option value="">any</option><option value="1" {{if eq .FKEV "1"}}selected{{end}}>yes</option><option value="0" {{if eq .FKEV "0"}}selected{{end}}>no</option></select></label>
   <label>Vulnerability ID <input name="q" value="{{.Q}}" placeholder="CVE-2024-6387"></label>
+  <label>Show
+    <select name="tier"><option value="">default (needs attention)</option>
+    <option value="attention" {{if eq .FTier "attention"}}selected{{end}}>needs attention</option>
+    <option value="background" {{if eq .FTier "background"}}selected{{end}}>background</option>
+    <option value="all" {{if eq .FTier "all"}}selected{{end}}>all</option></select></label>
+  {{if .L.PerPackage}}<input type="hidden" name="view" value="package">{{end}}
   <label class="check"><input type="checkbox" name="resolved" value="1" {{if .FResolved}}checked{{end}}> include resolved</label>
   <button type="submit" class="primary">Filter</button>
   <a href="/findings" class="btn">Reset</a>
 </form>
-<p class="muted">{{.Total}} finding{{if ne .Total 1}}s{{end}}</p>
-{{template "findingsTable" (tbl .Findings .HostNames true)}}
-{{if gt .Pages 1}}
-<div class="pager">
-  {{if .PrevURL}}<a class="btn" href="{{.PrevURL}}">&larr; Previous</a>{{end}}
-  <span class="muted">Page {{.Page}} of {{.Pages}}</span>
-  {{if .NextURL}}<a class="btn" href="{{.NextURL}}">Next &rarr;</a>{{end}}
-</div>
-{{end}}
+{{template "listBody" (lbody .L .HostNames true)}}
 {{end}}
