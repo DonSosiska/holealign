@@ -173,6 +173,38 @@ untrusted local files (configs, package databases, images). It serves the result
 cannot reach the network, and a compromised sender is not root. `-mode all` (the default, used by
 `-once`, containers and the e2e tests) keeps the single-process behaviour. Details:
 [docs/contracts.md](docs/contracts.md) section 2. Test it with `deploy/e2e/split-mode.sh`.
+The server's own host can use the same collector without any sender, see "Agentless mode".
+
+## Agentless mode (server monitors itself)
+
+The server host does not need a separate `panoptes-agent`: with `local_agent.enabled: true` the installed
+`panoptes-server` monitors its own host and shows it like any other host (labelled `server` and marked
+"local (built-in)" in the web UI; findings, rules, Matrix alerts and silence alerts work unchanged). It is off by
+default. Two ways to feed it host data (`local_agent.source`, default `auto`):
+
+- **`collector` (recommended).** Install only the collector on the server host: `install.sh --collector-only`
+  (or the agent package, then `systemctl enable --now panoptes-collector` and nothing else). The server reads facts
+  and inventory from `/run/panoptes/collector.sock`, so privilege separation is kept: the root collector has no
+  network and the internet-facing server stays unprivileged. The collector only accepts root and the user
+  `panoptes`, so run the server as that user instead of a `DynamicUser` (see the commented lines in
+  `deploy/systemd/panoptes-server.service`).
+- **`inprocess`.** The server process itself collects (sshd -T, package databases, Docker images ...) with its own
+  privileges. Nothing else to install, intended for development and single-box setups. The trade-off: the
+  network-facing server process now runs the collectors and parses untrusted local files, and when it is not
+  root some facts are missing (one WARN is logged). Inside a container it scans the container, not the host.
+- `auto` picks `collector` when the socket answers, otherwise `inprocess`, and logs which.
+
+```yaml
+local_agent:
+  enabled: true        # or PANOPTES_LOCAL_AGENT_ENABLED=true
+  source: collector    # collector | inprocess | auto
+  labels: [server]     # locked, like enrollment token labels
+```
+
+No enrollment token is needed: the server creates the host record itself and keeps the agent key in
+`<data_dir>/local-agent/credentials.json`. If a standalone agent already enrolled this machine, the server does not
+take that host over; it logs an error: delete the host (`panoptes-server host delete <hostname>`) or disable
+`local_agent`. Reference: [docs/contracts.md](docs/contracts.md) section 6.
 
 ## Verifying releases
 

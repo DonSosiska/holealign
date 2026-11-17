@@ -88,6 +88,34 @@ llm:
   # Maximum rule-drafting calls per day.
   daily_limit: 50
 
+# Agentless mode: the server monitors its own host without a separate panoptes-agent. The host
+# appears as a normal host (findings, rules, alerts, silence alerts) labelled "server" and marked
+# "local (built-in)" in the web UI. No enrollment token is used: the server creates the host record
+# itself and stores the agent key in <data_dir>/local-agent/credentials.json (0600).
+# If a standalone agent already enrolled this machine the server does NOT take the host over: it logs
+# an ERROR (delete that host with `panoptes-server host delete <hostname>` or disable local_agent).
+local_agent:
+  # Off by default. Env: PANOPTES_LOCAL_AGENT_ENABLED.
+  enabled: false
+  # collector: read the host through the root collector's unix socket (recommended: the server stays
+  #            unprivileged, the host runs only panoptes-collector.service; install.sh --collector-only;
+  #            the server must run as the collector's user "panoptes", see panoptes-server.service).
+  # inprocess: collect inside the server process with its own privileges (dev / single box). Fewer facts
+  #            when not root (sshd -T, docker.sock ...; one WARN). In a container this scans the container.
+  # auto:      collector when the socket answers, else inprocess (the choice is logged).
+  source: auto
+  collector_socket: /run/panoptes/collector.sock
+  # Authoritative labels of the local host (locked like enrollment token labels). Changing them is
+  # applied at the next server start.
+  labels: [server]
+  checkin_interval: 5m          # >= 1m
+  inventory_interval: 6h        # >= 1m, safety-net rescan; package changes trigger earlier
+  scan_language_packages: true
+  # Paths excluded from the host scan; empty = the agent defaults (/proc, /sys, /dev, /run, /var/lib/docker, ...).
+  # data_dir is always excluded in addition (the scanner must not open the server's own database files).
+  exclude_paths: []
+  docker_socket: /var/run/docker.sock   # images are scanned if it exists and is readable
+
 # Names in *_env keys must match ^PANOPTES_[A-Z0-9_]+$ and be pairwise different (Matrix token, LLM
 # key, admin password).
 # A WARN is logged at startup for http:// public_url / matrix.homeserver / llm.base_url on

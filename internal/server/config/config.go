@@ -49,6 +49,33 @@ type Config struct {
 	Matrix Matrix `yaml:"matrix"`
 	LLM    LLM    `yaml:"llm"`
 	Admin  Admin  `yaml:"admin"`
+
+	// LocalAgent makes the server monitor its own host (agentless mode, contracts §6).
+	LocalAgent LocalAgent `yaml:"local_agent"`
+}
+
+// Local agent data sources.
+const (
+	LocalSourceCollector = "collector"
+	LocalSourceInProcess = "inprocess"
+	LocalSourceAuto      = "auto"
+)
+
+// LocalAgent configures the built-in agent that monitors the server's own host.
+type LocalAgent struct {
+	Enabled bool `yaml:"enabled"`
+	// Source: collector (root collector over its unix socket), inprocess (collect inside the
+	// server process with its own privileges) or auto (collector if reachable, else inprocess).
+	Source          string `yaml:"source"`
+	CollectorSocket string `yaml:"collector_socket"`
+	// Labels are authoritative for the local host (like enrollment token labels).
+	Labels               []string      `yaml:"labels"`
+	CheckinInterval      time.Duration `yaml:"checkin_interval"`
+	InventoryInterval    time.Duration `yaml:"inventory_interval"`
+	ScanLanguagePackages bool          `yaml:"scan_language_packages"`
+	// ExcludePaths replaces the agent defaults (empty = agent defaults).
+	ExcludePaths []string `yaml:"exclude_paths"`
+	DockerSocket string   `yaml:"docker_socket"`
 }
 
 // Duration is a time.Duration that also accepts a "d" (days) suffix in YAML and environment
@@ -165,6 +192,15 @@ func Default() Config {
 			DailyLimit: 50,
 		},
 		Admin: Admin{InitialPasswordEnv: "PANOPTES_ADMIN_PASSWORD"},
+		LocalAgent: LocalAgent{
+			Source:               LocalSourceAuto,
+			CollectorSocket:      "/run/panoptes/collector.sock",
+			Labels:               []string{"server"},
+			CheckinInterval:      5 * time.Minute,
+			InventoryInterval:    6 * time.Hour,
+			ScanLanguagePackages: true,
+			DockerSocket:         "/var/run/docker.sock",
+		},
 	}
 }
 
@@ -257,6 +293,37 @@ func (c *Config) validate() error {
 	}
 	if c.Limits.FindingsPerHost < 0 || c.Limits.MatchSecondsPerHostHour < 0 {
 		return errors.New("limits.* must not be negative")
+	}
+	return c.LocalAgent.validate()
+}
+
+var localLabelRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
+
+func (l *LocalAgent) validate() error {
+	switch l.Source {
+	case LocalSourceCollector, LocalSourceInProcess, LocalSourceAuto:
+	default:
+		return fmt.Errorf("local_agent.source %q must be collector, inprocess or auto", l.Source)
+	}
+	if !strings.HasPrefix(l.CollectorSocket, "/") {
+		return errors.New("local_agent.collector_socket must be an absolute path")
+	}
+	if l.DockerSocket != "" && !strings.HasPrefix(l.DockerSocket, "/") {
+		return errors.New("local_agent.docker_socket must be an absolute path (or empty)")
+	}
+	if l.CheckinInterval < time.Minute {
+		return errors.New("local_agent.checkin_interval must be at least 1m")
+	}
+	if l.InventoryInterval < time.Minute {
+		return errors.New("local_agent.inventory_interval must be at least 1m")
+	}
+	if len(l.Labels) > 32 {
+		return errors.New("local_agent.labels: too many labels (max 32)")
+	}
+	for _, lb := range l.Labels {
+		if !localLabelRe.MatchString(lb) {
+			return fmt.Errorf("local_agent.labels: invalid label %q (must match %s)", lb, localLabelRe)
+		}
 	}
 	return nil
 }

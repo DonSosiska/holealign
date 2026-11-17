@@ -48,6 +48,7 @@ c. The staging room has the EXPLOITABLE message for `staging-1`; nothing about `
 d. Dedup: re-running all agents and restarting the server (which re-runs the whole pipeline) adds no messages. A failed agent re-run fails this assertion.
 e. Fix flow: on `web-default` apt sources are switched to the current Debian repos, `apt-get install --only-upgrade openssh-server`, agent re-run -> a `RESOLVED` message for CVE-2024-6387 on `web-default` arrives in prod.
 f. Web UI: `GET /login` is 200, form login as `admin` (CSRF cookie + hidden field, random `PANOPTES_ADMIN_PASSWORD`) redirects, and `GET /findings?q=CVE-2024-6387` is 200 and lists `web-default`.
+g. Built-in local agent (agentless mode): the e2e server runs with `PANOPTES_LOCAL_AGENT_ENABLED=true` and `source: inprocess`; the server's own container appears on `/hosts` with the label `server` and the "local (built-in)" badge, with no enrollment token and no agent installed there.
 
 On any failure the transcripts of all three rooms and the server log tail are printed. The script
 ends with a PASS/FAIL summary per assertion and the total runtime, and exits non-zero on failure.

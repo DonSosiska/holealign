@@ -27,6 +27,12 @@ understand it. We aim to acknowledge reports within a few working days.
   files and serves the results on a unix socket, peer-checked with `SO_PEERCRED`) and an unprivileged
   sender (user `panoptes`) that is the only process talking to the server. Only `-mode all`
   (containers, `-once`, tests) runs both roles in one root process.
+- Agentless mode (`local_agent.enabled`, off by default) lets the server monitor its own host. With
+  `source: collector` privilege separation is kept: the root collector has no network and the server stays
+  unprivileged. With `source: inprocess` the internet-facing server process itself runs the collectors and
+  parses untrusted local files (with the server's privileges, so facts are less complete when it is not root);
+  use it only for dev and single-box setups. The local agent reaches the API through an in-memory transport,
+  so all API validation, limits and authentication apply to it as to any agent.
 - The agent runs with root privileges on each host, so it treats the server as untrusted input.
 - The server cannot run commands on a host. The agent runs only fixed argv commands with no shell.
 - `file.match` reads are limited to an allowlist of configuration directories and a

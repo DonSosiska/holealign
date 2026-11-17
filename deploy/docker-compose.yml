@@ -43,6 +43,17 @@ services:
     volumes:
       # SQLite database and Grype DB cache.
       - panoptes-data:/var/lib/panoptes
+      # Agentless mode, local_agent.source: collector. The Docker HOST runs panoptes-collector.service
+      # (install.sh --collector-only); mount its socket directory read-only. The collector accepts only
+      # root and the host user "panoptes" (SO_PEERCRED), so run this container as that uid/gid
+      # (`id panoptes` on the host) and add the group for socket access:
+      #   - /run/panoptes:/run/panoptes:ro
+      # with, on the service:
+      #   user: "<panoptes uid>:<panoptes gid>"
+      #   group_add: ["<panoptes gid>"]
+      # and PANOPTES_LOCAL_AGENT_ENABLED=true, PANOPTES_LOCAL_AGENT_SOURCE=collector.
+      # Mind: source "inprocess" inside a container scans the CONTAINER (its own minimal filesystem), not
+      # the Docker host; use the collector socket to monitor the host.
     environment:
       # Secrets come from deploy/.env. Empty values are ignored by the server.
       PANOPTES_ADMIN_PASSWORD: ${PANOPTES_ADMIN_PASSWORD:-}   # min 12 chars, first start only (or PANOPTES_ADMIN_PASSWORD_FILE)
@@ -59,6 +70,9 @@ services:
       PANOPTES_LLM_PROVIDER: ${PANOPTES_LLM_PROVIDER:-none}   # none | anthropic | openai-compatible
       PANOPTES_LLM_MODEL: ${PANOPTES_LLM_MODEL:-}
       PANOPTES_LLM_BASE_URL: ${PANOPTES_LLM_BASE_URL:-}       # openai-compatible only
+      # Agentless mode (server monitors its own host), off by default. See the volume note above.
+      PANOPTES_LOCAL_AGENT_ENABLED: ${PANOPTES_LOCAL_AGENT_ENABLED:-false}
+      PANOPTES_LOCAL_AGENT_SOURCE: ${PANOPTES_LOCAL_AGENT_SOURCE:-auto}
 
 volumes:
   panoptes-data:
