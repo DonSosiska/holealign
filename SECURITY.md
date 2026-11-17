@@ -39,3 +39,15 @@ understand it. We aim to acknowledge reports within a few working days.
 - Releases are signed with keyless Sigstore (cosign), ship SBOMs, and have build provenance
   attestations. See README.md, "Verifying releases".
 - Build and CI inputs are pinned: GitHub Actions to commit SHAs, and base images to digests.
+
+## Release integrity
+
+Releases are made only by the release workflow (`.github/workflows/release.yml`), and only
+after its tests pass. The release job runs in the `release` environment, so a designated
+reviewer must approve each release. Tags must point at a commit on `main`; the workflow
+refuses any other tag. Artifacts are signed keyless with Sigstore, and the signing identity
+is the exact workflow path and tag. The Linux packages (`.deb`, `.rpm`) are not apt- or
+rpm-signed, so verify `checksums.txt` against its signature and then check the package
+checksums. See README.md, "Verifying releases", for the exact commands.
+<!-- TODO: replace OWNER in the repository links with the real GitHub owner, and replace the
+security contact above with the real one before publishing. -->

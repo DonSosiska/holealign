@@ -1,5 +1,10 @@
 name: release
 
+# Only tags are released. Whether a tag may release is decided by two gates:
+#   1. The tagged commit must be an ancestor of origin/main (checked in the
+#      release job below).
+#   2. The release job runs in the "release" environment, which requires
+#      approval from a reviewer (see SECURITY.md, "Release integrity").
 on:
   push:
     tags: ["v*"]
@@ -11,9 +16,56 @@ permissions:
 env:
   GOFLAGS: -mod=readonly
 
+# One release per tag at a time. Never cancel an in-flight release.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
-  goreleaser:
+  # Same checks as ci.yml. The release job does not start unless these pass.
+  test:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      CGO_ENABLED: "0"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vulnerability check
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+          govulncheck ./...
+
+      - name: Shell checks for the installer and e2e scripts
+        run: |
+          sh -n deploy/install.sh
+          shellcheck deploy/install.sh deploy/e2e/*.sh
+
+  goreleaser:
+    needs: test
+    runs-on: ubuntu-latest
+    # Requires approval from the required reviewers of this environment.
+    # Configure in repo settings: Settings > Environments > release:
+    #   - add required reviewers,
+    #   - restrict deployment branches/tags to protected tags (v*).
+    environment: release
     permissions:
       contents: write      # create the GitHub release and upload artifacts
       packages: write      # push images to ghcr.io
@@ -22,8 +74,27 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          fetch-depth: 0   # goreleaser needs the tag history for the changelog
+          fetch-depth: 0   # full history: goreleaser changelog and the origin/main check
           persist-credentials: false
+
+      # Fail unless the tagged commit is reachable from main. A tag on a branch
+      # or in a fork must not produce a signed release. Values are passed through
+      # env, never interpolated into the script.
+      - name: Require the tagged commit to be on main
+        env:
+          TAG_SHA: ${{ github.sha }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if ! git rev-parse --verify --quiet origin/main >/dev/null; then
+            echo "::error::origin/main is not available in this checkout"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$TAG_SHA" origin/main; then
+            echo "::error::tag $TAG_NAME ($TAG_SHA) is not an ancestor of origin/main; refusing to release"
+            exit 1
+          fi
+          echo "tag $TAG_NAME ($TAG_SHA) is on main"
 
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
@@ -38,17 +109,28 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Pinned tooling: exact versions, not ranges. Upgrade deliberately.
       - uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
+        with:
+          cosign-release: "v2.6.5"
 
       - uses: anchore/sbom-action/download-syft@fbfd9c6c189226748411491745178e0c2017392d # v0.20.10
+        with:
+          syft-version: "v1.57.2"
 
       - uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6.4.0
         with:
           distribution: goreleaser
-          version: "~> v2"
+          version: "v2.20.2"
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # TODO: attest the pushed image digests too. goreleaser's dist/artifacts.json
+      # should carry the per-image digests, but the exact field layout was not
+      # verified locally (goreleaser is not installed here), so no jq extraction
+      # is guessed at. Once confirmed against a snapshot run, extract the digests
+      # with jq and pass them to actions/attest-build-provenance (subject-digest).
 
       - name: Attest build provenance
         uses: actions/attest-build-provenance@00014ed6ed5efc5b1ab7f7f34a39eb55d41aa4f8 # v3.1.0
