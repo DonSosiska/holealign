@@ -586,12 +586,6 @@ func (p *Pipeline) Run(ctx context.Context, hostID string) error {
 		// Nothing could be matched at all (e.g. every matcher call failed): change nothing, report the run as failed.
 		return fmt.Errorf("match %s", strings.Join(failed, "; "))
 	}
-	before := len(found)
-	found = p.capFindings(hostID, found)
-	if len(found) != before {
-		unclean = true
-	}
-
 	// 2. evaluate
 	hc := core.HostContext{Host: host, Facts: host.Facts}
 	rules := map[fkey]*model.Rule{}
@@ -610,6 +604,14 @@ func (p *Pipeline) Run(ctx context.Context, hostID string) error {
 			}
 			rules[keyOf(*f)] = ev.Rule
 		}
+	}
+
+	// The cap is applied after evaluation so that exploitable findings are ranked first. Findings it
+	// drops keep their previous stored state and are never resolved by this run.
+	before := len(found)
+	found = p.capFindings(hostID, found, prevByKey)
+	if before > p.opts.MaxFindingsPerHost && p.opts.MaxFindingsPerHost > 0 {
+		unclean = true
 	}
 
 	// 3. upsert; vanished findings become resolved
@@ -643,15 +645,32 @@ func (p *Pipeline) Run(ctx context.Context, hostID string) error {
 
 var sevRank = map[string]int{"critical": 5, "high": 4, "medium": 3, "low": 2, "negligible": 1}
 
-// capFindings keeps at most MaxFindingsPerHost findings, dropping the lowest severity first
-// (KEV and higher CVSS survive longer).
-func (p *Pipeline) capFindings(hostID string, found []model.Finding) []model.Finding {
+// verdictRank orders evaluated findings for the cap: exploitable first, then conditions_unknown.
+func verdictRank(v model.Verdict) int {
+	switch v {
+	case model.VerdictExploitable:
+		return 0
+	case model.VerdictConditionsUnknown:
+		return 1
+	}
+	return 2
+}
+
+// capFindings keeps at most MaxFindingsPerHost evaluated findings: exploitable first, then
+// conditions_unknown, then KEV, severity and CVSS. A finding dropped by the cap that is stored from
+// an earlier run is re-added in its previous stored state (still detected, so it must not be
+// resolved by "no longer detected" and must not produce a resolved event); dropped findings that
+// were never stored stay out.
+func (p *Pipeline) capFindings(hostID string, found []model.Finding, prev map[fkey]model.Finding) []model.Finding {
 	max := p.opts.MaxFindingsPerHost
 	if max <= 0 || len(found) <= max {
 		return found
 	}
 	sort.SliceStable(found, func(i, j int) bool {
 		a, b := found[i], found[j]
+		if ra, rb := verdictRank(a.Verdict), verdictRank(b.Verdict); ra != rb {
+			return ra < rb
+		}
 		if a.KEV != b.KEV {
 			return a.KEV
 		}
@@ -661,9 +680,17 @@ func (p *Pipeline) capFindings(hostID string, found []model.Finding) []model.Fin
 		return a.CVSS > b.CVSS
 	})
 	dropped := len(found) - max
-	p.log.Warn("host exceeds the open findings cap; lowest-severity findings dropped", "host", hostID, "cap", max, "dropped", dropped)
-	p.problem(hostID, "", fmt.Sprintf("findings cap %d exceeded: %d lowest-severity findings dropped", max, dropped))
-	return found[:max]
+	kept := append([]model.Finding(nil), found[:max]...)
+	retained := 0
+	for _, f := range found[max:] {
+		if old, ok := prev[keyOf(f)]; ok && old.Verdict != model.VerdictResolved {
+			kept = append(kept, old)
+			retained++
+		}
+	}
+	p.log.Warn("host exceeds the open findings cap; lowest-ranked findings dropped", "host", hostID, "cap", max, "dropped", dropped, "kept_unchanged", retained)
+	p.problem(hostID, "", fmt.Sprintf("findings cap %d exceeded: %d lowest-ranked findings dropped (%d already stored are kept unchanged)", max, dropped, retained))
+	return kept
 }
 
 func (p *Pipeline) buildEvents(ctx context.Context, now time.Time, host model.Host, prev map[fkey]model.Finding, res store.ApplyResult, rules map[fkey]*model.Rule) ([]model.Event, error) {
