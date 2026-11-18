@@ -133,6 +133,12 @@ type Retention struct {
 type Limits struct {
 	FindingsPerHost         int `yaml:"findings_per_host"`           // open findings kept per host; excess dropped by lowest severity
 	MatchSecondsPerHostHour int `yaml:"match_seconds_per_host_hour"` // cumulative matcher time per host per hour
+	// InventoryAttemptsPerMinute is the per-host refill rate (and InventoryAttemptBurst the burst) of
+	// the cheap bucket charged by every inventory request before its body is read.
+	InventoryAttemptsPerMinute int `yaml:"inventory_attempts_per_minute"`
+	InventoryAttemptBurst      int `yaml:"inventory_attempt_burst"`
+	// InventoryConcurrentDecodes bounds inventory bodies decoded at once, server-wide.
+	InventoryConcurrentDecodes int `yaml:"inventory_concurrent_decodes"`
 }
 
 // Feeds configures vulnerability data refresh.
@@ -246,8 +252,9 @@ func Default() Config {
 		Feeds:       Feeds{Interval: 6 * time.Hour, Update: true},
 		Rules:       Rules{Feed: RulesFeed{Interval: 6 * time.Hour, StaleAfter: Duration(7 * 24 * time.Hour)}},
 		Retention:   Retention{ResolvedFindings: Duration(30 * 24 * time.Hour), Notifications: Duration(90 * 24 * time.Hour)},
-		Limits:      Limits{FindingsPerHost: 20000, MatchSecondsPerHostHour: 900},
-		Matrix:      Matrix{AccessTokenEnv: "PANOPTES_MATRIX_TOKEN"},
+		Limits: Limits{FindingsPerHost: 20000, MatchSecondsPerHostHour: 900,
+			InventoryAttemptsPerMinute: 10, InventoryAttemptBurst: 6, InventoryConcurrentDecodes: 4},
+		Matrix: Matrix{AccessTokenEnv: "PANOPTES_MATRIX_TOKEN"},
 		LLM: LLM{
 			Provider:   "none",
 			Model:      "claude-sonnet-5-5",
@@ -360,7 +367,8 @@ func (c *Config) validate() error {
 	if c.Retention.ResolvedFindings < 0 || c.Retention.Notifications < 0 {
 		return errors.New("retention.* must not be negative")
 	}
-	if c.Limits.FindingsPerHost < 0 || c.Limits.MatchSecondsPerHostHour < 0 {
+	if c.Limits.FindingsPerHost < 0 || c.Limits.MatchSecondsPerHostHour < 0 ||
+		c.Limits.InventoryAttemptsPerMinute < 0 || c.Limits.InventoryAttemptBurst < 0 || c.Limits.InventoryConcurrentDecodes < 0 {
 		return errors.New("limits.* must not be negative")
 	}
 	return c.LocalAgent.validate()

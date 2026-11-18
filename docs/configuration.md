@@ -40,8 +40,11 @@ variables.
 | `rules_dir` | string (path) | `/usr/share/panoptes/rules` | `PANOPTES_RULES_DIR` | Optional directory of rule YAML files. The eight shipped rules are embedded in the binary, so a missing directory is fine; files here add rules and replace embedded ones with the same `id`. |
 | `retention.resolved_findings` | duration | `30d` | `PANOPTES_RETENTION_RESOLVED_FINDINGS` | Delete resolved findings older than this (daily and at start). `0` keeps them forever. |
 | `retention.notifications` | duration | `90d` | `PANOPTES_RETENTION_NOTIFICATIONS` | Delete notification dedup rows older than this. Rows of still-open findings are kept. `0` keeps forever. |
-| `limits.findings_per_host` | int | `20000` | `PANOPTES_LIMITS_FINDINGS_PER_HOST` | Open findings kept per host; the lowest severities are dropped first (WARN and a `pipeline_error` alert). `0` = unlimited. |
+| `limits.findings_per_host` | int | `20000` | `PANOPTES_LIMITS_FINDINGS_PER_HOST` | Open findings kept per host, applied after rule evaluation: exploitable findings are kept first, then `conditions_unknown`, then by KEV/severity/CVSS (WARN and a `pipeline_error` alert). Findings dropped by the cap are never reported as resolved. `0` = unlimited. |
 | `limits.match_seconds_per_host_hour` | int | `900` | `PANOPTES_LIMITS_MATCH_SECONDS_PER_HOST_HOUR` | Cumulative Grype time one host may use per rolling hour; runs over budget are deferred (WARN and `pipeline_error` alert). `0` = unlimited. |
+| `limits.inventory_attempts_per_minute` | int | `10` | `PANOPTES_LIMITS_INVENTORY_ATTEMPTS_PER_MINUTE` | Per-host refill rate of the bucket charged by every inventory request before its body is read (identical-hash uploads included); over it: 429 + `Retry-After`. `0` = default. |
+| `limits.inventory_attempt_burst` | int | `6` | `PANOPTES_LIMITS_INVENTORY_ATTEMPT_BURST` | Burst size of that bucket. `0` = default. |
+| `limits.inventory_concurrent_decodes` | int | `4` | `PANOPTES_LIMITS_INVENTORY_CONCURRENT_DECODES` | Inventory bodies decoded at once, server-wide (one per host); when all slots are busy: 503 + `Retry-After`. `0` = default. |
 
 ### Feeds and alerts
 

@@ -51,6 +51,7 @@ func setup(t *testing.T) *env {
 	return setupWith(t, func(d *Deps) {
 		d.InventoryInterval, d.CheckinInterval, d.EnrollPerMinute, d.BadAuthPerMinute = -1, -1, -1, -1
 		d.InvalidInventoryPerMinute = 1000
+		d.InventoryAttemptsPerMinute = -1
 	})
 }
 
