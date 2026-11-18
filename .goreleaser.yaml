@@ -182,3 +182,8 @@ docker_manifests:
     image_templates:
       - "ghcr.io/donsosiska/holealign-server:{{ .Version }}-amd64"
       - "ghcr.io/donsosiska/holealign-server:{{ .Version }}-arm64"
+
+release:
+  # A tag with a prerelease suffix (v0.1.0-rc1) becomes a GitHub prerelease, so it is never the
+  # "latest" release that install.sh resolves by default.
+  prerelease: auto
