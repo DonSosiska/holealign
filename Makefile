@@ -23,9 +23,9 @@ vulncheck:
 # comes from the last commit). With RULES_KEY=<private key file> the bundle is also signed (.sig + latest.json).
 RULES_SEQ ?= 1
 rules-bundle:
-	SOURCE_DATE_EPOCH=$$(git log -1 --format=%ct) $(GO) run ./cmd/panoptes-server rules build \
+	SOURCE_DATE_EPOCH=$$(git log -1 --format=%ct) $(GO) run ./cmd/holealign-server rules build \
 		-rules rules -tests rules-tests -seq $(RULES_SEQ) -out dist/rules
-	@if [ -n "$(RULES_KEY)" ]; then $(GO) run ./cmd/panoptes-server rules sign -key "$(RULES_KEY)" dist/rules/rules-$(RULES_SEQ).tar.gz; fi
+	@if [ -n "$(RULES_KEY)" ]; then $(GO) run ./cmd/holealign-server rules sign -key "$(RULES_KEY)" dist/rules/rules-$(RULES_SEQ).tar.gz; fi
 
 tidy:
 	$(GO) mod tidy
@@ -38,4 +38,4 @@ release-snapshot:
 docker:
 	docker build -f deploy/Dockerfile.server.build \
 		--build-arg VERSION=$(shell git describe --tags --always --dirty 2>/dev/null || echo dev) \
-		-t panoptes-server:dev .
+		-t holealign-server:dev .

@@ -6,7 +6,7 @@ import (
 )
 
 // PermissionWarnings reports secret-bearing files that are readable by more users than
-// intended: agent.yaml and client_key (expected 0640 root:panoptes or stricter), and the
+// intended: agent.yaml and client_key (expected 0640 root:holealign or stricter), and the
 // credentials file (expected 0600). Files that do not exist are ignored.
 func PermissionWarnings(c Config, credentialsPath string) []string {
 	var out []string

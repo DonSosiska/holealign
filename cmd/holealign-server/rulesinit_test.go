@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/DonSosiska/panoptes/internal/server/config"
-	"github.com/DonSosiska/panoptes/internal/server/rules"
+	"github.com/DonSosiska/holealign/internal/server/config"
+	"github.com/DonSosiska/holealign/internal/server/rules"
 )
 
 func TestBuiltinRulesEmbeddedAndOverride(t *testing.T) {

@@ -20,7 +20,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/DonSosiska/panoptes/internal/model"
+	"github.com/DonSosiska/holealign/internal/model"
 )
 
 // ErrUnauthorized is returned when the server answers 401.
@@ -72,7 +72,7 @@ type Credentials struct {
 	AgentKey string `json:"agent_key"`
 }
 
-// Client talks to the Panoptes server.
+// Client talks to the Holealign server.
 type Client struct {
 	BaseURL string
 	Key     string // agent key; empty before enrollment

@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/DonSosiska/panoptes/internal/model"
-	"github.com/DonSosiska/panoptes/internal/server/core"
+	"github.com/DonSosiska/holealign/internal/model"
+	"github.com/DonSosiska/holealign/internal/server/core"
 )
 
 func evalKind(t *testing.T, e *Engine, kind model.TargetKind, facts map[string]any) core.Evaluation {

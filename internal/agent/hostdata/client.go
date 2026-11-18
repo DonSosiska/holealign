@@ -11,7 +11,7 @@ import (
 	"net"
 	"time"
 
-	"github.com/DonSosiska/panoptes/internal/model"
+	"github.com/DonSosiska/holealign/internal/model"
 )
 
 // Protocol limits (docs/contracts.md §2). One request per connection.

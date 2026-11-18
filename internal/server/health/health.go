@@ -17,12 +17,12 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/DonSosiska/panoptes/internal/model"
-	"github.com/DonSosiska/panoptes/internal/server/core"
-	"github.com/DonSosiska/panoptes/internal/server/feeds"
-	"github.com/DonSosiska/panoptes/internal/server/notify"
-	"github.com/DonSosiska/panoptes/internal/server/rulesfeed"
-	"github.com/DonSosiska/panoptes/internal/server/store"
+	"github.com/DonSosiska/holealign/internal/model"
+	"github.com/DonSosiska/holealign/internal/server/core"
+	"github.com/DonSosiska/holealign/internal/server/feeds"
+	"github.com/DonSosiska/holealign/internal/server/notify"
+	"github.com/DonSosiska/holealign/internal/server/rulesfeed"
+	"github.com/DonSosiska/holealign/internal/server/store"
 )
 
 // kv keys published for the web UI banner (empty value = healthy).

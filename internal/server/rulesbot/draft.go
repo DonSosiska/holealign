@@ -14,10 +14,10 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/DonSosiska/panoptes/internal/model"
-	"github.com/DonSosiska/panoptes/internal/server/llm"
-	"github.com/DonSosiska/panoptes/internal/server/rules"
-	"github.com/DonSosiska/panoptes/internal/server/rulesfeed"
+	"github.com/DonSosiska/holealign/internal/model"
+	"github.com/DonSosiska/holealign/internal/server/llm"
+	"github.com/DonSosiska/holealign/internal/server/rules"
+	"github.com/DonSosiska/holealign/internal/server/rulesfeed"
 )
 
 const (
@@ -302,7 +302,7 @@ func osvURL(vuln string) string { return "https://osv.dev/vulnerability/" + vuln
 
 func marshalRule(r model.Rule, c Candidate, advisory string) ([]byte, error) {
 	var b bytes.Buffer
-	fmt.Fprintf(&b, "# %s: %s\n", r.ID, "drafted by panoptes-server rules draft; set status: reviewed after checking")
+	fmt.Fprintf(&b, "# %s: %s\n", r.ID, "drafted by holealign-server rules draft; set status: reviewed after checking")
 	fmt.Fprintf(&b, "# vuln: %s   package: %s (%s, %s)\n", c.Vuln, c.Package, c.Type, c.Ecosystem)
 	fmt.Fprintf(&b, "# severity: %s (CVSS %.1f)   EPSS: %.4f   KEV: %v\n", c.Severity, c.CVSS, c.EPSS, c.KEV)
 	fmt.Fprintf(&b, "# advisory: %s\n", osvURL(c.Vuln))

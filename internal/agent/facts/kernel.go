@@ -4,7 +4,7 @@ import (
 	"context"
 	"strings"
 
-	"github.com/DonSosiska/panoptes/internal/model"
+	"github.com/DonSosiska/holealign/internal/model"
 )
 
 // sysctlAllowlist is the set of kernel parameters exposed as kernel.sysctl.

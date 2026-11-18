@@ -17,7 +17,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/DonSosiska/panoptes/internal/model"
+	"github.com/DonSosiska/holealign/internal/model"
 )
 
 const (
@@ -59,7 +59,7 @@ var fmAllowedRoots = [][]string{
 var fmDenyPatterns = [][]string{
 	{"shadow*"}, {"gshadow*"}, {"passwd-"}, {"sudoers*"},
 	{"ssh", "ssh_host_*"}, {"ssl", "private"},
-	{"letsencrypt"}, {"pki"}, {"panoptes"}, {"krb5.keytab"},
+	{"letsencrypt"}, {"pki"}, {"holealign"}, {"krb5.keytab"},
 	{"*.key"}, {"*.pem"}, {"*.p12"}, {"*.pfx"}, {"*.jks"}, {"*.keystore"},
 	{".htpasswd"}, {"*secret*"}, {"*credential*"}, {"*token*"},
 	{"networkmanager"}, {"wireguard"}, {"openvpn"}, {"ppp"}, {"security"}, {"polkit-1"},

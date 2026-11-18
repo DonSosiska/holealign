@@ -14,9 +14,9 @@ import (
 	"sync"
 	"syscall"
 
-	"github.com/DonSosiska/panoptes/internal/server/config"
-	"github.com/DonSosiska/panoptes/internal/server/llm"
-	"github.com/DonSosiska/panoptes/internal/server/rulesbot"
+	"github.com/DonSosiska/holealign/internal/server/config"
+	"github.com/DonSosiska/holealign/internal/server/llm"
+	"github.com/DonSosiska/holealign/internal/server/rulesbot"
 )
 
 // Exit codes of "rules draft" (1 is any other error, 0 success).
@@ -54,7 +54,7 @@ func rulesCandidates(args []string, stdout, stderr io.Writer) error {
 	epss := fs.String("epss", rulesbot.DefaultEPSSURL, "FIRST EPSS API URL; the CVE list is appended")
 	since := fs.String("since", "30d", "a vulnerability published within this window is relevant (unfixed ones and recent KEV entries count regardless)")
 	kevMax := fs.String("kev-max-age", "1095d", "a KEV vulnerability published within this age is relevant (unfixed ones always are)")
-	cache := fs.String("cache", "", "directory for the downloaded OSV bulk exports (default $XDG_CACHE_HOME/panoptes-rules, else the user cache dir, else a temporary directory)")
+	cache := fs.String("cache", "", "directory for the downloaded OSV bulk exports (default $XDG_CACHE_HOME/holealign-rules, else the user cache dir, else a temporary directory)")
 	bulk := fs.String("bulk-url", rulesbot.DefaultBulkURL, "base URL of the OSV bulk exports (<base>/<Ecosystem>/all.zip)")
 	max := fs.Int("max", rulesbot.DefaultMax, "maximum number of candidates")
 	out := fs.String("out", "", "write the JSON array to this file (default: stdout)")
@@ -111,12 +111,12 @@ func rulesDraft(args []string, stdout, stderr io.Writer) error {
 	testsDir := fs.String("tests", "", "directory with the existing tests")
 	outRules := fs.String("out-rules", "", "directory for the new rule (default: -rules)")
 	outTests := fs.String("out-tests", "", "directory for the new tests (default: -tests)")
-	provider := fs.String("provider", os.Getenv("PANOPTES_LLM_PROVIDER"), "anthropic | openai-compatible (env PANOPTES_LLM_PROVIDER)")
-	model := fs.String("model", os.Getenv("PANOPTES_LLM_MODEL"), "model name (env PANOPTES_LLM_MODEL)")
-	baseURL := fs.String("base-url", os.Getenv("PANOPTES_LLM_BASE_URL"), "provider base URL (env PANOPTES_LLM_BASE_URL)")
+	provider := fs.String("provider", os.Getenv("HOLEALIGN_LLM_PROVIDER"), "anthropic | openai-compatible (env HOLEALIGN_LLM_PROVIDER)")
+	model := fs.String("model", os.Getenv("HOLEALIGN_LLM_MODEL"), "model name (env HOLEALIGN_LLM_MODEL)")
+	baseURL := fs.String("base-url", os.Getenv("HOLEALIGN_LLM_BASE_URL"), "provider base URL (env HOLEALIGN_LLM_BASE_URL)")
 	osv := fs.String("osv-url", rulesbot.DefaultOSVURL, "OSV API base URL (advisory source)")
 	attempts := fs.Int("max-attempts", 2, "LLM attempts (a failed one is retried with the error messages)")
-	effort := fs.String("effort", defaultEffort(), "reasoning effort: low | medium | high | xhigh | max (env PANOPTES_LLM_EFFORT; anthropic provider only)")
+	effort := fs.String("effort", defaultEffort(), "reasoning effort: low | medium | high | xhigh | max (env HOLEALIGN_LLM_EFFORT; anthropic provider only)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -205,24 +205,24 @@ func readCandidate(js, file string, index int) (rulesbot.Candidate, error) {
 	return all[index], nil
 }
 
-// cacheDir returns the bulk export cache directory: the flag, else $XDG_CACHE_HOME/panoptes-rules or
-// <user cache dir>/panoptes-rules; empty (a temporary directory) when none can be determined.
+// cacheDir returns the bulk export cache directory: the flag, else $XDG_CACHE_HOME/holealign-rules or
+// <user cache dir>/holealign-rules; empty (a temporary directory) when none can be determined.
 func cacheDir(flagValue string) string {
 	if flagValue != "" {
 		return flagValue
 	}
 	if x := os.Getenv("XDG_CACHE_HOME"); x != "" {
-		return filepath.Join(x, "panoptes-rules")
+		return filepath.Join(x, "holealign-rules")
 	}
 	if d, err := os.UserCacheDir(); err == nil {
-		return filepath.Join(d, "panoptes-rules")
+		return filepath.Join(d, "holealign-rules")
 	}
 	return ""
 }
 
-// defaultEffort is the -effort default: $PANOPTES_LLM_EFFORT, else medium.
+// defaultEffort is the -effort default: $HOLEALIGN_LLM_EFFORT, else medium.
 func defaultEffort() string {
-	if e := os.Getenv("PANOPTES_LLM_EFFORT"); e != "" {
+	if e := os.Getenv("HOLEALIGN_LLM_EFFORT"); e != "" {
 		return e
 	}
 	return "medium"
@@ -235,7 +235,7 @@ func botProviderConfig(provider, model, baseURL, effort string) (config.LLM, err
 		return config.LLM{}, fmt.Errorf("-effort must be one of %s", strings.Join(config.LLMEfforts, ", "))
 	}
 	keyEnv := ""
-	for _, e := range []string{"PANOPTES_LLM_API_KEY", "ANTHROPIC_API_KEY"} {
+	for _, e := range []string{"HOLEALIGN_LLM_API_KEY", "ANTHROPIC_API_KEY"} {
 		if os.Getenv(e) != "" {
 			keyEnv = e
 			break
@@ -245,13 +245,13 @@ func botProviderConfig(provider, model, baseURL, effort string) (config.LLM, err
 		provider = "anthropic"
 	}
 	if provider == "" || provider == "none" {
-		return config.LLM{}, errors.New("no LLM provider: set -provider (or PANOPTES_LLM_PROVIDER); an API key is optional when the Anthropic SDK finds workload identity federation credentials")
+		return config.LLM{}, errors.New("no LLM provider: set -provider (or HOLEALIGN_LLM_PROVIDER); an API key is optional when the Anthropic SDK finds workload identity federation credentials")
 	}
 	if model == "" && provider == "anthropic" {
 		model = "claude-sonnet-5-5"
 	}
 	if model == "" {
-		return config.LLM{}, errors.New("-model (or PANOPTES_LLM_MODEL) is required")
+		return config.LLM{}, errors.New("-model (or HOLEALIGN_LLM_MODEL) is required")
 	}
 	return config.LLM{Provider: provider, Model: model, BaseURL: baseURL, APIKeyEnv: keyEnv, Effort: effort}, nil
 }

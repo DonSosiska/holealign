@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/DonSosiska/panoptes/internal/model"
+	"github.com/DonSosiska/holealign/internal/model"
 )
 
 func pkgEvent(vuln, host, pkg, ver string, fixed ...string) model.Event {
@@ -155,7 +155,7 @@ func TestRenderGroupMergesFields(t *testing.T) {
 	a.Finding.EPSS = 0.010
 	a.Finding.VerdictReason = reason
 	a.FixCmd = "apt-get install --only-upgrade openssl"
-	a.WebURL = "https://panoptes.example/findings/1"
+	a.WebURL = "https://holealign.example/findings/1"
 	a.Rule = &model.Rule{Title: "Heartbeat", Fix: model.Fix{Mitigation: "disable heartbeat"}}
 
 	b := pkgEvent("CVE-1", "web01", "<script>libssl</script>", "3.0.1", "3.0.8")
@@ -166,7 +166,7 @@ func TestRenderGroupMergesFields(t *testing.T) {
 	b.Finding.VerdictReason = reason
 	b.Finding.RuleStatus = model.RuleDraft
 	b.FixCmd = "apt-get install --only-upgrade libssl3"
-	b.WebURL = "https://panoptes.example/findings/2"
+	b.WebURL = "https://holealign.example/findings/2"
 	b.Rule = &model.Rule{Title: "Heartbeat", Fix: model.Fix{Mitigation: "disable heartbeat"}}
 
 	plain, h := renderGroup([]model.Event{a, b})
@@ -178,7 +178,7 @@ func TestRenderGroupMergesFields(t *testing.T) {
 		"Fix: apt-get install --only-upgrade openssl",
 		"Fix: apt-get install --only-upgrade libssl3",
 		"Mitigation: disable heartbeat",
-		"Details: https://panoptes.example/findings/1",
+		"Details: https://holealign.example/findings/1",
 		"⚠️ unreviewed LLM draft — review the rule in the web UI before acting",
 	} {
 		if !hasLine(plain, want) {
@@ -196,7 +196,7 @@ func TestRenderGroupMergesFields(t *testing.T) {
 	if !strings.Contains(h, "&lt;script&gt;libssl&lt;/script&gt;") {
 		t.Errorf("escaped package missing from HTML:\n%s", h)
 	}
-	if strings.Contains(h, "panoptes.example/findings/2") {
+	if strings.Contains(h, "holealign.example/findings/2") {
 		t.Errorf("link must be the first event's WebURL only:\n%s", h)
 	}
 }

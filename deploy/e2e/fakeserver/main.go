@@ -1,4 +1,4 @@
-// Command fakeserver is a tiny stand-in for panoptes-server used by deploy/e2e/split-mode.sh.
+// Command fakeserver is a tiny stand-in for holealign-server used by deploy/e2e/split-mode.sh.
 // It accepts enroll, checkin and inventory requests and writes what it received to -out.
 package main
 

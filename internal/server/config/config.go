@@ -1,4 +1,4 @@
-// Package config loads the Panoptes server configuration (contracts §6).
+// Package config loads the Holealign server configuration (contracts §6).
 package config
 
 import (
@@ -21,8 +21,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// DefaultPath is read when neither -config nor PANOPTES_CONFIG is given and the file exists.
-const DefaultPath = "/etc/panoptes/server.yaml"
+// DefaultPath is read when neither -config nor HOLEALIGN_CONFIG is given and the file exists.
+const DefaultPath = "/etc/holealign/server.yaml"
 
 // Config is the whole server configuration. Every key is optional.
 type Config struct {
@@ -183,7 +183,7 @@ func (r *RulesFeed) validate() error {
 		return nil
 	}
 	if len(r.TrustedKeys) == 0 {
-		return errors.New("rules.feed.enabled requires at least one entry in rules.feed.trusted_keys (generate with `panoptes-server rules keygen`)")
+		return errors.New("rules.feed.enabled requires at least one entry in rules.feed.trusted_keys (generate with `holealign-server rules keygen`)")
 	}
 	if r.URL != "" {
 		u, err := url.Parse(r.URL)
@@ -263,8 +263,8 @@ func Default() Config {
 		Listen:      ":8080",
 		AdminListen: "127.0.0.1:8081",
 		PublicURL:   "http://localhost:8081",
-		DataDir:     "/var/lib/panoptes",
-		RulesDir:    "/usr/share/panoptes/rules",
+		DataDir:     "/var/lib/holealign",
+		RulesDir:    "/usr/share/holealign/rules",
 		Alerts:      Alerts{AgentSilentAfter: 30 * time.Minute, FeedStaleAfter: 48 * time.Hour},
 		Triage:      Triage{EPSSThreshold: 0.1},
 		Feeds:       Feeds{Interval: 6 * time.Hour, Update: true},
@@ -272,18 +272,18 @@ func Default() Config {
 		Retention:   Retention{ResolvedFindings: Duration(30 * 24 * time.Hour), Notifications: Duration(90 * 24 * time.Hour)},
 		Limits: Limits{FindingsPerHost: 20000, MatchSecondsPerHostHour: 900,
 			InventoryAttemptsPerMinute: 10, InventoryAttemptBurst: 6, InventoryConcurrentDecodes: 4},
-		Matrix: Matrix{AccessTokenEnv: "PANOPTES_MATRIX_TOKEN"},
+		Matrix: Matrix{AccessTokenEnv: "HOLEALIGN_MATRIX_TOKEN"},
 		LLM: LLM{
 			Provider:   "none",
 			Model:      "claude-sonnet-5-5",
-			APIKeyEnv:  "PANOPTES_LLM_API_KEY",
+			APIKeyEnv:  "HOLEALIGN_LLM_API_KEY",
 			DailyLimit: 50,
 			Effort:     "medium",
 		},
-		Admin: Admin{InitialPasswordEnv: "PANOPTES_ADMIN_PASSWORD"},
+		Admin: Admin{InitialPasswordEnv: "HOLEALIGN_ADMIN_PASSWORD"},
 		LocalAgent: LocalAgent{
 			Source:               LocalSourceAuto,
-			CollectorSocket:      "/run/panoptes/collector.sock",
+			CollectorSocket:      "/run/holealign/collector.sock",
 			Labels:               []string{"server"},
 			CheckinInterval:      5 * time.Minute,
 			InventoryInterval:    6 * time.Hour,
@@ -293,9 +293,9 @@ func Default() Config {
 	}
 }
 
-// Load reads the config. path wins over $PANOPTES_CONFIG; with neither, DefaultPath is used
+// Load reads the config. path wins over $HOLEALIGN_CONFIG; with neither, DefaultPath is used
 // if it exists, otherwise defaults apply. An explicitly named file must exist.
-// Environment overrides (PANOPTES_<SECTION>_<KEY>) are applied last.
+// Environment overrides (HOLEALIGN_<SECTION>_<KEY>) are applied last.
 func Load(path string) (*Config, error) {
 	return load(path, os.LookupEnv)
 }
@@ -304,7 +304,7 @@ func load(path string, lookup func(string) (string, bool)) (*Config, error) {
 	cfg := Default()
 	explicit := path != ""
 	if path == "" {
-		path, explicit = lookup("PANOPTES_CONFIG")
+		path, explicit = lookup("HOLEALIGN_CONFIG")
 		explicit = explicit && path != ""
 	}
 	if path == "" {
@@ -323,7 +323,7 @@ func load(path string, lookup func(string) (string, bool)) (*Config, error) {
 	default:
 		return nil, fmt.Errorf("read config: %w", err)
 	}
-	if err := walk(reflect.ValueOf(&cfg).Elem(), "PANOPTES", lookup); err != nil {
+	if err := walk(reflect.ValueOf(&cfg).Elem(), "HOLEALIGN", lookup); err != nil {
 		return nil, err
 	}
 	if err := cfg.validate(); err != nil {
@@ -460,7 +460,7 @@ func (c *Config) SharedListener() bool {
 	return c.AdminListen == "" || c.AdminListen == c.Listen
 }
 
-var envNameRe = regexp.MustCompile(`^PANOPTES_[A-Z0-9_]+$`)
+var envNameRe = regexp.MustCompile(`^HOLEALIGN_[A-Z0-9_]+$`)
 
 // Warnings returns non-fatal configuration problems to log at startup (cleartext transports).
 func (c *Config) Warnings() []string {
@@ -517,7 +517,7 @@ func isLoopbackHost(h string) bool {
 }
 
 // DBPath is the SQLite database file.
-func (c *Config) DBPath() string { return filepath.Join(c.DataDir, "panoptes.db") }
+func (c *Config) DBPath() string { return filepath.Join(c.DataDir, "holealign.db") }
 
 // RulesFeedDir is where the accepted rules feed bundle is kept.
 func (c *Config) RulesFeedDir() string { return filepath.Join(c.DataDir, "rules-feed") }
@@ -525,7 +525,7 @@ func (c *Config) RulesFeedDir() string { return filepath.Join(c.DataDir, "rules-
 // GrypeDBDir is the Grype vulnerability DB cache directory.
 func (c *Config) GrypeDBDir() string { return filepath.Join(c.DataDir, "grype-db") }
 
-// walk overrides scalar fields from PANOPTES_<SECTION>_<KEY> (top-level: PANOPTES_<KEY>).
+// walk overrides scalar fields from HOLEALIGN_<SECTION>_<KEY> (top-level: HOLEALIGN_<KEY>).
 func walk(v reflect.Value, prefix string, lookup func(string) (string, bool)) error {
 	t := v.Type()
 	for i := 0; i < t.NumField(); i++ {

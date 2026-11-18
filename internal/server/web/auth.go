@@ -16,7 +16,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/DonSosiska/panoptes/internal/server/store"
+	"github.com/DonSosiska/holealign/internal/server/store"
 )
 
 const (
@@ -45,7 +45,7 @@ const (
 	bcryptMaxWait  = 5 * time.Second // longest wait for a bcrypt slot -> 503
 
 	maxUsernameLen = 64
-	deviceCookie   = "panoptes_device"
+	deviceCookie   = "holealign_device"
 	deviceTTL      = 30 * 24 * time.Hour
 	maxDevices     = 10   // known devices kept per user
 	maxDeviceUsers = 5000 // users tracked
@@ -591,7 +591,7 @@ func (s *Server) handleLoginForm(w http.ResponseWriter, r *http.Request) {
 }
 
 // dummyHash equalises timing for unknown users.
-var dummyHash, _ = store.HashPassword("panoptes-dummy-password")
+var dummyHash, _ = store.HashPassword("holealign-dummy-password")
 
 const loginFailMsg = "Invalid username or password."
 

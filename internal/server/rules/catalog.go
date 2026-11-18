@@ -1,4 +1,4 @@
-// Package rules implements the Panoptes rule engine: loading, validation and
+// Package rules implements the Holealign rule engine: loading, validation and
 // CEL-based evaluation of exploitability rules (docs/contracts.md section 4).
 package rules
 

@@ -8,8 +8,8 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/DonSosiska/panoptes/internal/model"
-	"github.com/DonSosiska/panoptes/internal/server/rules"
+	"github.com/DonSosiska/holealign/internal/model"
+	"github.com/DonSosiska/holealign/internal/server/rules"
 )
 
 // Everything the model or the feed wrote is shown as code (inline code span or fenced block) so

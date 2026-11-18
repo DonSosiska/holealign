@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/DonSosiska/panoptes/internal/model"
+	"github.com/DonSosiska/holealign/internal/model"
 )
 
 // Sources makes fakeRules a RuleSourcer, like the real engine.

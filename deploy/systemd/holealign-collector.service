@@ -1,24 +1,24 @@
 [Unit]
-Description=Panoptes collector (root, no network: reads host state, serves it on a unix socket)
-Documentation=https://github.com/DonSosiska/panoptes/blob/main/docs/contracts.md
+Description=Holealign collector (root, no network: reads host state, serves it on a unix socket)
+Documentation=https://github.com/DonSosiska/holealign/blob/main/docs/contracts.md
 After=docker.service
 
 [Service]
 Type=simple
 # Root, because it must run sshd -T, nginx -T, read all package databases and docker.sock.
 # It parses untrusted local files (configs, package databases, container images), so it has
-# NO network: it only listens on /run/panoptes/collector.sock. The network-facing half is
-# panoptes-agent.service, which runs unprivileged as user "panoptes".
+# NO network: it only listens on /run/holealign/collector.sock. The network-facing half is
+# holealign-agent.service, which runs unprivileged as user "holealign".
 User=root
-# Group panoptes + UMask 0007 + RuntimeDirectoryMode 0750: /run/panoptes is root:panoptes 0750 and the
-# socket root:panoptes 0660, so only root and the panoptes user can reach it (the collector also
+# Group holealign + UMask 0007 + RuntimeDirectoryMode 0750: /run/holealign is root:holealign 0750 and the
+# socket root:holealign 0660, so only root and the holealign user can reach it (the collector also
 # checks SO_PEERCRED).
-Group=panoptes
-ExecStart=/usr/bin/panoptes-agent -mode collector -config /etc/panoptes/agent.yaml
+Group=holealign
+ExecStart=/usr/bin/holealign-agent -mode collector -config /etc/holealign/agent.yaml
 Restart=always
 RestartSec=10
 
-RuntimeDirectory=panoptes
+RuntimeDirectory=holealign
 RuntimeDirectoryMode=0750
 UMask=0007
 
@@ -64,14 +64,14 @@ SystemCallFilter=~@privileged @resources @mount
 # A denied system call returns EPERM instead of killing the process with SIGSYS (the default
 # action). Reasons: the Go runtime calls prlimit64 (@resources) at start and ignores a failure;
 # the collector chowns its socket (@chown is part of @privileged), which Listen() skips when the
-# socket already has the right group/mode (Group=panoptes + UMask=0007) and tolerates EPERM
+# socket already has the right group/mode (Group=holealign + UMask=0007) and tolerates EPERM
 # otherwise; openat2 is missing from the @file-system set of older systemd versions and the file.match
 # opener falls back to openat on ENOSYS/EPERM. Do not remove this line without testing on a real
 # host: a killed collector means no facts at all.
 SystemCallErrorNumber=EPERM
 # NOTE: child processes (sshd -T, nginx -T, php -i, apachectl, systemctl, ...) inherit
 # these limits. Verify on a real host that every collector still works
-# (run `panoptes-agent -print-facts` under `systemd-run` with the same properties).
+# (run `holealign-agent -print-facts` under `systemd-run` with the same properties).
 #
 # NOTE (nginx, UNVERIFIED here, check on a real host): `nginx -T` parses the whole config and, like
 # `nginx -t`, opens every access_log/error_log named in it for WRITING and creates its temp
@@ -80,14 +80,14 @@ SystemCallErrorNumber=EPERM
 # already passes `-q -e /dev/null` (nginx >= 1.19.5), which only replaces the compile-time default
 # error log. It does NOT use `-g 'pid ...; error_log ...;'`: `pid` is a non-repeatable directive and
 # fails with "directive is duplicate" on configs that set their own. If the dump is missing, check
-# `panoptes-agent -print-facts` under systemd-run with these properties and add the directories
+# `holealign-agent -print-facts` under systemd-run with these properties and add the directories
 # named in the errors, e.g. ReadWritePaths=-/var/log/nginx -/var/lib/nginx -/var/cache/nginx
 # (this widens the root collector's write access, so add only what is needed).
 
-# `forget_enroll_token` rewrites /etc/panoptes/agent.yaml (temp file + rename in the same
+# `forget_enroll_token` rewrites /etc/holealign/agent.yaml (temp file + rename in the same
 # directory) to blank the enrollment token after the first successful check-in. The leading "-"
 # ignores a missing directory.
-ReadWritePaths=-/etc/panoptes
+ReadWritePaths=-/etc/holealign
 
 # Resource limits: scans must not disturb the host.
 Nice=10

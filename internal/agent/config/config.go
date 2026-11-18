@@ -14,10 +14,10 @@ import (
 )
 
 // DefaultPath is the default location of the agent configuration file.
-const DefaultPath = "/etc/panoptes/agent.yaml"
+const DefaultPath = "/etc/holealign/agent.yaml"
 
 // EnvConfigPath overrides the config path (the -config flag wins).
-const EnvConfigPath = "PANOPTES_AGENT_CONFIG"
+const EnvConfigPath = "HOLEALIGN_AGENT_CONFIG"
 
 // Config is the agent configuration.
 type Config struct {
@@ -60,7 +60,7 @@ func DefaultExcludePaths() []string {
 // Default returns the configuration with all defaults applied.
 func Default() Config {
 	return Config{
-		StateDir:             "/var/lib/panoptes-agent",
+		StateDir:             "/var/lib/holealign-agent",
 		CheckinInterval:      5 * time.Minute,
 		InventoryInterval:    6 * time.Hour,
 		DockerSocket:         "/var/run/docker.sock",
@@ -68,8 +68,8 @@ func Default() Config {
 		ExcludePaths:         DefaultExcludePaths(),
 		HostScanTimeout:      10 * time.Minute,
 		ImageScanTimeout:     5 * time.Minute,
-		CollectorSocket:      "/run/panoptes/collector.sock",
-		CollectorUser:        "panoptes",
+		CollectorSocket:      "/run/holealign/collector.sock",
+		CollectorUser:        "holealign",
 	}
 }
 

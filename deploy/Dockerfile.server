@@ -1,25 +1,25 @@
 # Image used by goreleaser (.goreleaser.yaml). goreleaser stages the
-# linux binary as ./panoptes-server and the rules/ directory in the build context.
+# linux binary as ./holealign-server and the rules/ directory in the build context.
 # For building from source, use Dockerfile.server.build instead.
 # Base images are pinned by digest (multi-arch index). To update, run:
 #   docker buildx imagetools inspect <image:tag>
 FROM busybox:1.38@sha256:a46257e06c82ad85242d0d38077d0a52d9896389ca60a1a59d3463db586e5fa4 AS prep
 # Create the data directory owned by the distroless "nonroot" user (uid 65532).
-RUN mkdir -p /var/lib/panoptes && chown 65532:65532 /var/lib/panoptes
+RUN mkdir -p /var/lib/holealign && chown 65532:65532 /var/lib/holealign
 
 FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
 
-COPY panoptes-server /usr/bin/panoptes-server
-COPY rules/ /usr/share/panoptes/rules/
-COPY --from=prep --chown=65532:65532 /var/lib/panoptes /var/lib/panoptes
+COPY holealign-server /usr/bin/holealign-server
+COPY rules/ /usr/share/holealign/rules/
+COPY --from=prep --chown=65532:65532 /var/lib/holealign /var/lib/holealign
 
-# Config is optional: without /etc/panoptes/server.yaml the server uses its
-# defaults plus PANOPTES_* environment overrides. PANOPTES_CONFIG is deliberately
+# Config is optional: without /etc/holealign/server.yaml the server uses its
+# defaults plus HOLEALIGN_* environment overrides. HOLEALIGN_CONFIG is deliberately
 # not set here, because an explicit path that does not exist is a startup error.
-VOLUME /var/lib/panoptes
+VOLUME /var/lib/holealign
 # 8080 agent API, 8081 admin UI
 EXPOSE 8080 8081
 
 # -version works as: docker run --rm <image> -version
-ENTRYPOINT ["/usr/bin/panoptes-server"]
+ENTRYPOINT ["/usr/bin/holealign-server"]
 CMD ["serve"]

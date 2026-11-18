@@ -5,7 +5,7 @@ package main
 import (
 	"os"
 
-	"github.com/DonSosiska/panoptes/internal/server/config"
+	"github.com/DonSosiska/holealign/internal/server/config"
 )
 
 // prepareCLI creates the data directory (there is no uid to drop to on this platform).

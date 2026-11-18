@@ -1,4 +1,4 @@
-// Package web implements the Panoptes admin UI: server-rendered pages, sessions, CSRF protection.
+// Package web implements the Holealign admin UI: server-rendered pages, sessions, CSRF protection.
 // Everything (templates, CSS, JS) is embedded; no external resources are loaded.
 package web
 
@@ -25,10 +25,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/DonSosiska/panoptes/internal/model"
-	"github.com/DonSosiska/panoptes/internal/server/config"
-	"github.com/DonSosiska/panoptes/internal/server/pipeline"
-	"github.com/DonSosiska/panoptes/internal/server/store"
+	"github.com/DonSosiska/holealign/internal/model"
+	"github.com/DonSosiska/holealign/internal/server/config"
+	"github.com/DonSosiska/holealign/internal/server/pipeline"
+	"github.com/DonSosiska/holealign/internal/server/store"
 )
 
 //go:embed templates/*.html static/*
@@ -106,8 +106,8 @@ type Server struct {
 }
 
 const (
-	cookieName     = "panoptes_session"
-	loginCSRFName  = "panoptes_login"
+	cookieName     = "holealign_session"
+	loginCSRFName  = "holealign_login"
 	sessionTTL     = 12 * time.Hour // absolute session lifetime
 	sessionIdle    = time.Hour      // idle timeout
 	sessionRefresh = 5 * time.Minute

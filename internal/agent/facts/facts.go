@@ -9,7 +9,7 @@ import (
 	"runtime"
 	"sync"
 
-	"github.com/DonSosiska/panoptes/internal/model"
+	"github.com/DonSosiska/holealign/internal/model"
 )
 
 // Env bundles the external dependencies of the collectors so tests can replace them.

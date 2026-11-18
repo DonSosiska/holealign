@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/DonSosiska/panoptes/internal/model"
+	"github.com/DonSosiska/holealign/internal/model"
 )
 
 func tf(pkg, vuln string, v model.Verdict, sev, fix string, epss float64, kev bool) model.Finding {

@@ -21,8 +21,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/DonSosiska/panoptes/internal/model"
-	"github.com/DonSosiska/panoptes/internal/server/rules"
+	"github.com/DonSosiska/holealign/internal/model"
+	"github.com/DonSosiska/holealign/internal/server/rules"
 )
 
 // FormatVersion is the only bundle format this server understands.
@@ -360,7 +360,7 @@ func Open(tarball []byte, serverVersion string) (*Bundle, error) {
 		return nil, errors.New("index.json: catalog is too large")
 	}
 	if idx.MinServerVersion != "" && versionLess(serverVersion, idx.MinServerVersion) {
-		return nil, fmt.Errorf("bundle needs panoptes-server %s or newer (this is %s)", idx.MinServerVersion, serverVersion)
+		return nil, fmt.Errorf("bundle needs holealign-server %s or newer (this is %s)", idx.MinServerVersion, serverVersion)
 	}
 	known := map[string]bool{}
 	for _, n := range rules.CatalogFacts() {
@@ -368,7 +368,7 @@ func Open(tarball []byte, serverVersion string) (*Bundle, error) {
 	}
 	for _, n := range idx.Catalog {
 		if !known[n] && !strings.HasPrefix(n, rules.FileMatchPrefix) {
-			return nil, fmt.Errorf("bundle uses fact %q that this server does not know; upgrade panoptes-server", n)
+			return nil, fmt.Errorf("bundle uses fact %q that this server does not know; upgrade holealign-server", n)
 		}
 	}
 

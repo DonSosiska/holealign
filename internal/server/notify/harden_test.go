@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/DonSosiska/panoptes/internal/model"
+	"github.com/DonSosiska/holealign/internal/model"
 )
 
 func TestRenderTruncatesAndStripsControl(t *testing.T) {

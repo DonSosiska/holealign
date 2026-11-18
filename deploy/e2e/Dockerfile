@@ -9,17 +9,17 @@ COPY cmd ./cmd
 COPY internal ./internal
 COPY rules ./rules
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
-    go build -trimpath -ldflags "-X main.version=e2e" -o /out/ ./cmd/panoptes-server ./cmd/panoptes-agent
+    go build -trimpath -ldflags "-X main.version=e2e" -o /out/ ./cmd/holealign-server ./cmd/holealign-agent
 
-# ---- panoptes-server --------------------------------------------------------
+# ---- holealign-server --------------------------------------------------------
 FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc AS server
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
-COPY --from=build /out/panoptes-server /usr/local/bin/panoptes-server
-COPY rules /usr/share/panoptes/rules
-ENV PANOPTES_DATA_DIR=/var/lib/panoptes
-VOLUME /var/lib/panoptes
-ENTRYPOINT ["/usr/local/bin/panoptes-server"]
+COPY --from=build /out/holealign-server /usr/local/bin/holealign-server
+COPY rules /usr/share/holealign/rules
+ENV HOLEALIGN_DATA_DIR=/var/lib/holealign
+VOLUME /var/lib/holealign
+ENTRYPOINT ["/usr/local/bin/holealign-server"]
 CMD ["serve"]
 
 # ---- host: current Debian 12 base, packages from the 2024-06-01 snapshot -------------
@@ -38,6 +38,6 @@ RUN apt-get update \
        openssh-server=1:9.2p1-2+deb12u2 nginx ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /run/sshd
-COPY --from=build /out/panoptes-agent /usr/local/bin/panoptes-agent
+COPY --from=build /out/holealign-agent /usr/local/bin/holealign-agent
 COPY deploy/e2e/host-entrypoint.sh /usr/local/bin/host-entrypoint.sh
 ENTRYPOINT ["/usr/local/bin/host-entrypoint.sh"]

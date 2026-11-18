@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/DonSosiska/panoptes/internal/model"
-	shipped "github.com/DonSosiska/panoptes/rules"
+	"github.com/DonSosiska/holealign/internal/model"
+	shipped "github.com/DonSosiska/holealign/rules"
 )
 
 const shippedTests = "../../../rules-tests"

@@ -12,7 +12,7 @@ import (
 	"testing/fstest"
 	"time"
 
-	"github.com/DonSosiska/panoptes/internal/model"
+	"github.com/DonSosiska/holealign/internal/model"
 )
 
 func fmReq(path, pattern string) model.FactRequest {
@@ -24,7 +24,7 @@ func TestFileMatchDenylist(t *testing.T) {
 	denied := []string{
 		"/etc/shadow", "/etc/shadow-", "/etc/gshadow", "/etc/passwd-", "/etc/sudoers", "/etc/sudoers.d/x",
 		"/etc/ssh/ssh_host_ed25519_key", "/etc/ssl/private/a.conf", "/etc/letsencrypt/x.conf", "/etc/pki/x",
-		"/etc/panoptes/agent.yaml", "/etc/krb5.keytab", "/etc/x/a.KEY", "/etc/x/a.pem", "/etc/x/a.p12",
+		"/etc/holealign/agent.yaml", "/etc/krb5.keytab", "/etc/x/a.KEY", "/etc/x/a.pem", "/etc/x/a.p12",
 		"/etc/x/a.pfx", "/etc/x/a.jks", "/etc/x/a.keystore", "/etc/apache2/.htpasswd", "/etc/x/my-Secret.conf",
 		"/etc/x/credentials", "/etc/x/api_token.conf", "/etc/NetworkManager/system-connections/a",
 		"/etc/wireguard/wg0.conf", "/etc/openvpn/c.conf", "/etc/ppp/chap-secrets", "/etc/security/limits.conf",

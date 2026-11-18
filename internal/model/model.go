@@ -1,4 +1,4 @@
-// Package model holds the types shared by the Panoptes agent and server.
+// Package model holds the types shared by the Holealign agent and server.
 // Everything that crosses the wire or crosses a package boundary lives here.
 // Changing a type in this package is a contract change: update docs/contracts.md too.
 package model

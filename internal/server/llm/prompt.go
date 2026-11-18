@@ -9,7 +9,7 @@ import (
 
 	"golang.org/x/text/unicode/norm"
 
-	"github.com/DonSosiska/panoptes/internal/model"
+	"github.com/DonSosiska/holealign/internal/model"
 )
 
 const (
@@ -22,7 +22,7 @@ const (
 // FactSpec describes one fact of the catalog for the prompt.
 type FactSpec struct{ Name, Type, Description string }
 
-const systemTemplate = `You are a vulnerability analyst for Panoptes, a server that finds vulnerable packages on Linux hosts. A vulnerable package is not always exploitable: it often depends on host configuration. Your job is to write ONE detection rule that decides, from host facts, whether a given vulnerability is realistically exploitable on a host.
+const systemTemplate = `You are a vulnerability analyst for Holealign, a server that finds vulnerable packages on Linux hosts. A vulnerable package is not always exploitable: it often depends on host configuration. Your job is to write ONE detection rule that decides, from host facts, whether a given vulnerability is realistically exploitable on a host.
 
 # Output
 Reply with a single JSON object and nothing else (no prose, no markdown fences). Its shape is the rule:
@@ -134,7 +134,7 @@ func buildSystemPrompt(catalog []FactSpec) string {
 		fmt.Fprintf(&fb, "- %s (%s): %s\n", f.Name, f.Type, f.Description)
 	}
 	if len(catalog) == 0 {
-		fb.WriteString("(no catalog available; use only facts from the Panoptes fact catalog you are certain exist)\n")
+		fb.WriteString("(no catalog available; use only facts from the Holealign fact catalog you are certain exist)\n")
 	}
 	var eb strings.Builder
 	for i, r := range exampleRules() {

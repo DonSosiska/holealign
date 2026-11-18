@@ -8,14 +8,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/DonSosiska/panoptes/internal/model"
-	"github.com/DonSosiska/panoptes/internal/server/store"
+	"github.com/DonSosiska/holealign/internal/model"
+	"github.com/DonSosiska/holealign/internal/server/store"
 )
 
 func TestTokenNameValidation(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("PANOPTES_CONFIG", "")
-	t.Setenv("PANOPTES_DATA_DIR", dir)
+	t.Setenv("HOLEALIGN_CONFIG", "")
+	t.Setenv("HOLEALIGN_DATA_DIR", dir)
 	for _, bad := range []string{"-lead", ".dot", "has space", "semi;colon", "new\nline", strings.Repeat("a", 65), "ü"} {
 		if code, _, _ := runCLI(t, "", "token", "create", bad); code == 0 {
 			t.Errorf("accepted token name %q", bad)
@@ -30,9 +30,9 @@ func TestTokenNameValidation(t *testing.T) {
 
 func TestAllowReenrollTTL(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("PANOPTES_CONFIG", "")
-	t.Setenv("PANOPTES_DATA_DIR", dir)
-	st, err := store.OpenSQLite(filepath.Join(dir, "panoptes.db"))
+	t.Setenv("HOLEALIGN_CONFIG", "")
+	t.Setenv("HOLEALIGN_DATA_DIR", dir)
+	st, err := store.OpenSQLite(filepath.Join(dir, "holealign.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +43,7 @@ func TestAllowReenrollTTL(t *testing.T) {
 	}
 	st.Close()
 	until := func() time.Time {
-		st, _ := store.OpenSQLite(filepath.Join(dir, "panoptes.db"))
+		st, _ := store.OpenSQLite(filepath.Join(dir, "holealign.db"))
 		defer st.Close()
 		hs, _ := st.ListHostsAdmin(context.Background())
 		return hs[0].ReenrollUntil
@@ -116,13 +116,13 @@ func TestCLIOwnerResolution(t *testing.T) {
 	if uid == 0 {
 		t.Skip("owner resolution differs when the test itself runs as root")
 	}
-	db := filepath.Join(dir, "panoptes.db")
+	db := filepath.Join(dir, "holealign.db")
 	got, _, err := cliOwner(dir, db)
 	if err != nil || got != uid {
 		t.Fatalf("existing dir: uid=%d err=%v", got, err)
 	}
 	// a data dir that does not exist yet resolves to the nearest existing parent
-	got, _, err = cliOwner(filepath.Join(dir, "a", "b"), filepath.Join(dir, "a", "b", "panoptes.db"))
+	got, _, err = cliOwner(filepath.Join(dir, "a", "b"), filepath.Join(dir, "a", "b", "holealign.db"))
 	if err != nil || got != uid {
 		t.Fatalf("missing dir: uid=%d err=%v", got, err)
 	}
@@ -130,12 +130,12 @@ func TestCLIOwnerResolution(t *testing.T) {
 
 func TestPrepareCLICreatesDataDirAsCurrentUser(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "new", "data")
-	t.Setenv("PANOPTES_CONFIG", "")
-	t.Setenv("PANOPTES_DATA_DIR", dir)
+	t.Setenv("HOLEALIGN_CONFIG", "")
+	t.Setenv("HOLEALIGN_DATA_DIR", dir)
 	if code, _, errs := runCLI(t, "", "token", "list"); code != 0 {
 		t.Fatal(errs)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "panoptes.db")); err != nil {
+	if _, err := os.Stat(filepath.Join(dir, "holealign.db")); err != nil {
 		t.Fatal(err)
 	}
 }

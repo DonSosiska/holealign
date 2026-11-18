@@ -12,11 +12,11 @@ import (
 	"os"
 	"sync"
 
-	"github.com/DonSosiska/panoptes/internal/agent/config"
-	"github.com/DonSosiska/panoptes/internal/agent/facts"
-	"github.com/DonSosiska/panoptes/internal/agent/hostinfo"
-	"github.com/DonSosiska/panoptes/internal/agent/inventory"
-	"github.com/DonSosiska/panoptes/internal/model"
+	"github.com/DonSosiska/holealign/internal/agent/config"
+	"github.com/DonSosiska/holealign/internal/agent/facts"
+	"github.com/DonSosiska/holealign/internal/agent/hostinfo"
+	"github.com/DonSosiska/holealign/internal/agent/inventory"
+	"github.com/DonSosiska/holealign/internal/model"
 )
 
 // HostInfo is the OS description plus the hashed machine id.

@@ -1,4 +1,4 @@
-// Panoptes UI: tiny progressive enhancements. Everything works without JS except clipboard copy.
+// Holealign UI: tiny progressive enhancements. Everything works without JS except clipboard copy.
 document.addEventListener('submit', function (e) {
   var msg = e.target && e.target.getAttribute && e.target.getAttribute('data-confirm');
   if (msg && !window.confirm(msg)) {

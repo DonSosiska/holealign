@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/DonSosiska/panoptes/internal/server/config"
+	"github.com/DonSosiska/holealign/internal/server/config"
 )
 
 // Provider is a single-turn text completion backend.

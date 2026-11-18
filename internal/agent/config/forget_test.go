@@ -22,7 +22,7 @@ func tokenDir(t *testing.T) string {
 func TestForgetEnrollToken(t *testing.T) {
 	dir := tokenDir(t)
 	path := filepath.Join(dir, "agent.yaml")
-	orig := "# Written by install.sh\nserver_url: \"https://x.example\"\nenroll_token: \"pt_secret123\"\nlabels: [\"a\"]\nnested:\n  enroll_token: keep-me\nstate_dir: /var/lib/panoptes-agent\n"
+	orig := "# Written by install.sh\nserver_url: \"https://x.example\"\nenroll_token: \"pt_secret123\"\nlabels: [\"a\"]\nnested:\n  enroll_token: keep-me\nstate_dir: /var/lib/holealign-agent\n"
 	if err := os.WriteFile(path, []byte(orig), 0o640); err != nil {
 		t.Fatal(err)
 	}

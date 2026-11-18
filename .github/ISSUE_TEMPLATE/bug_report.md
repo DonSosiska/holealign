@@ -7,7 +7,7 @@ assignees: ""
 ---
 
 <!-- Security problem? Do NOT open a public issue. Use the private advisory form: see SECURITY.md. -->
-<!-- A wrong verdict from a rule delivered by the rules feed (a feed #<seq> rule)? Open the issue in https://github.com/DonSosiska/panoptes-rules instead. -->
+<!-- A wrong verdict from a rule delivered by the rules feed (a feed #<seq> rule)? Open the issue in https://github.com/DonSosiska/holealign-rules instead. -->
 <!-- Remove tokens, keys, passwords and private hostnames from everything you paste. -->
 
 **What happened**
@@ -21,7 +21,7 @@ assignees: ""
 
 **Environment**
 
-- Panoptes version (`panoptes-server -version`, `panoptes-agent -version`):
+- Holealign version (`holealign-server -version`, `holealign-agent -version`):
 - Server installed as (Docker Compose / .deb / .rpm / binary):
 - Affected host distribution and version (`/etc/os-release`):
 - Agent mode (systemd split services / `-mode all` / agentless local agent):
@@ -29,7 +29,7 @@ assignees: ""
 
 **Logs**
 
-<!-- journalctl -u panoptes-server / panoptes-agent / panoptes-collector, or docker compose logs -->
+<!-- journalctl -u holealign-server / holealign-agent / holealign-collector, or docker compose logs -->
 
 ```
 ```
@@ -37,4 +37,4 @@ assignees: ""
 **Additional context**
 
 <!-- For a wrong verdict: the rule ID, the verdict reason shown on the finding, and the relevant facts from
-`panoptes-agent -print-facts` (remove anything private). Also the finding URL, anything else. -->
+`holealign-agent -print-facts` (remove anything private). Also the finding URL, anything else. -->

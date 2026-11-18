@@ -1,6 +1,6 @@
 # Operations
 
-Day-to-day running of Panoptes: the `panoptes-server` command line, backup and restore, retention and
+Day-to-day running of Holealign: the `holealign-server` command line, backup and restore, retention and
 limits, health alerts, running without internet access, monitoring and logs, key and token rotation,
 re-enrolling a host and scaling. Symptoms and fixes are in [troubleshooting.md](troubleshooting.md). Installation is in [installation.md](installation.md), every setting in
 [configuration.md](configuration.md).
@@ -14,19 +14,19 @@ Contents: [CLI reference](#cli-reference) - [Backup and restore](#backup-and-res
 ## CLI reference
 
 ```
-panoptes-server [-config FILE] [serve]
-panoptes-server [-config FILE] token create <name> [-max-hosts N] [-expires 72h] [-labels a,b]
-panoptes-server [-config FILE] token list
-panoptes-server [-config FILE] token revoke <name>
-panoptes-server [-config FILE] host list
-panoptes-server [-config FILE] host allow-reenroll <id|hostname> [-ttl 1h]
-panoptes-server [-config FILE] host delete <id|hostname>
-panoptes-server [-config FILE] user set-password <user>          # password on stdin
-panoptes-server rules keygen|build|sign|verify|import|status|candidates|draft   # rules feed tooling, see rules-feed.md
-panoptes-server -version
+holealign-server [-config FILE] [serve]
+holealign-server [-config FILE] token create <name> [-max-hosts N] [-expires 72h] [-labels a,b]
+holealign-server [-config FILE] token list
+holealign-server [-config FILE] token revoke <name>
+holealign-server [-config FILE] host list
+holealign-server [-config FILE] host allow-reenroll <id|hostname> [-ttl 1h]
+holealign-server [-config FILE] host delete <id|hostname>
+holealign-server [-config FILE] user set-password <user>          # password on stdin
+holealign-server rules keygen|build|sign|verify|import|status|candidates|draft   # rules feed tooling, see rules-feed.md
+holealign-server -version
 ```
 
-The config file is `-config`, else `$PANOPTES_CONFIG`, else `/etc/panoptes/server.yaml` if it exists.
+The config file is `-config`, else `$HOLEALIGN_CONFIG`, else `/etc/holealign/server.yaml` if it exists.
 `-config` may also come after the subcommand. The commands open the same SQLite database as the
 running server (`data_dir`), so they use the same configuration.
 
@@ -47,9 +47,9 @@ your current password.
 
 **Where to run it.**
 
-- Docker: `docker compose exec panoptes-server panoptes-server token list` (add `-T` and a here-string
+- Docker: `docker compose exec holealign-server holealign-server token list` (add `-T` and a here-string
   when piping a password).
-- systemd: run as root (`sudo panoptes-server host list`). When started as root while the data
+- systemd: run as root (`sudo holealign-server host list`). When started as root while the data
   directory belongs to the service user (the packaged unit uses a dynamic user), the command drops to
   that uid/gid first, so no root-owned database files appear and the service is not locked out. If
   it cannot drop privileges it refuses and tells you to run as the owning user.
@@ -57,16 +57,16 @@ your current password.
 
 ```sh
 read -rs -p 'New password: ' PW; echo
-printf '%s\n' "$PW" | sudo panoptes-server user set-password admin; unset PW
+printf '%s\n' "$PW" | sudo holealign-server user set-password admin; unset PW
 ```
 
 ## Backup and restore
 
-All server state is in `data_dir` (default `/var/lib/panoptes`):
+All server state is in `data_dir` (default `/var/lib/holealign`):
 
 | Path | Content | Back up? |
 |---|---|---|
-| `panoptes.db` (+ `-wal`, `-shm` while running) | SQLite, WAL mode: everything below | yes |
+| `holealign.db` (+ `-wal`, `-shm` while running) | SQLite, WAL mode: everything below | yes |
 | `grype-db/` | Grype vulnerability DB cache | no, downloaded again (about 100 MB) |
 | `rules-feed/` | the accepted rules bundle | no, downloaded again at the next poll (air-gapped: keep the tarball you imported) |
 | `local-agent/credentials.json` | key of the built-in local agent (agentless mode), 0600 | optional; without it the local agent provisions a new key at start |
@@ -76,37 +76,37 @@ SHA-256 hashes, and passwords as bcrypt hashes. Back up the database and your co
 
 | What | Where | Needed for |
 |---|---|---|
-| `panoptes.db` | `<data_dir>` | hosts and agent key hashes, findings, user and LLM rules, tokens, users, Matrix routes edited in the UI, notification dedup state |
-| `server.yaml`, `server.env` | `/etc/panoptes/` (or `deploy/.env`) | settings and secrets |
+| `holealign.db` | `<data_dir>` | hosts and agent key hashes, findings, user and LLM rules, tokens, users, Matrix routes edited in the UI, notification dedup state |
+| `server.yaml`, `server.env` | `/etc/holealign/` (or `deploy/.env`) | settings and secrets |
 | TLS certificate and key, CA file | wherever you keep them | agent API and admin listeners; agents need the CA file or pins |
 | agent hosts | nothing | agents keep their key in `state_dir`; they can be reinstalled |
 
 Consistent copy, online (needs the `sqlite3` CLI):
 
 ```sh
-sudo sqlite3 /var/lib/panoptes/panoptes.db ".backup '/backups/panoptes-$(date +%F).db'"
+sudo sqlite3 /var/lib/holealign/holealign.db ".backup '/backups/holealign-$(date +%F).db'"
 ```
 
 Or stop the server and copy the files:
 
 ```sh
-sudo systemctl stop panoptes-server
-sudo cp -a /var/lib/panoptes/panoptes.db* /backups/        # the -wal and -shm files belong with it
-sudo systemctl start panoptes-server
+sudo systemctl stop holealign-server
+sudo cp -a /var/lib/holealign/holealign.db* /backups/        # the -wal and -shm files belong with it
+sudo systemctl start holealign-server
 ```
 
 Docker volume (stop the container first; find the volume name with `docker volume ls`):
 
 ```sh
-docker compose stop panoptes-server
-docker run --rm -v deploy_panoptes-data:/data -v "$PWD":/backup busybox \
-  tar czf /backup/panoptes-data.tgz --exclude=grype-db -C /data .
-docker compose start panoptes-server
+docker compose stop holealign-server
+docker run --rm -v deploy_holealign-data:/data -v "$PWD":/backup busybox \
+  tar czf /backup/holealign-data.tgz --exclude=grype-db -C /data .
+docker compose start holealign-server
 ```
 
-**Restore.** Stop the server, put `panoptes.db` back in `data_dir` (remove stale `-wal` and `-shm`
+**Restore.** Stop the server, put `holealign.db` back in `data_dir` (remove stale `-wal` and `-shm`
 files), give it to the service user (for the packaged unit: `sudo chown -R "$(stat -c %u:%g
-/var/lib/private/panoptes)" /var/lib/private/panoptes`; in Docker the user is uid 65532), mode
+/var/lib/private/holealign)" /var/lib/private/holealign`; in Docker the user is uid 65532), mode
 0600, start the server. It runs any missing migrations itself. Schema migrations are one-way: to go
 back to an older version, restore a backup taken with it.
 
@@ -122,7 +122,7 @@ sensitive: it holds hostnames, package inventories, findings and password hashes
 1. Read [CHANGELOG.md](../CHANGELOG.md) for the new version.
 2. Back up (above). Migrations are one-way.
 3. Upgrade the server ([installation.md](installation.md#upgrading)); migrations run at start. Check
-   `journalctl -u panoptes-server` for `panoptes-server listening`.
+   `journalctl -u holealign-server` for `holealign-server listening`.
 4. Restart after a rules update: shipped rules are read at start. Signed feed rules and web-edited
    rules reload on their own.
 5. Upgrade agents at your pace: old agents keep working within the same API version
@@ -173,7 +173,7 @@ interval after a server start.
 Vulnerability data (Grype DB v6, including KEV and EPSS) is refreshed every `feeds.interval` (6 h).
 To run without it reaching the internet:
 
-1. Set `feeds.update: false` (`PANOPTES_FEEDS_UPDATE=false`). The log then says
+1. Set `feeds.update: false` (`HOLEALIGN_FEEDS_UPDATE=false`). The log then says
    `feed updates disabled (feeds.update=false)`.
 2. Provide a Grype DB in `<data_dir>/grype-db/`: the directory that contains `6/vulnerability.db`.
    On a connected machine with the Grype CLI, `GRYPE_DB_CACHE_DIR=/tmp/grype-db grype db update`
@@ -193,16 +193,16 @@ Logs are structured text (`key=value`) on stderr.
 
 | What | Command |
 |---|---|
-| Server (systemd) | `journalctl -u panoptes-server -f` |
-| Server (Compose) | `docker compose logs -f panoptes-server` |
-| Agent | `journalctl -u panoptes-agent -u panoptes-collector -f` |
-| Audit trail | `journalctl -u panoptes-server \| grep 'msg=audit'`: login, logout, rule approve/reject/edit, token create/revoke, user add/delete/password change, Matrix route changes, with actor and client IP |
-| Warnings about the setup | `journalctl -u panoptes-server \| grep 'insecure configuration'` |
+| Server (systemd) | `journalctl -u holealign-server -f` |
+| Server (Compose) | `docker compose logs -f holealign-server` |
+| Agent | `journalctl -u holealign-agent -u holealign-collector -f` |
+| Audit trail | `journalctl -u holealign-server \| grep 'msg=audit'`: login, logout, rule approve/reject/edit, token create/revoke, user add/delete/password change, Matrix route changes, with actor and client IP |
+| Warnings about the setup | `journalctl -u holealign-server \| grep 'insecure configuration'` |
 
 `GET /healthz` returns `200 ok` on both listeners, with no authentication; use it for load balancer
 or uptime checks (the distroless image has no shell, so there is no Compose healthcheck). There
 is no metrics endpoint: watch `/healthz` and the Matrix ops alerts. The agent has `-log-level debug`
-for more detail; `panoptes-agent -print-facts` and `-print-inventory` show what it would send.
+for more detail; `holealign-agent -print-facts` and `-print-inventory` show what it would send.
 
 ## Troubleshooting
 
@@ -231,13 +231,13 @@ An enrolled host cannot be re-enrolled by anyone holding only an enrollment toke
 1. On the server allow one re-enrollment (default 1 h, maximum 168 h):
 
    ```sh
-   panoptes-server host allow-reenroll web-01 -ttl 2h
-   panoptes-server host list            # REENROLL column shows "allowed until ..."
+   holealign-server host allow-reenroll web-01 -ttl 2h
+   holealign-server host list            # REENROLL column shows "allowed until ..."
    ```
 
-2. On the host put a **fresh** enrollment token into `/etc/panoptes/agent.yaml`
-   (`panoptes-server token create web-01-again -max-hosts 1 -expires 2h`), then
-   `systemctl restart panoptes-agent`.
+2. On the host put a **fresh** enrollment token into `/etc/holealign/agent.yaml`
+   (`holealign-server token create web-01-again -max-hosts 1 -expires 2h`), then
+   `systemctl restart holealign-agent`.
 3. The agent enrolls, receives a new key (the old one stops working), and the permission is used up.
    The host record is kept: its labels (or the new token's labels, if it has any), findings and
    history stay. After the first check-in the token is removed from the file again.

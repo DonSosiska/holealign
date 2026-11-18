@@ -9,6 +9,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 First public state of the project. No tagged release yet.
 
+### Changed
+
+- The project is renamed from Panoptes to Holealign: Go module path
+  `github.com/DonSosiska/holealign`, binaries `holealign-agent` and `holealign-server`, systemd units
+  `holealign-*.service`, system user `holealign`, environment prefix `HOLEALIGN_`, paths
+  `/etc/holealign`, `/var/lib/holealign`, `/run/holealign`, `/usr/share/holealign`, container image
+  `ghcr.io/donsosiska/holealign-server`, and the rules feed at
+  `https://donsosiska.github.io/holealign-rules/latest.json`. There is no compatibility layer for the
+  old names. The salt of the hashed machine ID is unchanged, so hosts keep their identity.
+
 ### Added
 
 - Agent: privilege-separated Linux agent. A root collector with no network access reads host state
@@ -39,11 +49,11 @@ First public state of the project. No tagged release yet.
   protected `release` environment and tags on `main`.
 - Documentation: README (English and Ukrainian) and operator documentation in `docs/`.
 - Agentless mode: the server can monitor its own host through a built-in local agent, with no
-  separate `panoptes-agent` and no enrollment token (`local_agent.*`, off by default). Data comes from
+  separate `holealign-agent` and no enrollment token (`local_agent.*`, off by default). Data comes from
   the root collector socket (`source: collector`), from the server process (`source: inprocess`), or
   is picked at start (`source: auto`). The host is marked "local (built-in)" in the web UI. The server's
   own `data_dir` is never scanned. `install.sh --collector-only` installs just the collector and the
-  `panoptes` user for this mode.
+  `holealign` user for this mode.
 
 ### Changed
 

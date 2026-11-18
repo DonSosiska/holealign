@@ -12,7 +12,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/DonSosiska/panoptes/internal/model"
+	"github.com/DonSosiska/holealign/internal/model"
 )
 
 var (
@@ -442,7 +442,7 @@ func collectNginx(ctx context.Context, env *Env) model.Facts {
 	// nginx -T parses the whole config, which may load modules and include files outside the
 	// verified roots (checked above).
 	//
-	// NOTE (verify on a real host under panoptes-collector.service, ProtectSystem=strict):
+	// NOTE (verify on a real host under holealign-collector.service, ProtectSystem=strict):
 	// nginx -t/-T opens the configured error_log and every access_log for writing and creates
 	// its temp paths, so on a read-only file system it can fail with "open() ... failed (30:
 	// Read-only file system)" and print no dump. `-q -e /dev/null` (nginx >= 1.19.5) only

@@ -6,10 +6,10 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/DonSosiska/panoptes/internal/model"
-	"github.com/DonSosiska/panoptes/internal/server/config"
-	"github.com/DonSosiska/panoptes/internal/server/rules"
-	shipped "github.com/DonSosiska/panoptes/rules"
+	"github.com/DonSosiska/holealign/internal/model"
+	"github.com/DonSosiska/holealign/internal/server/config"
+	"github.com/DonSosiska/holealign/internal/server/rules"
+	shipped "github.com/DonSosiska/holealign/rules"
 )
 
 // builtinRules returns the lowest rule layer: the rules embedded in the binary, plus the rules in

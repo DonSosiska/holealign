@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/DonSosiska/panoptes/internal/server/store"
+	"github.com/DonSosiska/holealign/internal/server/store"
 )
 
 type fakeDB struct {

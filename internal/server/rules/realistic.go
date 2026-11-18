@@ -4,7 +4,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/DonSosiska/panoptes/internal/model"
+	"github.com/DonSosiska/holealign/internal/model"
 )
 
 // Realistic value sets for the grounding analysis (docs/contracts.md section 4, draft guard).

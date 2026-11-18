@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/DonSosiska/panoptes/internal/model"
+	"github.com/DonSosiska/holealign/internal/model"
 )
 
 // recorded is one request seen by the fake homeserver.
@@ -166,7 +166,7 @@ func TestDeliveryPathAuthAndBody(t *testing.T) {
 	if r.ctype != "application/json" {
 		t.Errorf("Content-Type = %q", r.ctype)
 	}
-	if !strings.HasPrefix(r.txn, "panoptes-") {
+	if !strings.HasPrefix(r.txn, "holealign-") {
 		t.Errorf("txnId = %q", r.txn)
 	}
 	if r.body.MsgType != "m.text" || r.body.Format != "org.matrix.custom.html" {
@@ -194,7 +194,7 @@ func TestRoomIDIsPathEscaped(t *testing.T) {
 	if err := m.Notify(context.Background(), []model.Event{testEvent(model.EventResolved, "CVE-1", "h")}); err != nil {
 		t.Fatal(err)
 	}
-	want := "/_matrix/client/v3/rooms/%21room:example.org/send/m.room.message/panoptes-"
+	want := "/_matrix/client/v3/rooms/%21room:example.org/send/m.room.message/holealign-"
 	if !strings.HasPrefix(rawPath, want) {
 		t.Errorf("escaped path = %q, want prefix %q", rawPath, want)
 	}
@@ -479,7 +479,7 @@ func TestBurstSummary(t *testing.T) {
 		}
 		ev := testEvent(kind, fmt.Sprintf("CVE-%d", i), "web01")
 		ev.Finding.CVSS = float64(i)
-		ev.WebURL = "https://panoptes.example/findings/" + fmt.Sprint(i)
+		ev.WebURL = "https://holealign.example/findings/" + fmt.Sprint(i)
 		if i == 19 {
 			ev.Finding.KEV = true
 		}
@@ -515,7 +515,7 @@ func TestBurstSummary(t *testing.T) {
 	if strings.Contains(summary.Body, "CVE-11@") {
 		t.Errorf("summary lists a finding that was sent individually")
 	}
-	if !strings.Contains(summary.Body, "https://panoptes.example/findings") {
+	if !strings.Contains(summary.Body, "https://holealign.example/findings") {
 		t.Errorf("summary missing findings link: %q", summary.Body)
 	}
 }

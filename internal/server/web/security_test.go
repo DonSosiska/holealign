@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/DonSosiska/panoptes/internal/model"
-	"github.com/DonSosiska/panoptes/internal/server/config"
-	"github.com/DonSosiska/panoptes/internal/server/store"
+	"github.com/DonSosiska/holealign/internal/model"
+	"github.com/DonSosiska/holealign/internal/server/config"
+	"github.com/DonSosiska/holealign/internal/server/store"
 )
 
 type lockedBuf struct {
@@ -86,7 +86,7 @@ func TestLimiterEvictsExpiredFirst(t *testing.T) {
 }
 
 func TestPerIPLimit(t *testing.T) {
-	e, _ := logEnv(t, "http://panoptes.test")
+	e, _ := logEnv(t, "http://holealign.test")
 	now := time.Now()
 	e.srv.now = func() time.Time { return now }
 	e.srv.lim = newLimiterCfg(e.srv.now, maxFailures, failWindow, 0, limiterCap)
@@ -105,7 +105,7 @@ func TestPerIPLimit(t *testing.T) {
 }
 
 func TestAuditLog(t *testing.T) {
-	e, logs := logEnv(t, "http://panoptes.test")
+	e, logs := logEnv(t, "http://holealign.test")
 	e.addUser("admin", "pw-long-enough")
 	e.addUser("bob", "bob-long-password")
 	c := e.session("admin")
@@ -205,7 +205,7 @@ func TestPasswordMinLength(t *testing.T) {
 }
 
 func TestHostCookiesAndHSTS(t *testing.T) {
-	e, _ := logEnv(t, "https://panoptes.example.com")
+	e, _ := logEnv(t, "https://holealign.example.com")
 	e.addUser("admin", "correct-horse-battery")
 	w := e.do("GET", "/login", nil, nil)
 	if w.Header().Get("Strict-Transport-Security") != "max-age=31536000" {
@@ -213,7 +213,7 @@ func TestHostCookiesAndHSTS(t *testing.T) {
 	}
 	var lc *http.Cookie
 	for _, c := range w.Result().Cookies() {
-		if c.Name == "__Host-panoptes_login" {
+		if c.Name == "__Host-holealign_login" {
 			lc = c
 		}
 	}
@@ -226,7 +226,7 @@ func TestHostCookiesAndHSTS(t *testing.T) {
 	}
 	var sc *http.Cookie
 	for _, c := range w.Result().Cookies() {
-		if c.Name == "__Host-panoptes_session" && c.Value != "" {
+		if c.Name == "__Host-holealign_session" && c.Value != "" {
 			sc = c
 		}
 	}
@@ -244,7 +244,7 @@ func TestHostCookiesAndHSTS(t *testing.T) {
 }
 
 func TestHTTPNonLoopbackWarns(t *testing.T) {
-	_, logs := logEnv(t, "http://panoptes.example.com")
+	_, logs := logEnv(t, "http://holealign.example.com")
 	if !strings.Contains(logs.String(), "level=WARN") || !strings.Contains(logs.String(), "plain http") {
 		t.Errorf("no warning: %s", logs.String())
 	}
@@ -332,7 +332,7 @@ func TestReferenceLinks(t *testing.T) {
 }
 
 func TestStaticNoListing(t *testing.T) {
-	e, _ := logEnv(t, "https://panoptes.example.com")
+	e, _ := logEnv(t, "https://holealign.example.com")
 	for _, p := range []string{"/static/", "/static", "/static/."} {
 		w := e.do("GET", p, nil, nil)
 		if w.Code == 200 || strings.Contains(w.Body.String(), "style.css") {

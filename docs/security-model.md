@@ -1,6 +1,6 @@
 # Security model
 
-What Panoptes defends against, how, and what you must do yourself. The agent runs as root on every
+What Holealign defends against, how, and what you must do yourself. The agent runs as root on every
 monitored host, so the design assumes the network, the server and the LLM can all be hostile. This
 page summarises the threat model and the mitigations, gives an operator hardening checklist, and
 lists known limitations. To report a vulnerability, see [SECURITY.md](../SECURITY.md).
@@ -54,12 +54,12 @@ outside. A bad rule is dangerous in two ways: it can say "not exploitable" about
 negative), and a `file.match` request makes every agent read configuration lines as root. So the chain is
 short and explicit:
 
-1. **The rules repository is the trust root.** [DonSosiska/panoptes-rules](https://github.com/DonSosiska/panoptes-rules)
+1. **The rules repository is the trust root.** [DonSosiska/holealign-rules](https://github.com/DonSosiska/holealign-rules)
    holds the rules and tests. Changes need a reviewed pull request from a code owner; the bot's drafts get
    the same review and are never merged unchecked. A merge is the review.
 2. **A protected CI environment signs.** Publishing runs in the `rules-release` environment with a
    required reviewer, only from the tip of `main`; the build tool is pinned to a commit that must be an
-   ancestor of panoptes `main`; the private signing key is written to a file only for the signer step and
+   ancestor of holealign `main`; the private signing key is written to a file only for the signer step and
    is also kept offline.
 3. **The signature is the gate.** Servers install a bundle only when it is signed by a key in
    `rules.feed.trusted_keys`. The public key lives in the rules repository
@@ -87,7 +87,7 @@ Do these in a real deployment.
 - [ ] Terminate TLS for the agent API: native `tls_cert`/`tls_key` or a reverse proxy
   ([installation.md](installation.md#tls)). Never expose `:8080` over plain HTTP.
 - [ ] Give agents the exact trust they need: `--ca-file` for a private CA, and **pin the server key**
-  (`--server-pin`, from `panoptes-agent -print-server-pin`, compared out of band); list the next key before
+  (`--server-pin`, from `holealign-agent -print-server-pin`, compared out of band); list the next key before
   rotating certificates. Consider mTLS (`client_cert`/`client_key`).
 - [ ] Keep the admin listener on loopback or a VPN (`admin_listen: 127.0.0.1:8081`), reached by SSH
   tunnel; if you proxy it, restrict by source network, use TLS and set `public_url` to the https URL.
@@ -105,13 +105,13 @@ Do these in a real deployment.
 **Accounts and secrets**
 
 - [ ] Use a strong admin password (12+ characters is enforced), supplied via
-  `PANOPTES_ADMIN_PASSWORD_FILE`; remove the variable after first start. Create one account per
+  `HOLEALIGN_ADMIN_PASSWORD_FILE`; remove the variable after first start. Create one account per
   person ([operations.md](operations.md#cli-reference)).
 - [ ] Keep `server.env` at mode 0600 and out of version control.
 - [ ] Give the LLM key a **spend limit** at the provider and keep `llm.daily_limit` low; use a
   dedicated key.
 - [ ] Use a dedicated Matrix bot account and a token you can revoke. Alerts contain host names and
-  package versions: keep the rooms private. Panoptes does not do Matrix end-to-end encryption, so use
+  package versions: keep the rooms private. Holealign does not do Matrix end-to-end encryption, so use
   unencrypted rooms and a homeserver you trust ([notifications.md](notifications.md#matrix-setup)).
 
 **Rules feed**
@@ -120,17 +120,17 @@ Do these in a real deployment.
   from the rules repository, compared with [rules-feed.md](rules-feed.md#the-public-feed), or your own).
   List two keys only while rotating.
 - [ ] Watch for the "rules feed" `feed_stale` alert; leave `rules.feed.stale_after` enabled.
-- [ ] For an air-gapped server use `panoptes-server rules import` and leave `rules.feed.url` empty.
+- [ ] For an air-gapped server use `holealign-server rules import` and leave `rules.feed.url` empty.
 
 **Operations**
 
 - [ ] Review every LLM draft before approving; read the "Before you approve" file-read list.
-- [ ] Back up `panoptes.db` and the configuration ([operations.md](operations.md#backup-and-restore)).
+- [ ] Back up `holealign.db` and the configuration ([operations.md](operations.md#backup-and-restore)).
 - [ ] Verify what you install ([installation.md](installation.md#verifying-releases)); pin
   image versions, and use `--min-version` in automation.
 - [ ] Alert on silence: keep `alerts.agent_silent_after` and `alerts.feed_stale_after` enabled and
   route `alerts.ops_rooms` to a room somebody watches.
-- [ ] Limit who can run commands on the server: `panoptes-server` CLI commands act as the service
+- [ ] Limit who can run commands on the server: `holealign-server` CLI commands act as the service
   user on the database.
 
 **If you maintain a fork or run the release workflow (GitHub repository settings)**
@@ -171,7 +171,7 @@ Do these in a real deployment.
 - **The systemd units need verification on your hosts.** Their hardening (`ProtectSystem=strict`,
   `PrivateNetwork`, the system-call filter, and child tools such as `nginx -T`, `php -i`, `sshd -T` inheriting
   those limits) has not been verified on a real host by the project's tests, and the unit comments say so.
-  Check `panoptes-agent -print-facts` under the unit's properties, and watch `agent.collector_error` and
+  Check `holealign-agent -print-facts` under the unit's properties, and watch `agent.collector_error` and
   `agent.skipped`. The unit comments list the known risk: `nginx -T` may fail on a read-only file system.
 - **One known dependency advisory.** `govulncheck` reports GO-2026-6905 (the `ar` parser used by Syft's deb
   support) with no fixed upstream release yet; it is accepted per binary in
@@ -182,7 +182,7 @@ Do these in a real deployment.
   host is a high-value target: treat the server and the release pipeline accordingly.
 - **Single server, SQLite.** No clustering or high availability; back up regularly.
 - **The built-in local agent (agentless mode, off by default).** With `source: collector` the server process,
-  running as the static user `panoptes`, can request the host's facts and inventory through the collector
+  running as the static user `holealign`, can request the host's facts and inventory through the collector
   socket. The root collector still has no network, and the server stays unprivileged. With
   `source: inprocess` (or `auto` when the socket refuses the server) the server process itself reads
   untrusted local files with its own privileges, so the server host needs the same care as any monitored

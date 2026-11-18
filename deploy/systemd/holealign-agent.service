@@ -1,25 +1,25 @@
 [Unit]
-Description=Panoptes agent (unprivileged sender: talks to the server)
-Documentation=https://github.com/DonSosiska/panoptes/blob/main/docs/contracts.md
+Description=Holealign agent (unprivileged sender: talks to the server)
+Documentation=https://github.com/DonSosiska/holealign/blob/main/docs/contracts.md
 Wants=network-online.target
-Requires=panoptes-collector.service
-After=network-online.target panoptes-collector.service
+Requires=holealign-collector.service
+After=network-online.target holealign-collector.service
 
 [Service]
 Type=simple
 # Unprivileged: the only process with network access. It gets facts and inventory from the root
-# collector (panoptes-collector.service) over /run/panoptes/collector.sock and never reads
+# collector (holealign-collector.service) over /run/holealign/collector.sock and never reads
 # untrusted local files itself.
-User=panoptes
-Group=panoptes
-ExecStart=/usr/bin/panoptes-agent -mode sender -config /etc/panoptes/agent.yaml
+User=holealign
+Group=holealign
+ExecStart=/usr/bin/holealign-agent -mode sender -config /etc/holealign/agent.yaml
 Restart=always
 RestartSec=10
 
-# State (agent_id, agent_key) lives in /var/lib/panoptes-agent, owned by panoptes; state_dir in
-# agent.yaml must match. /etc/panoptes/agent.yaml is root:panoptes 0640 (group-readable by this
-# service; it holds the enroll token). ca_file/client_cert/client_key must be readable by group panoptes.
-StateDirectory=panoptes-agent
+# State (agent_id, agent_key) lives in /var/lib/holealign-agent, owned by holealign; state_dir in
+# agent.yaml must match. /etc/holealign/agent.yaml is root:holealign 0640 (group-readable by this
+# service; it holds the enroll token). ca_file/client_cert/client_key must be readable by group holealign.
+StateDirectory=holealign-agent
 StateDirectoryMode=0700
 UMask=0077
 

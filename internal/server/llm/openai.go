@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/DonSosiska/panoptes/internal/server/config"
+	"github.com/DonSosiska/holealign/internal/server/config"
 )
 
 type openAIProvider struct {

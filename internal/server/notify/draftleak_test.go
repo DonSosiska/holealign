@@ -5,9 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/DonSosiska/panoptes/internal/model"
-	"github.com/DonSosiska/panoptes/internal/server/core"
-	"github.com/DonSosiska/panoptes/internal/server/rules"
+	"github.com/DonSosiska/holealign/internal/model"
+	"github.com/DonSosiska/holealign/internal/server/core"
+	"github.com/DonSosiska/holealign/internal/server/rules"
 )
 
 // A draft rule's explanation, evaluated by the real engine and rendered, must never reach the room.

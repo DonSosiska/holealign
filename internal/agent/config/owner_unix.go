@@ -9,7 +9,7 @@ import (
 
 // matchOwner gives f the owner and group of ref. Nothing is changed when they already match,
 // so an unprivileged or seccomp-restricted caller (chown denied) still succeeds when the new
-// file is already owned correctly (the root collector runs with Group=panoptes).
+// file is already owned correctly (the root collector runs with Group=holealign).
 func matchOwner(f *os.File, ref os.FileInfo) error {
 	want, ok := ref.Sys().(*syscall.Stat_t)
 	if !ok {

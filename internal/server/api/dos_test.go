@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/DonSosiska/panoptes/internal/model"
+	"github.com/DonSosiska/holealign/internal/model"
 )
 
 // stalledUpload starts an inventory upload whose body never completes; it returns the pipe to

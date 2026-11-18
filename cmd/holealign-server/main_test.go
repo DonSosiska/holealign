@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/DonSosiska/panoptes/internal/server/store"
+	"github.com/DonSosiska/holealign/internal/server/store"
 )
 
 func runCLI(t *testing.T, stdin string, args ...string) (int, string, string) {
@@ -20,19 +20,19 @@ func runCLI(t *testing.T, stdin string, args ...string) (int, string, string) {
 
 func TestVersion(t *testing.T) {
 	code, out, _ := runCLI(t, "", "-version")
-	if code != 0 || !strings.Contains(out, "panoptes-server") {
+	if code != 0 || !strings.Contains(out, "holealign-server") {
 		t.Fatalf("%d %q", code, out)
 	}
 }
 
 func TestTokenLifecycle(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("PANOPTES_CONFIG", filepath.Join(dir, "none.yaml")) // missing explicit file must fail
+	t.Setenv("HOLEALIGN_CONFIG", filepath.Join(dir, "none.yaml")) // missing explicit file must fail
 	if code, _, _ := runCLI(t, "", "token", "list"); code == 0 {
 		t.Fatal("missing config file should fail")
 	}
-	t.Setenv("PANOPTES_CONFIG", "")
-	t.Setenv("PANOPTES_DATA_DIR", dir)
+	t.Setenv("HOLEALIGN_CONFIG", "")
+	t.Setenv("HOLEALIGN_DATA_DIR", dir)
 
 	code, out, _ := runCLI(t, "", "token", "create", "lab")
 	tok := strings.TrimSpace(out)
@@ -46,7 +46,7 @@ func TestTokenLifecycle(t *testing.T) {
 	if !strings.Contains(out, "lab") || !strings.Contains(out, "active") || strings.Contains(out, tok) {
 		t.Fatalf("list must show name, never the secret: %q", out)
 	}
-	st, _ := store.OpenSQLite(filepath.Join(dir, "panoptes.db"))
+	st, _ := store.OpenSQLite(filepath.Join(dir, "holealign.db"))
 	if ok, _ := st.UseEnrollToken(context.Background(), store.HashSecret(tok)); !ok {
 		t.Fatal("token should validate")
 	}
@@ -66,8 +66,8 @@ func TestTokenLifecycle(t *testing.T) {
 
 func TestUserSetPassword(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("PANOPTES_CONFIG", "")
-	t.Setenv("PANOPTES_DATA_DIR", dir)
+	t.Setenv("HOLEALIGN_CONFIG", "")
+	t.Setenv("HOLEALIGN_DATA_DIR", dir)
 	if code, _, _ := runCLI(t, "short\n", "user", "set-password", "admin"); code == 0 {
 		t.Fatal("short password accepted")
 	}
@@ -77,7 +77,7 @@ func TestUserSetPassword(t *testing.T) {
 	if code, _, _ := runCLI(t, "battery staple\n", "user", "set-password", "admin"); code != 0 {
 		t.Fatal("update user")
 	}
-	st, _ := store.OpenSQLite(filepath.Join(dir, "panoptes.db"))
+	st, _ := store.OpenSQLite(filepath.Join(dir, "holealign.db"))
 	defer st.Close()
 	u, err := st.GetUser(context.Background(), "admin")
 	if err != nil || !store.CheckPassword(u.PasswordHash, "battery staple") {
@@ -87,11 +87,11 @@ func TestUserSetPassword(t *testing.T) {
 
 func TestEnsureAdmin(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("PANOPTES_CONFIG", "")
-	t.Setenv("PANOPTES_DATA_DIR", dir)
-	t.Setenv("PANOPTES_ADMIN_PASSWORD", "initial-secret")
+	t.Setenv("HOLEALIGN_CONFIG", "")
+	t.Setenv("HOLEALIGN_DATA_DIR", dir)
+	t.Setenv("HOLEALIGN_ADMIN_PASSWORD", "initial-secret")
 	_ = os.MkdirAll(dir, 0o750)
-	st, _ := store.OpenSQLite(filepath.Join(dir, "panoptes.db"))
+	st, _ := store.OpenSQLite(filepath.Join(dir, "holealign.db"))
 	defer st.Close()
 	cfg := mustLoad(t)
 	if err := ensureAdmin(context.Background(), cfg, st, nopLogger()); err != nil {
@@ -105,19 +105,19 @@ func TestEnsureAdmin(t *testing.T) {
 
 func TestEnsureAdminLengthAndFile(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("PANOPTES_CONFIG", "")
-	t.Setenv("PANOPTES_DATA_DIR", dir)
-	st, _ := store.OpenSQLite(filepath.Join(dir, "panoptes.db"))
+	t.Setenv("HOLEALIGN_CONFIG", "")
+	t.Setenv("HOLEALIGN_DATA_DIR", dir)
+	st, _ := store.OpenSQLite(filepath.Join(dir, "holealign.db"))
 	defer st.Close()
 	cfg := mustLoad(t)
 
-	t.Setenv("PANOPTES_ADMIN_PASSWORD", "elevenchars")
+	t.Setenv("HOLEALIGN_ADMIN_PASSWORD", "elevenchars")
 	if err := ensureAdmin(context.Background(), cfg, st, nopLogger()); err == nil {
 		t.Fatal("11-char password accepted")
 	}
 	pwFile := filepath.Join(dir, "pw")
 	_ = os.WriteFile(pwFile, []byte("a-long-enough-secret\n"), 0o600)
-	t.Setenv("PANOPTES_ADMIN_PASSWORD_FILE", pwFile)
+	t.Setenv("HOLEALIGN_ADMIN_PASSWORD_FILE", pwFile)
 	if err := ensureAdmin(context.Background(), cfg, st, nopLogger()); err != nil {
 		t.Fatal(err)
 	}
@@ -129,8 +129,8 @@ func TestEnsureAdminLengthAndFile(t *testing.T) {
 
 func TestTokenOptionsAndHostCommands(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("PANOPTES_CONFIG", "")
-	t.Setenv("PANOPTES_DATA_DIR", dir)
+	t.Setenv("HOLEALIGN_CONFIG", "")
+	t.Setenv("HOLEALIGN_DATA_DIR", dir)
 	if code, _, _ := runCLI(t, "", "token", "create", "bad", "-labels", "BAD LABEL"); code == 0 {
 		t.Fatal("invalid label accepted")
 	}
@@ -143,7 +143,7 @@ func TestTokenOptionsAndHostCommands(t *testing.T) {
 		t.Fatalf("list: %q", out)
 	}
 
-	st, _ := store.OpenSQLite(filepath.Join(dir, "panoptes.db"))
+	st, _ := store.OpenSQLite(filepath.Join(dir, "holealign.db"))
 	_, hash, _ := store.NewSecret("pa_")
 	h, err := st.EnrollHost(context.Background(), store.EnrollParams{MachineID: "m1", Hostname: "web1", KeyHash: hash})
 	if err != nil {

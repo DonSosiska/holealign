@@ -1,4 +1,4 @@
-// Package store persists Panoptes server state. Store is an interface so a Postgres
+// Package store persists Holealign server state. Store is an interface so a Postgres
 // implementation can be added later; SQLite (pure Go) is the default.
 package store
 
@@ -13,7 +13,7 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 
-	"github.com/DonSosiska/panoptes/internal/model"
+	"github.com/DonSosiska/holealign/internal/model"
 )
 
 var (

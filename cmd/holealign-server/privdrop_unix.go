@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"syscall"
 
-	"github.com/DonSosiska/panoptes/internal/server/config"
+	"github.com/DonSosiska/holealign/internal/server/config"
 )
 
 // prepareCLI runs before a token/host/user subcommand opens the database. When started as root
@@ -23,7 +23,7 @@ func prepareCLI(cfg *config.Config) error {
 		}
 		if uid != 0 {
 			if err := dropTo(uid, gid); err != nil {
-				return fmt.Errorf("running as root, but %s is owned by uid %d: could not drop privileges (%v); run this command as that user instead, e.g. 'sudo -u <service-user> panoptes-server ...'",
+				return fmt.Errorf("running as root, but %s is owned by uid %d: could not drop privileges (%v); run this command as that user instead, e.g. 'sudo -u <service-user> holealign-server ...'",
 					cfg.DataDir, uid, err)
 			}
 		}

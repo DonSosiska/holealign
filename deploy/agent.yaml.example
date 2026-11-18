@@ -1,30 +1,30 @@
-# Panoptes agent configuration, installed as /etc/panoptes/agent.yaml (root:panoptes, mode 0640).
+# Holealign agent configuration, installed as /etc/holealign/agent.yaml (root:holealign, mode 0640).
 # Values shown are the defaults unless marked required. Unknown keys are ignored.
 # Reference for every key: docs/configuration.md.
 
-# Base URL of panoptes-server (required). Must be https:// with a host and no user:password@.
+# Base URL of holealign-server (required). Must be https:// with a host and no user:password@.
 # Redirects are never followed. TLS 1.2 or newer is required.
-server_url: https://panoptes.example.com
+server_url: https://holealign.example.com
 
 # Server identity (optional, recommended for private CAs and self-hosted servers).
 # ca_file: PEM bundle. When set, ONLY these roots are trusted; system roots are not used.
 # server_cert_sha256: hex SHA-256 fingerprints of the server leaf certificate's
 # SubjectPublicKeyInfo. When set the handshake must present a leaf with one of these
 # hashes IN ADDITION to normal chain validation (list the next key too before rotating).
-# Get the value with `panoptes-agent -print-server-pin` (validates the chain first; compare
+# Get the value with `holealign-agent -print-server-pin` (validates the chain first; compare
 # it out of band), or: openssl x509 -pubkey -noout -in server.pem | openssl pkey -pubin -outform DER | sha256sum
-# ca_file: /etc/panoptes/ca.pem
+# ca_file: /etc/holealign/ca.pem
 # server_cert_sha256: ["0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"]
 # Optional mTLS client certificate (PEM paths):
-# client_cert: /etc/panoptes/client.pem
-# client_key: /etc/panoptes/client.key
+# client_cert: /etc/holealign/client.pem
+# client_key: /etc/holealign/client.key
 
 # Permit an http:// server_url (testing only; the agent key travels unencrypted, a WARN is logged).
 allow_insecure_http: false
 
-# Enrollment token from `panoptes-server token create <name>`. Only needed until the
+# Enrollment token from `holealign-server token create <name>`. Only needed until the
 # agent has enrolled. The agent has no environment override for it, so it lives in
-# this file; keep the file mode 0600 (0640 root:panoptes with the split services).
+# this file; keep the file mode 0600 (0640 root:holealign with the split services).
 # After enrollment and the first successful check-in the root collector (or, in -mode all, the
 # agent itself when it runs as root) rewrites this line as `enroll_token: ""`. The agent can then
 # not re-enroll on its own: a host that lost its credentials needs a fresh token here.
@@ -35,12 +35,12 @@ enroll_token: "pt_replace-me"
 labels: [prod, web]
 
 # Privilege separation (systemd install): the root collector listens on this unix socket and
-# the unprivileged sender (user "panoptes") connects to it. Ignored in `-mode all`.
-# collector_socket: /run/panoptes/collector.sock
-# collector_user: panoptes
+# the unprivileged sender (user "holealign") connects to it. Ignored in `-mode all`.
+# collector_socket: /run/holealign/collector.sock
+# collector_user: holealign
 
 # Where agent_id and agent_key are stored. Must match StateDirectory in the systemd unit.
-state_dir: /var/lib/panoptes-agent
+state_dir: /var/lib/holealign-agent
 
 # How often the agent checks in (facts, labels, OS).
 checkin_interval: 5m

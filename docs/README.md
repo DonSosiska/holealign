@@ -1,4 +1,4 @@
-# Panoptes documentation
+# Holealign documentation
 
 Start with the [quick start](quickstart.md) if you want to see it work, or with the
 [project README](../README.md) if you want to know what it is.
@@ -19,7 +19,7 @@ Start with the [quick start](quickstart.md) if you want to see it work, or with 
 |---|---|
 | [installation.md](installation.md) | Server (Compose, packages, binary), TLS, agents (`install.sh`, packages), privilege separation, agentless mode, verifying releases, upgrade, uninstall. |
 | [configuration.md](configuration.md) | Every server and agent configuration key with type, default, environment override and effect. |
-| [operations.md](operations.md) | The `panoptes-server` CLI, backup and restore, upgrades, retention and limits, health alerts, air-gapped feeds, rotation, re-enrollment, scaling. |
+| [operations.md](operations.md) | The `holealign-server` CLI, backup and restore, upgrades, retention and limits, health alerts, air-gapped feeds, rotation, re-enrollment, scaling. |
 | [api.md](api.md) | HTTP API reference. *Pending: written separately.* |
 
 ## Write rules

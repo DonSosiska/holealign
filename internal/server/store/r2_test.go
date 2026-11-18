@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/DonSosiska/panoptes/internal/model"
+	"github.com/DonSosiska/holealign/internal/model"
 )
 
 func hostLabels(t *testing.T, s *SQLite, id string) (labels []string, token string, locked bool) {

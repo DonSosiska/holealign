@@ -31,7 +31,7 @@ import (
 	"github.com/anchore/grype/grype/version"
 	"github.com/anchore/grype/grype/vulnerability"
 
-	"github.com/DonSosiska/panoptes/internal/model"
+	"github.com/DonSosiska/holealign/internal/model"
 )
 
 // MaxPackages caps the packages Grype may decode from one SBOM; the API pre-parser enforces the same
@@ -128,7 +128,7 @@ func (g *Grype) Status() DBStatus {
 // download failures are logged and the existing DB (if any) is kept. It returns true when the
 // loaded DB differs from the one served before (different build time).
 func (g *Grype) Reload(ctx context.Context, update bool) (changed bool, err error) {
-	id := clio.Identification{Name: "panoptes", Version: "dev"}
+	id := clio.Identification{Name: "holealign", Version: "dev"}
 	dist := v6dist.DefaultConfig()
 	dist.ID = id
 	dist.RequireUpdateCheck = false // offline: keep the old DB

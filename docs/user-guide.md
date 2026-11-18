@@ -12,7 +12,7 @@ Contents: [Logging in](#logging-in) - [Dashboard](#dashboard) - [Hosts](#hosts) 
 ## Logging in
 
 Open the UI and sign in. The first user is `admin`, created at first start from
-`PANOPTES_ADMIN_PASSWORD` ([installation.md](installation.md#first-admin-user)). Sessions end after one
+`HOLEALIGN_ADMIN_PASSWORD` ([installation.md](installation.md#first-admin-user)). Sessions end after one
 hour idle or 12 hours in total. Actions that change something (approve or reject a rule, edit a rule,
 create or revoke a token, add or delete a user, change a password, save Matrix routes) ask for **your
 current password** again. Login limits and what to do behind a proxy:
@@ -52,10 +52,10 @@ background findings. Empty list: no host has enrolled yet; create a token under 
   it). A missing target means no inventory arrived for it.
 - **Facts**: the configuration facts the server holds for the host, as JSON. When a verdict is
   `conditions_unknown` because a fact is missing, compare with this list (and with
-  `panoptes-agent -print-facts` on the host). Secrets in `file.match` values are masked before they
+  `holealign-agent -print-facts` on the host). Secrets in `file.match` values are masked before they
   leave the host.
 
-Hosts cannot be deleted in the UI; use `panoptes-server host delete`
+Hosts cannot be deleted in the UI; use `holealign-server host delete`
 ([operations.md](operations.md#cli-reference)).
 
 ## Findings
@@ -80,7 +80,7 @@ One package, one vulnerability, one host.
   `not-fixed`, `wont-fix`, `unknown`), first and last seen.
 - **Fix command**: a package-manager command derived for the host's OS, when a fixed version exists.
   Review it before you run it; it is a suggestion built from validated names, not executed by
-  Panoptes.
+  Holealign.
 - **Rule**: for reviewed rules the title, explanation, the conditions (*Exploitable if*, *Not affected
   if*), the facts read, upgrade and mitigation advice, references. For a draft rule it shows only the
   LLM-written text, shortened and labelled *unreviewed*, with a link to review it. Never follow

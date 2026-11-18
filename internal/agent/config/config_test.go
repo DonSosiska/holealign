@@ -19,7 +19,7 @@ func TestDefaults(t *testing.T) {
 	if c.CheckinInterval != 5*time.Minute || c.InventoryInterval != 6*time.Hour {
 		t.Errorf("intervals %v %v", c.CheckinInterval, c.InventoryInterval)
 	}
-	if c.StateDir != "/var/lib/panoptes-agent" || c.DockerSocket != "/var/run/docker.sock" || !c.ScanLanguagePackages {
+	if c.StateDir != "/var/lib/holealign-agent" || c.DockerSocket != "/var/run/docker.sock" || !c.ScanLanguagePackages {
 		t.Errorf("defaults wrong: %+v", c)
 	}
 	if len(c.ExcludePaths) != 14 {

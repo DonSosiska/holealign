@@ -1,6 +1,6 @@
 # Architecture
 
-Panoptes has two kinds of process. On every monitored host a privilege-separated agent (a root
+Holealign has two kinds of process. On every monitored host a privilege-separated agent (a root
 collector with no network, and an unprivileged sender) pushes an inventory and configuration facts
 to the server. The server matches vulnerabilities, evaluates rules, and alerts. This page describes
 the components, the data flow, who may do what, and where data lives. Protocol-level detail is in
@@ -14,16 +14,16 @@ Contents: [Components](#components) - [Data flow](#data-flow) - [Pipeline stages
 ## Components
 
 ```
-  Monitored host                                       Server (one process, panoptes-server)
+  Monitored host                                       Server (one process, holealign-server)
  +------------------------------------+            +--------------------------------------------+
- | panoptes-collector   (root)        |            | agent listener  :8080                      |
+ | holealign-collector   (root)        |            | agent listener  :8080                      |
  |   no network, unix socket only     |            |   POST /api/v1/enroll | checkin | inventory|
  |   facts + Syft inventory           |            |   GET  /healthz                            |
  |        ^                           |   HTTPS    |                                            |
- |        | /run/panoptes/            |  (agent    | admin listener  :8081 (127.0.0.1 default)  |
+ |        | /run/holealign/            |  (agent    | admin listener  :8081 (127.0.0.1 default)  |
  |        |   collector.sock          |  initiates)|   web UI, login, rule review, settings     |
- | panoptes-agent -mode sender        | ---------> |                                            |
- |   (user "panoptes")                |            | pipeline: Grype match -> CEL rules -> diff |
+ | holealign-agent -mode sender        | ---------> |                                            |
+ |   (user "holealign")                |            | pipeline: Grype match -> CEL rules -> diff |
  +------------------------------------+            | health loop (silence/feed alerts, 1/min)   |
                                                    | vuln DB updater (Grype DB, KEV, EPSS)      |
                                                    | rules feed poller (optional)               |
@@ -32,15 +32,15 @@ Contents: [Components](#components) - [Data flow](#data-flow) - [Pipeline stages
                                                    | Matrix notifier  ---> Matrix homeserver    |
                                                    | LLM drafter (optional) ---> LLM API, OSV   |
                                                    +--------------------------------------------+
-                                                       SQLite (panoptes.db) + Grype DB cache
+                                                       SQLite (holealign.db) + Grype DB cache
                                                        + rules feed bundle (data_dir/rules-feed)
 ```
 
 | Component | Binary and unit | Runs as | Network |
 |---|---|---|---|
-| Collector | `panoptes-agent -mode collector`, `panoptes-collector.service` | root, capabilities `CAP_DAC_READ_SEARCH`, `CAP_DAC_OVERRIDE`, `CAP_SYS_PTRACE` | none (`PrivateNetwork=yes`, AF_UNIX only) |
-| Sender | `panoptes-agent -mode sender`, `panoptes-agent.service` | user `panoptes`, no capabilities | outbound to the server only |
-| Server | `panoptes-server serve`, `panoptes-server.service` or container | unprivileged systemd `DynamicUser` (the static `panoptes` user instead when it talks to the collector socket for the local agent) or uid 65532 (container) | listens on `:8080` and `127.0.0.1:8081`; outbound to Matrix, the LLM API, OSV and feed hosts |
+| Collector | `holealign-agent -mode collector`, `holealign-collector.service` | root, capabilities `CAP_DAC_READ_SEARCH`, `CAP_DAC_OVERRIDE`, `CAP_SYS_PTRACE` | none (`PrivateNetwork=yes`, AF_UNIX only) |
+| Sender | `holealign-agent -mode sender`, `holealign-agent.service` | user `holealign`, no capabilities | outbound to the server only |
+| Server | `holealign-server serve`, `holealign-server.service` or container | unprivileged systemd `DynamicUser` (the static `holealign` user instead when it talks to the collector socket for the local agent) or uid 65532 (container) | listens on `:8080` and `127.0.0.1:8081`; outbound to Matrix, the LLM API, OSV and feed hosts |
 | Agentless local agent | inside the server process | the server's user | none; reads the collector socket or scans in-process |
 
 The agent has a third mode, `-mode all` (the default): one process doing both roles. It is used by
@@ -155,17 +155,17 @@ files (configs, package databases, container images) as root is the risky part. 
 split:
 
 - The **collector** (root) parses everything but has no network. It serves results on
-  `/run/panoptes/collector.sock` (directory `0750 root:panoptes`, socket `0660 root:panoptes`) and
+  `/run/holealign/collector.sock` (directory `0750 root:holealign`, socket `0660 root:holealign`) and
   checks `SO_PEERCRED`: only root and the `collector_user` may use it. It applies the collection
   policy itself (`file.match` allow/deny lists and budgets, binary trust checks, scan timeouts)
   and rate-limits scans.
-- The **sender** (user `panoptes`) holds the agent key, talks to the server, and never reads
+- The **sender** (user `holealign`) holds the agent key, talks to the server, and never reads
   untrusted local files.
 
 A bug in a parser therefore cannot open a connection, and a compromised sender is not root.
 A test (`go list -deps`) keeps the collector's code from importing the HTTP transport.
 
-Socket protocol and limits: [contracts.md section 2](contracts.md#2-agent-configuration-etcpanoptesagentyaml).
+Socket protocol and limits: [contracts.md section 2](contracts.md#2-agent-configuration-etcholealignagentyaml).
 
 ## Trust boundaries
 
@@ -197,7 +197,7 @@ Socket protocol and limits: [contracts.md section 2](contracts.md#2-agent-config
 | Run helper binaries (`sshd`, `nginx`, `php`, ...) with fixed argv, no shell | yes | no | no |
 | Open network connections | no | yes, to `server_url` only | yes: Matrix, LLM, OSV, feed download |
 | Hold the agent key | no | yes (`state_dir`, 0600) | stores a SHA-256 hash |
-| Rewrite `/etc/panoptes/agent.yaml` | yes, only to blank `enroll_token` | no | no |
+| Rewrite `/etc/holealign/agent.yaml` | yes, only to blank `enroll_token` | no | no |
 | Write the SQLite database | no | no | yes |
 | Run commands on a monitored host | n/a | no | cannot |
 | Decide verdicts | no | no | yes |
@@ -208,16 +208,16 @@ Socket protocol and limits: [contracts.md section 2](contracts.md#2-agent-config
 
 | Data | Location | Notes |
 |---|---|---|
-| Server database (hosts, findings, rules, tokens, users, sessions, notification dedup, settings, key-value state such as feed status and health) | `<data_dir>/panoptes.db` (default `/var/lib/panoptes`) | SQLite, WAL, file mode 0600, server `umask 077`. Only SHA-256 hashes of enrollment tokens, agent keys and session tokens; bcrypt password hashes. |
+| Server database (hosts, findings, rules, tokens, users, sessions, notification dedup, settings, key-value state such as feed status and health) | `<data_dir>/holealign.db` (default `/var/lib/holealign`) | SQLite, WAL, file mode 0600, server `umask 077`. Only SHA-256 hashes of enrollment tokens, agent keys and session tokens; bcrypt password hashes. |
 | Grype vulnerability DB (includes KEV, EPSS) | `<data_dir>/grype-db/` | Downloaded and refreshed every `feeds.interval`; about 100 MB. |
-| Built-in rules | embedded in the binary; optional `rules_dir` (default `/usr/share/panoptes/rules`) | `rules_dir` adds rules and replaces embedded ones with the same ID; read at start. |
+| Built-in rules | embedded in the binary; optional `rules_dir` (default `/usr/share/holealign/rules`) | `rules_dir` adds rules and replaces embedded ones with the same ID; read at start. |
 | Signed rules feed bundle | `<data_dir>/rules-feed/` | The accepted bundle and its signature; re-verified at every start. Only when the feed is enabled or a bundle was imported. |
 | Local rules (LLM drafts, edits in the UI) | database | Override a built-in or feed rule with the same ID, except that a draft never replaces one. |
 | Local agent credentials | `<data_dir>/local-agent/credentials.json` | 0600; only with `local_agent.enabled`. |
 | Matrix label routes edited in the UI | database, setting `matrix.routes` | Merged with `matrix.routes` from `server.yaml`. |
-| Agent credentials | `<state_dir>/` (default `/var/lib/panoptes-agent`) | `agent_id`, `agent_key`; owned by `panoptes`, mode 0700 directory. |
-| Agent configuration | `/etc/panoptes/agent.yaml` | `root:panoptes`, 0640. Holds the enrollment token until the first successful check-in. |
-| Server configuration | `/etc/panoptes/server.yaml`, secrets in `/etc/panoptes/server.env` | The env file holds the admin password, Matrix token, LLM key (0600). |
+| Agent credentials | `<state_dir>/` (default `/var/lib/holealign-agent`) | `agent_id`, `agent_key`; owned by `holealign`, mode 0700 directory. |
+| Agent configuration | `/etc/holealign/agent.yaml` | `root:holealign`, 0640. Holds the enrollment token until the first successful check-in. |
+| Server configuration | `/etc/holealign/server.yaml`, secrets in `/etc/holealign/server.env` | The env file holds the admin password, Matrix token, LLM key (0600). |
 | Facts and inventory | server database only | The agent does not keep a copy besides in-memory caches in the collector. |
 
 Backup and retention: [operations.md](operations.md#backup-and-restore).

@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/DonSosiska/panoptes/internal/model"
-	"github.com/DonSosiska/panoptes/internal/server/core"
+	"github.com/DonSosiska/holealign/internal/model"
+	"github.com/DonSosiska/holealign/internal/server/core"
 )
 
 func TestVersionCompareType(t *testing.T) {

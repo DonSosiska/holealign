@@ -19,7 +19,7 @@ const (
 // resolved paths; a test in that package keeps both lists identical to these.
 var denyPatterns = [][]string{
 	{"shadow*"}, {"gshadow*"}, {"passwd-"}, {"sudoers*"}, {"ssh", "ssh_host_*"},
-	{"ssl", "private"}, {"letsencrypt"}, {"pki"}, {"panoptes"}, {"krb5.keytab"},
+	{"ssl", "private"}, {"letsencrypt"}, {"pki"}, {"holealign"}, {"krb5.keytab"},
 	{"*.key"}, {"*.pem"}, {"*.p12"}, {"*.pfx"}, {"*.jks"}, {"*.keystore"},
 	{".htpasswd"}, {"*secret*"}, {"*credential*"}, {"*token*"},
 	{"networkmanager"}, {"wireguard"}, {"openvpn"}, {"ppp"}, {"security"},

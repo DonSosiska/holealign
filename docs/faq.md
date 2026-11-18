@@ -2,30 +2,30 @@
 
 Short answers. Links lead to the full explanation.
 
-Contents: [How is it different?](#how-is-panoptes-different-from-trivy-grype-wazuh-or-vuls) -
+Contents: [How is it different?](#how-is-holealign-different-from-trivy-grype-wazuh-or-vuls) -
 [Internet](#does-it-need-internet-access) - [Data leaving a host](#what-data-leaves-a-monitored-host) -
 [LLM](#can-it-run-without-an-llm) - [Distros](#which-distributions-are-supported) -
 [Resources](#how-much-cpu-memory-and-disk-does-it-use) - [Containers](#does-it-scan-containers) -
 [Licence](#licensing) - [Other](#other-questions)
 
-## How is Panoptes different from Trivy, Grype, Wazuh or Vuls?
+## How is Holealign different from Trivy, Grype, Wazuh or Vuls?
 
-Panoptes uses Syft and Grype internally, so its package matching is Grype's. What it adds is a second
+Holealign uses Syft and Grype internally, so its package matching is Grype's. What it adds is a second
 question: **is this vulnerability actually exploitable on this host's configuration?** A rule reads
 configuration facts (`sshd -T`, `nginx -T`, kernel sysctl, listening sockets, running services, Docker
 containers and a few bounded file reads) and gives a verdict. regreSSHion (CVE-2024-6387) is
 `exploitable` on glibc with `LoginGraceTime` not `0`, and `affected_not_exploitable` otherwise. When
-Panoptes cannot tell, the verdict is `conditions_unknown`, never "safe".
+Holealign cannot tell, the verdict is `conditions_unknown`, never "safe".
 
-| Tool | What it is | Compared with Panoptes |
+| Tool | What it is | Compared with Holealign |
 |---|---|---|
-| Trivy, Grype | Scanners: package versions against vulnerability data, run on demand or in CI | Version-only results. Panoptes keeps them continuous for a fleet and adds the configuration check and alerting. |
-| Wazuh | A full security platform: agents, log analysis, FIM, compliance, vulnerability detection | Much broader. Panoptes does one thing (exploitability of vulnerabilities) and is one binary plus SQLite. If you already run Wazuh for everything else, Panoptes does not replace it. |
-| Vuls | Agentless (SSH) or agent vulnerability scanner for Linux | Closest in purpose. Panoptes uses pushing agents instead of SSH, a signed rules feed and an exploitability verdict per host; it has far fewer integrations and a smaller rule set. |
+| Trivy, Grype | Scanners: package versions against vulnerability data, run on demand or in CI | Version-only results. Holealign keeps them continuous for a fleet and adds the configuration check and alerting. |
+| Wazuh | A full security platform: agents, log analysis, FIM, compliance, vulnerability detection | Much broader. Holealign does one thing (exploitability of vulnerabilities) and is one binary plus SQLite. If you already run Wazuh for everything else, Holealign does not replace it. |
+| Vuls | Agentless (SSH) or agent vulnerability scanner for Linux | Closest in purpose. Holealign uses pushing agents instead of SSH, a signed rules feed and an exploitability verdict per host; it has far fewer integrations and a smaller rule set. |
 
 Honest limits: only eight rules ship in the binary, so most findings start as `conditions_unknown`
 until a rule covers them (a signed [rules feed](rules-feed.md) and [LLM drafting](llm.md) exist to
-grow that set). Panoptes does not scan source code, cloud configuration or web applications, and it
+grow that set). Holealign does not scan source code, cloud configuration or web applications, and it
 does not remediate.
 
 ## Does it need internet access?
@@ -34,7 +34,7 @@ The **server** needs outbound HTTPS for the Grype vulnerability DB (refreshed ev
 at first), and optionally for the rules feed, Matrix, an LLM provider and `api.osv.dev` (advisory text
 for drafting). All of these can be switched off or pointed at internal services; an air-gapped setup
 is documented in [operations.md](operations.md#air-gapped-and-feed-updates), and rules can be
-imported from a tarball (`panoptes-server rules import`). **Agents** only connect to your
+imported from a tarball (`holealign-server rules import`). **Agents** only connect to your
 `server_url`, outbound; no inbound connection to a monitored host is ever made.
 
 ## What data leaves a monitored host?
@@ -67,7 +67,7 @@ request. Values after keys named like `key`, `secret`, `token`, `pass`, `psk`, `
 `community`, bearer tokens, URL user info and long random-looking strings are masked on the host,
 before the pattern is applied ([rules.md](rules.md#filematch-policy)). Hostnames and package lists
 are not masked: they are the point of the product. You can see the exact payloads with
-`panoptes-agent -print-facts` and `-print-inventory`, with no server involved.
+`holealign-agent -print-facts` and `-print-inventory`, with no server involved.
 
 The agent never executes anything the server sends: every command is a fixed argv without a shell
 ([security-model.md](security-model.md)).
@@ -113,12 +113,12 @@ Kubernetes) are not listed.
 
 ## Licensing
 
-Panoptes is source-available under the [PolyForm Noncommercial License 1.0.0](../LICENSE). You may use,
+Holealign is source-available under the [PolyForm Noncommercial License 1.0.0](../LICENSE). You may use,
 modify and share it for noncommercial purposes: personal use, research, education, hobby projects, and
 use by charities, educational institutions, public research and safety organizations, environmental
 organizations and government institutions. It is not an OSI open-source licence. **Commercial use
 requires a separate licence**: contact the maintainer through
-[GitHub](https://github.com/DonSosiska/panoptes) (do not post confidential details in a public issue).
+[GitHub](https://github.com/DonSosiska/holealign) (do not post confidential details in a public issue).
 Dependencies keep their own licences ([NOTICE](../NOTICE)). This page is a summary, not legal advice;
 the LICENSE file is what applies.
 

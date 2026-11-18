@@ -21,9 +21,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/DonSosiska/panoptes/internal/model"
-	"github.com/DonSosiska/panoptes/internal/server/core"
-	"github.com/DonSosiska/panoptes/internal/server/rules"
+	"github.com/DonSosiska/holealign/internal/model"
+	"github.com/DonSosiska/holealign/internal/server/core"
+	"github.com/DonSosiska/holealign/internal/server/rules"
 )
 
 const testVuln = "CVE-2000-0001"
@@ -593,7 +593,7 @@ func TestOpenCatalogAndMinVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Open(tb, "1.1.9"); err == nil || !strings.Contains(err.Error(), "needs panoptes-server 1.2.0") {
+	if _, err := Open(tb, "1.1.9"); err == nil || !strings.Contains(err.Error(), "needs holealign-server 1.2.0") {
 		t.Fatalf("old server accepted: %v", err)
 	}
 	for _, v := range []string{"1.2.0", "v1.10.0", "2.0.0-rc1", "dev", ""} {

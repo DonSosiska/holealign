@@ -1,4 +1,4 @@
-module github.com/DonSosiska/panoptes
+module github.com/DonSosiska/holealign
 
 go 1.27.4
 

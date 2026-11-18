@@ -1,6 +1,6 @@
 # Notifications (Matrix)
 
-Panoptes sends alerts to Matrix/Element rooms. Findings are routed by the labels of the affected
+Holealign sends alerts to Matrix/Element rooms. Findings are routed by the labels of the affected
 host; server-level events (stale feed, failing pipeline, mass silence) go to separate ops rooms.
 This page is a step-by-step Matrix setup, the message types, and the deduplication, grace and burst
 behaviour, including what you see when delivery fails.
@@ -11,7 +11,7 @@ Contents: [Matrix setup](#matrix-setup) - [Routing](#routing) - [Message types](
 
 ## Matrix setup
 
-1. **Create a bot user** on your homeserver, for example `@panoptes:matrix.example.com`. A dedicated
+1. **Create a bot user** on your homeserver, for example `@holealign:matrix.example.com`. A dedicated
    account keeps the token's reach small.
 2. **Get an access token** for it. Do not sign in with Element and later sign that session out,
    because logging out invalidates the token. Request a separate login instead:
@@ -19,25 +19,25 @@ Contents: [Matrix setup](#matrix-setup) - [Routing](#routing) - [Message types](
    ```sh
    curl -sS -X POST https://matrix.example.com/_matrix/client/v3/login \
      -H 'Content-Type: application/json' \
-     -d '{"type":"m.login.password","identifier":{"type":"m.id.user","user":"panoptes"},"password":"BOT_PASSWORD","initial_device_display_name":"panoptes-server"}'
+     -d '{"type":"m.login.password","identifier":{"type":"m.id.user","user":"holealign"},"password":"BOT_PASSWORD","initial_device_display_name":"holealign-server"}'
    ```
 
    The reply contains `access_token`. (In Element: Settings, Help & About, Advanced, Access Token,
    but that token belongs to your Element session.)
-3. **Create the rooms** (for example `prod-alerts`, `staging-alerts`, `panoptes-ops`), **invite the
+3. **Create the rooms** (for example `prod-alerts`, `staging-alerts`, `holealign-ops`), **invite the
    bot, and accept the invite as the bot** (sign in as the bot once, or accept through the API). The
    server does not join rooms by itself: it only sends messages, so the bot must already be a member
    and allowed to send.
-4. **Find the room IDs.** Panoptes needs the internal ID (`!abc123:matrix.example.com`), not an
+4. **Find the room IDs.** Holealign needs the internal ID (`!abc123:matrix.example.com`), not an
    alias (`#prod-alerts:...`). In Element: Room settings, Advanced, "Internal room ID".
 5. **Configure the server.** The token goes in the environment, the rest in `server.env`/`.env` or
    `server.yaml`:
 
    ```sh
    # server.env or deploy/.env
-   PANOPTES_MATRIX_TOKEN=syt_...
-   PANOPTES_MATRIX_HOMESERVER=https://matrix.example.com
-   PANOPTES_ALERTS_OPS_ROOMS=!ops:matrix.example.com
+   HOLEALIGN_MATRIX_TOKEN=syt_...
+   HOLEALIGN_MATRIX_HOMESERVER=https://matrix.example.com
+   HOLEALIGN_ALERTS_OPS_ROOMS=!ops:matrix.example.com
    ```
 
    ```yaml
@@ -56,7 +56,7 @@ Contents: [Matrix setup](#matrix-setup) - [Routing](#routing) - [Message types](
    message" button; the first real alert, or the delivery-problem banner on the dashboard, tells
    you whether delivery works.
 
-**Encryption.** Panoptes does not implement Matrix end-to-end encryption. It posts plain
+**Encryption.** Holealign does not implement Matrix end-to-end encryption. It posts plain
 `m.room.message` events through the client API. Use unencrypted rooms for alerts; do not put the
 bot in an encrypted room and expect confidential content. Alerts contain hostnames, package
 versions and vulnerability IDs. The access token is a secret: keep `server.env` mode 0600.
