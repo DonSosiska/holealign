@@ -7,6 +7,7 @@ COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
 COPY cmd ./cmd
 COPY internal ./internal
+COPY rules ./rules
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
     go build -trimpath -ldflags "-X main.version=e2e" -o /out/ ./cmd/panoptes-server ./cmd/panoptes-agent
 
@@ -21,8 +22,10 @@ VOLUME /var/lib/panoptes
 ENTRYPOINT ["/usr/local/bin/panoptes-server"]
 CMD ["serve"]
 
-# ---- host: Debian 12 as of 2024-06-01 (openssh 1:9.2p1-2+deb12u2, CVE-2024-6387) ----
-FROM debian:bookworm-20240513-slim@sha256:804194b909ef23fb995d9412c9378fb3505fe2427b70f3cc425339e48a828fca AS host
+# ---- host: current Debian 12 base, packages from the 2024-06-01 snapshot -------------
+# openssh-server is pinned to 1:9.2p1-2+deb12u2 (vulnerable to CVE-2024-6387) on purpose: the
+# e2e run expects an EXPLOITABLE alert for it and then a RESOLVED one after upgrading it.
+FROM debian:bookworm-20261104-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc AS host
 RUN rm -f /etc/apt/sources.list.d/* /etc/apt/sources.list \
     && printf '%s\n' \
       'deb http://snapshot.debian.org/archive/debian/20240601T000000Z bookworm main' \
