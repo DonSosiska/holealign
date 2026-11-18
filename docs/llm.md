@@ -136,7 +136,8 @@ treated as hostile. The model's output is treated as hostile too.
 - A draft cannot lower a verdict and cannot make a fact-independent claim of exploitability: the
   [draft guard](rules.md#how-verdicts-work) turns both into `conditions_unknown`.
 - The web UI shows the LLM's text shortened and as plain text, in a box labelled unreviewed. Matrix
-  alerts for draft rules show a warning and a server-generated fix command, not the LLM's text.
+  alerts for draft rules show a warning, a fixed reason (`LLM draft ... (unreviewed); conditions not verified`)
+  and a server-generated fix command, never the LLM's explanation, keys or literals.
   Mentions are neutralised in all messages.
 - Approving needs a human, with the current password, on the exact rule version they were shown.
 

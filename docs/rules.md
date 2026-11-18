@@ -37,7 +37,9 @@ Algorithm, per finding:
 4. `exploitable_if` true: `exploitable`; false: `affected_not_exploitable`.
 5. An expression error: `conditions_unknown`, and the reason contains the error.
 6. **Draft guard** (rules with `status: draft` only). A draft never lowers a verdict. Any result other
-   than `exploitable` becomes `conditions_unknown`. An `exploitable` result is kept only when the
+   than `exploitable` becomes `conditions_unknown` with the fixed reason "LLM draft suggests not
+   exploitable (unreviewed); conditions not verified" (the draft's own text is never put into a reason
+   and never relayed to chat). An `exploitable` result is kept only when the
    rule is grounded in host facts; a rule whose result does not depend on any fact becomes
    `conditions_unknown`. Reviewed rules are never affected.
 

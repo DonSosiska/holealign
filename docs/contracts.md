@@ -344,7 +344,9 @@ The legacy spelling `m.?["k"]` is rejected by `Validate` (use `m[?"key"]`). Fact
 6. Draft guard (applied to the result of steps 3-4; only when `status` is `draft`). A draft never lowers a verdict:
    - Any outcome other than `exploitable` (that is `affected_not_exploitable`, from `not_affected_if` or
      `exploitable_if` false) becomes `conditions_unknown`, at every severity, reason
-     `LLM draft suggests not exploitable (unreviewed): <explanation[:200]>`. Only `reviewed` rules can yield
+     the fixed string `LLM draft suggests not exploitable (unreviewed); conditions not verified` (no text of the draft, such
+     as its explanation, ever enters `Evaluation.Reason`; the notifier additionally replaces any reason starting with
+     `LLM draft` by a fixed string, so draft text is never relayed to Matrix). Only `reviewed` rules can yield
      `affected_not_exploitable`.
    - `exploitable` is kept (reason prefixed `LLM draft (unreviewed): `) only if the draft is *grounded*, otherwise it
      becomes `conditions_unknown`, reason `LLM draft: condition does not depend on host facts`. Grounded means

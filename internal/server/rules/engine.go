@@ -302,13 +302,10 @@ func (c *compiled) grounded() bool {
 	return false
 }
 
-func firstChars(s string, n int) string {
-	r := []rune(strings.TrimSpace(s))
-	if len(r) > n {
-		r = r[:n]
-	}
-	return string(r)
-}
+// DraftNotExploitableReason is the fixed reason of a draft whose outcome would have lowered a
+// verdict. No LLM-authored text (explanation, keys, literals) ever enters an Evaluation.Reason of
+// this kind: reasons are relayed to chat rooms and dashboards.
+const DraftNotExploitableReason = "LLM draft suggests not exploitable (unreviewed); conditions not verified"
 
 // Evaluate implements core.RuleEvaluator (verdict algorithm of contracts section 4).
 func (e *Engine) Evaluate(ctx context.Context, hc core.HostContext, f model.Finding) core.Evaluation {
@@ -332,7 +329,7 @@ func (e *Engine) Evaluate(ctx context.Context, hc core.HostContext, f model.Find
 		ev.Reason = "LLM draft (unreviewed): " + ev.Reason
 	case model.VerdictNotExploitable:
 		ev.Verdict = model.VerdictConditionsUnknown
-		ev.Reason = "LLM draft suggests not exploitable (unreviewed): " + firstChars(c.rule.Explanation, 200)
+		ev.Reason = DraftNotExploitableReason
 	}
 	return ev
 }

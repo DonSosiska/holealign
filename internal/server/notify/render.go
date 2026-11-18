@@ -110,13 +110,15 @@ func isDraft(ev model.Event) bool {
 	return ev.Finding.RuleStatus == model.RuleDraft || (ev.Rule != nil && ev.Rule.Status == model.RuleDraft)
 }
 
-// draftSafeReason removes the LLM-written explanation that the evaluator appends to the reason
-// of ungrounded drafts ("LLM draft (...): likely exploitable — <explanation>").
+// draftSafeReason replaces the reason of an unreviewed LLM draft by a fixed string. Draft rules
+// are attacker-influenceable text (the model reads vulnerability descriptions), so nothing the
+// evaluator or an older server version appended to the reason is relayed to the chat room.
 func draftSafeReason(r string) string {
+	if strings.HasPrefix(r, "LLM draft suggests not exploitable") {
+		return "LLM draft suggests not exploitable (unreviewed); conditions not verified"
+	}
 	if strings.HasPrefix(r, "LLM draft") {
-		if i := strings.Index(r, " — "); i >= 0 {
-			return r[:i]
-		}
+		return "LLM draft (unreviewed); conditions not verified"
 	}
 	return r
 }
