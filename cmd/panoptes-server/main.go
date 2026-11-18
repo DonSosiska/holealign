@@ -434,7 +434,10 @@ func serve(cfg *config.Config) error {
 	pruneDone := startRetention(ctx, st, cfg, log)
 	monDone := mon.Start(ctx, time.Minute)
 
-	apiMux := api.NewMux(api.Deps{Store: st, Evaluator: comp.Evaluator, Pipeline: pipe, Logger: log, ClientIP: clientIP})
+	apiMux := api.NewMux(api.Deps{Store: st, Evaluator: comp.Evaluator, Pipeline: pipe, Logger: log, ClientIP: clientIP,
+		InventoryAttemptsPerMinute: cfg.Limits.InventoryAttemptsPerMinute,
+		InventoryAttemptBurst:      cfg.Limits.InventoryAttemptBurst,
+		InventoryConcurrentDecodes: cfg.Limits.InventoryConcurrentDecodes})
 	servers, err := buildServers(cfg, log, apiMux, comp.Mount)
 	if err != nil {
 		stop()

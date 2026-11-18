@@ -35,11 +35,17 @@ retention:
 
 # Per-host protection against one host starving or flooding the server (0 = unlimited).
 limits:
-  # Open findings kept per host; the lowest severities are dropped first (WARN + pipeline_error alert).
+  # Open findings kept per host, ranked after rule evaluation (exploitable first); findings over the
+  # cap keep their previous state and are never reported as resolved (WARN + pipeline_error alert).
   findings_per_host: 20000
   # Cumulative matcher (Grype) time one host may use per rolling hour; runs of a host over budget are
   # deferred (WARN + pipeline_error alert).
   match_seconds_per_host_hour: 900
+  # Inventory uploads per host, charged before the body is read (refill per minute, burst).
+  inventory_attempts_per_minute: 10
+  inventory_attempt_burst: 6
+  # Inventory bodies decoded at once, server-wide; more get 503 with Retry-After.
+  inventory_concurrent_decodes: 4
 
 # SQLite database and Grype DB cache. Must match StateDirectory in the systemd unit.
 data_dir: /var/lib/panoptes

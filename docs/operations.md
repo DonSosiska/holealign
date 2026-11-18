@@ -111,8 +111,11 @@ was blanked after the first check-in, so each host needs a fresh enrollment toke
 |---|---|---|
 | `retention.resolved_findings` | `30d` | A daily job (and one at start) deletes resolved findings older than this. `0` keeps them. |
 | `retention.notifications` | `90d` | Deletes notification dedup rows older than this; rows of still-open findings are kept so alerts are not repeated. |
-| `limits.findings_per_host` | `20000` | Open findings kept per host; the lowest severities are dropped first, with a WARN and a `pipeline_error` alert. |
+| `limits.findings_per_host` | `20000` | Open findings kept per host, ranked after rule evaluation (exploitable, then conditions unknown, then KEV, severity, CVSS). Findings over the cap keep their previous state and never turn into `resolved`. WARN and a `pipeline_error` alert. |
 | `limits.match_seconds_per_host_hour` | `900` | Grype time per host per rolling hour; over budget, runs are deferred (WARN and alert). |
+| `limits.inventory_attempts_per_minute` | `10` | Inventory uploads per host per minute, charged before the body is read (identical re-uploads too); over it: 429 with `Retry-After`. |
+| `limits.inventory_attempt_burst` | `6` | Burst of the bucket above. |
+| `limits.inventory_concurrent_decodes` | `4` | Inventory bodies decoded at once, server-wide; one at a time per host. Over it: 503 (server) or 429 (same host) with `Retry-After`. |
 
 Other built-in bounds (not configurable): at most 2 hosts are matched at once, each run has a 10
 minute timeout and each target 5 minutes; an inventory is capped at 64 MiB decompressed, 50 000
