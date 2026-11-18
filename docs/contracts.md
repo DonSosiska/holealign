@@ -265,7 +265,10 @@ matches). The shipped rules' tests live in `rules-tests/`.
   `/etc/wpa_supplicant`, `/etc/environment`, `/etc/default`, `/etc/sysconfig`, `/etc/aws`, `/etc/gcloud`,
   `/etc/vault*`, `/etc/consul*`, `/etc/nomad*`, `/etc/ansible`, `/etc/ldap`, `/etc/dovecot`, `/etc/docker`,
   `/etc/cron*`, `/etc/redis`, `/etc/mysql`, `/etc/postgresql`, `/etc/krb5*`, `/etc/letsencrypt`, `/etc/ssl`,
-  `/etc/pki`, ... see `rules/filematch.go`). The server policy is stricter than the agent's; the agent re-checks its
+  `/etc/pki`, `/etc/apt/auth.conf*`, `/etc/hostapd`, `/etc/squid/passwords*`, `/etc/gitlab`,
+  `/etc/phpmyadmin/config-db.php`, `/etc/msmtprc`, `/etc/nagios/resource.cfg`, `/etc/ssmtp`, any `tomcat-users*.xml`, ...
+  see `rules/filematch.go`). The agent keeps a copy of the component-pattern list and of the newest absolute entries
+  (`internal/agent/facts/filematch.go`); tests keep them in sync. The server policy is stricter than the agent's; the agent re-checks its
   own denylist on resolved paths and does not rely on the server.
 - `pattern` (at most 256 chars, valid RE2, repeat counts at most 100): must contain a **mandatory literal** of at
   least 4 characters (a literal every match must contain: parts under `?`/`*` quantifiers do not count; in an

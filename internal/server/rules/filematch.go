@@ -15,7 +15,8 @@ const (
 
 // denyPatterns are component sequences (lowercase, path.Match globs) that must
 // never appear in a file.match path, at any depth. The agent keeps its own copy
-// and re-checks it on resolved paths; the server policy below is stricter.
+// (fmDenyPatterns, fmDenyPaths in internal/agent/facts/filematch.go) and re-checks it on
+// resolved paths; a test in that package keeps both lists identical to these.
 var denyPatterns = [][]string{
 	{"shadow*"}, {"gshadow*"}, {"passwd-"}, {"sudoers*"}, {"ssh", "ssh_host_*"},
 	{"ssl", "private"}, {"letsencrypt"}, {"pki"}, {"panoptes"}, {"krb5.keytab"},
@@ -23,7 +24,7 @@ var denyPatterns = [][]string{
 	{".htpasswd"}, {"*secret*"}, {"*credential*"}, {"*token*"},
 	{"networkmanager"}, {"wireguard"}, {"openvpn"}, {"ppp"}, {"security"},
 	{"polkit-1"}, {"ipsec*"}, {"strongswan*"}, {"cloud"},
-	{"mysql", "debian.cnf"}, {"*.env"},
+	{"mysql", "debian.cnf"}, {"*.env"}, {"tomcat-users*.xml"},
 }
 
 // denyPaths are absolute path globs (lowercase) of credential-bearing files and
@@ -40,6 +41,8 @@ var denyPaths = []string{
 	"/etc/postgresql", "/etc/mongod.conf", "/etc/rabbitmq", "/etc/elasticsearch",
 	"/etc/kibana", "/etc/logstash", "/etc/sssd", "/etc/krb5*", "/etc/letsencrypt",
 	"/etc/ssl", "/etc/pki",
+	"/etc/apt/auth.conf*", "/etc/hostapd", "/etc/squid/passwords*", "/etc/gitlab",
+	"/etc/phpmyadmin/config-db.php", "/etc/msmtprc", "/etc/nagios/resource.cfg", "/etc/ssmtp",
 }
 
 // secretSubstrings must not occur in the final path component (literal parts).

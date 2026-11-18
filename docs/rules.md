@@ -228,7 +228,7 @@ fact_requests:
   `*.pfx`, `*.jks`, `.env`, `.htpasswd`, anything containing `secret`, `token`, `credential`,
   `key`, plus credential-bearing directories such as `/etc/kubernetes`, `/etc/ssl`, `/etc/pki`,
   `/etc/letsencrypt`, `/etc/default`, `/etc/sysconfig`, `/etc/docker`, `/etc/mysql`,
-  `/etc/postgresql`, `/etc/redis`, `/etc/cron*`, `/etc/ldap`. The full list is in
+  `/etc/postgresql`, `/etc/redis`, `/etc/cron*`, `/etc/ldap`, `/etc/apt/auth.conf*`, `tomcat-users.xml`, `/etc/gitlab`, `/etc/ssmtp`. The full list is in
   `internal/server/rules/filematch.go` and [contracts.md](contracts.md#4-rules).
 - `pattern`: RE2, at most 256 characters, repeat counts at most 100. It must contain a **mandatory
   literal** of at least 4 characters, must not match the empty string, and must match at most 3 of
