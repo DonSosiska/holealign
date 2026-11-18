@@ -3,3 +3,8 @@ bin/
 *.db-*
 /data/
 .env
+# binaries from "go build ./cmd/..." run in the repository or in cmd/<name>
+/panoptes-server
+/panoptes-agent
+/cmd/panoptes-server/panoptes-server
+/cmd/panoptes-agent/panoptes-agent

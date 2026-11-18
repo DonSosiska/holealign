@@ -43,6 +43,17 @@ type DraftOptions struct {
 	Advisory    llm.AdvisorySource
 	MaxAttempts int // default 2
 	Logger      *slog.Logger
+	// Stats, when set, is filled in by Draft (also when it fails).
+	Stats *DraftStats
+}
+
+// DraftStats reports how a Draft call went.
+type DraftStats struct {
+	Attempts int  // LLM calls made
+	Refused  bool // the model refused
+	// Responses counts the calls that returned an answer (a refusal included): zero means the
+	// provider could not be reached at all.
+	Responses int
 }
 
 // DraftResult is a drafted rule, its tests, their YAML files and the pull request body.
@@ -108,10 +119,19 @@ func Draft(ctx context.Context, o DraftOptions) (*DraftResult, error) {
 			prompt = llm.BuildRepoRetry(user, capErr(lastErr))
 		}
 		cctx, cancel := context.WithTimeout(ctx, completeTimeout)
+		if o.Stats != nil {
+			o.Stats.Attempts = attempt
+		}
 		reply, err := o.Provider.Complete(cctx, system, prompt)
 		cancel()
+		if o.Stats != nil && (err == nil || errors.Is(err, llm.ErrRefused)) {
+			o.Stats.Responses++
+		}
 		if err != nil {
 			if errors.Is(err, llm.ErrRefused) {
+				if o.Stats != nil {
+					o.Stats.Refused = true
+				}
 				return nil, &DraftError{Msg: "the model refused to draft this rule"}
 			}
 			return nil, fmt.Errorf("LLM call failed: %w", err)

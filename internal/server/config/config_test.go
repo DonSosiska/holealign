@@ -39,6 +39,7 @@ matrix:
 		"PANOPTES_MATRIX_HOMESERVER": "https://override",
 		"PANOPTES_FEEDS_INTERVAL":    "30m",
 		"PANOPTES_LLM_DAILY_LIMIT":   "7",
+		"PANOPTES_LLM_EFFORT":        "xhigh",
 	}
 	cfg, err := load(p, func(k string) (string, bool) { v, ok := env[k]; return v, ok })
 	if err != nil {
@@ -49,6 +50,9 @@ matrix:
 	}
 	if cfg.Matrix.Homeserver != "https://override" || len(cfg.Matrix.Routes) != 1 || cfg.Matrix.Routes[0].Label != "prod" {
 		t.Fatalf("matrix: %+v", cfg.Matrix)
+	}
+	if cfg.LLM.Effort != "xhigh" {
+		t.Fatalf("effort env override: %q", cfg.LLM.Effort)
 	}
 	if cfg.LLM.DailyLimit != 7 || cfg.LLM.Provider != "none" {
 		t.Fatalf("llm: %+v", cfg.LLM)
@@ -82,6 +86,7 @@ func TestEnvNameValidation(t *testing.T) {
 	for _, bad := range []string{
 		"matrix:\n  access_token_env: HOME\n",
 		"llm:\n  api_key_env: panoptes_x\n",
+		"llm:\n  effort: extreme\n",
 		"matrix:\n  access_token_env: PANOPTES_ADMIN_PASSWORD\n",
 		"admin:\n  initial_password_env: AWS_SECRET\n",
 	} {
@@ -259,5 +264,19 @@ func TestRulesFeedConfig(t *testing.T) {
 	f = c.Rules.Feed
 	if !f.Enabled || f.URL != "https://env.example/latest.json" || len(f.TrustedKeys) != 2 || f.Interval != 2*time.Hour || f.StaleAfter.Std() != 48*time.Hour {
 		t.Fatalf("env: %+v", f)
+	}
+}
+
+func TestLLMEffortDefaultAndValues(t *testing.T) {
+	if Default().LLM.Effort != "medium" {
+		t.Fatal("default effort")
+	}
+	for _, e := range []string{"low", "medium", "high", "xhigh", "max", ""} {
+		if !ValidEffort(e) {
+			t.Errorf("%q must be valid", e)
+		}
+	}
+	if ValidEffort("MAX") || ValidEffort("ultra") {
+		t.Error("invalid effort accepted")
 	}
 }

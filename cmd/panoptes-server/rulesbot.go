@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/DonSosiska/panoptes/internal/server/config"
@@ -115,11 +116,12 @@ func rulesDraft(args []string, stdout, stderr io.Writer) error {
 	baseURL := fs.String("base-url", os.Getenv("PANOPTES_LLM_BASE_URL"), "provider base URL (env PANOPTES_LLM_BASE_URL)")
 	osv := fs.String("osv-url", rulesbot.DefaultOSVURL, "OSV API base URL (advisory source)")
 	attempts := fs.Int("max-attempts", 2, "LLM attempts (a failed one is retried with the error messages)")
+	effort := fs.String("effort", defaultEffort(), "reasoning effort: low | medium | high | xhigh | max (env PANOPTES_LLM_EFFORT; anthropic provider only)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() != 0 || (*cand == "") == (*candFile == "") {
-		return errors.New("usage: rules draft (-candidate <json> | -candidate-file <file> -index N) -rules <dir> -tests <dir> [-out-rules dir] [-out-tests dir] [-provider p -model m -base-url u] [-osv-url u] [-max-attempts 2]")
+		return errors.New("usage: rules draft (-candidate <json> | -candidate-file <file> -index N) -rules <dir> -tests <dir> [-out-rules dir] [-out-tests dir] [-provider p -model m -base-url u] [-osv-url u] [-max-attempts 2] [-effort medium]")
 	}
 	c, err := readCandidate(*cand, *candFile, *index)
 	if err != nil {
@@ -135,26 +137,11 @@ func rulesDraft(args []string, stdout, stderr io.Writer) error {
 		return errors.New("-out-rules and -out-tests (or -rules and -tests) are required")
 	}
 
-	keyEnv := ""
-	for _, e := range []string{"PANOPTES_LLM_API_KEY", "ANTHROPIC_API_KEY"} {
-		if os.Getenv(e) != "" {
-			keyEnv = e
-			break
-		}
+	pcfg, err := botProviderConfig(*provider, *model, *baseURL, *effort)
+	if err != nil {
+		return err
 	}
-	if *provider == "" && keyEnv != "" {
-		*provider = "anthropic"
-	}
-	if *provider == "" || *provider == "none" {
-		return errors.New("no LLM provider: set -provider (or PANOPTES_LLM_PROVIDER); an API key is optional when the Anthropic SDK finds workload identity federation credentials")
-	}
-	if *model == "" && *provider == "anthropic" {
-		*model = "claude-sonnet-5-5"
-	}
-	if *model == "" {
-		return errors.New("-model (or PANOPTES_LLM_MODEL) is required")
-	}
-	prov, err := newBotProvider(config.LLM{Provider: *provider, Model: *model, BaseURL: *baseURL, APIKeyEnv: keyEnv})
+	prov, err := newBotProvider(pcfg)
 	if err != nil {
 		return err
 	}
@@ -167,10 +154,13 @@ func rulesDraft(args []string, stdout, stderr io.Writer) error {
 	defer stop()
 	osvSrc := llm.NewOSVSource()
 	osvSrc.BaseURL = *osv
+	var usage botUsage
+	ctx = llm.WithUsageSink(ctx, usage.add)
 	res, err := rulesbot.Draft(ctx, rulesbot.DraftOptions{
 		Candidate: c, Provider: prov, Rules: rs, Tests: tests, Catalog: factCatalog(), Advisory: osvSrc,
 		MaxAttempts: *attempts, Logger: botLogger(stderr),
 	})
+	usage.print(stderr)
 	if err != nil {
 		var de *rulesbot.DraftError
 		switch {
@@ -228,4 +218,69 @@ func cacheDir(flagValue string) string {
 		return filepath.Join(d, "panoptes-rules")
 	}
 	return ""
+}
+
+// defaultEffort is the -effort default: $PANOPTES_LLM_EFFORT, else medium.
+func defaultEffort() string {
+	if e := os.Getenv("PANOPTES_LLM_EFFORT"); e != "" {
+		return e
+	}
+	return "medium"
+}
+
+// botProviderConfig resolves the provider flags of "rules draft" and "rules eval" (with the
+// environment fallbacks) into an LLM config.
+func botProviderConfig(provider, model, baseURL, effort string) (config.LLM, error) {
+	if !config.ValidEffort(effort) {
+		return config.LLM{}, fmt.Errorf("-effort must be one of %s", strings.Join(config.LLMEfforts, ", "))
+	}
+	keyEnv := ""
+	for _, e := range []string{"PANOPTES_LLM_API_KEY", "ANTHROPIC_API_KEY"} {
+		if os.Getenv(e) != "" {
+			keyEnv = e
+			break
+		}
+	}
+	if provider == "" && keyEnv != "" {
+		provider = "anthropic"
+	}
+	if provider == "" || provider == "none" {
+		return config.LLM{}, errors.New("no LLM provider: set -provider (or PANOPTES_LLM_PROVIDER); an API key is optional when the Anthropic SDK finds workload identity federation credentials")
+	}
+	if model == "" && provider == "anthropic" {
+		model = "claude-sonnet-5-5"
+	}
+	if model == "" {
+		return config.LLM{}, errors.New("-model (or PANOPTES_LLM_MODEL) is required")
+	}
+	return config.LLM{Provider: provider, Model: model, BaseURL: baseURL, APIKeyEnv: keyEnv, Effort: effort}, nil
+}
+
+// botUsage sums the token usage of every provider call of one run.
+type botUsage struct {
+	mu    sync.Mutex
+	u     llm.Usage
+	calls int
+}
+
+func (b *botUsage) add(u llm.Usage) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.u = b.u.Add(u)
+	b.calls++
+}
+
+// print writes the one-line summary to w; nothing when no call returned.
+func (b *botUsage) print(w io.Writer) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.calls == 0 {
+		return
+	}
+	usd := "n/a"
+	if v, ok := llm.EstimateUSD(b.u); ok {
+		usd = fmt.Sprintf("%.4f", v)
+	}
+	fmt.Fprintf(w, "usage: model=%s calls=%d in=%d out=%d cache_read=%d cache_write=%d est_usd=%s\n",
+		b.u.Model, b.calls, b.u.InputTokens, b.u.OutputTokens, b.u.CacheReadTokens, b.u.CacheWriteTokens, usd)
 }

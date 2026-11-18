@@ -31,7 +31,7 @@ Contents: [Repository layout](#repository-layout) - [Building](#building) - [Tes
 | `internal/server/health/` | Silence, feed and pipeline alerts; delivery-problem recorder |
 | `internal/server/feeds/` | Vulnerability DB updater |
 | `internal/server/rulesfeed/` | Signed central rules feed: bundle build/open, ed25519 signing, poller, persisted bundle |
-| `internal/server/rulesbot/` | `rules candidates` / `rules draft`: CVE selection (OSV, KEV, EPSS, CVSS v3) and LLM rule drafting for the rules repository bot (see [rules-feed.md](rules-feed.md#repository-bot)) |
+| `internal/server/rulesbot/` | `rules candidates` / `rules draft` / `rules eval`: CVE selection (OSV, KEV, EPSS, CVSS v3), LLM rule drafting for the rules repository bot, and the drafting evaluation harness (see [rules-feed.md](rules-feed.md#repository-bot)) |
 | `internal/server/store/` | SQLite store and migrations |
 | `internal/server/web/` | Admin web UI: templates, static files, auth |
 | `internal/server/config/`, `clientip/`, `core/` | Server configuration, client address handling, interfaces between components |
@@ -63,6 +63,7 @@ make release-snapshot   # local goreleaser dry run: archives, .deb/.rpm, checksu
 | Web UI package | `go test -race -timeout 30m ./internal/server/web/` | The slowest package. The default 10 minute timeout can be too short under `-race`; give it 30 minutes. |
 | Linux-only | `go test ./internal/agent/...` on Linux | Some tests use `//go:build linux` (symlink-safe opens, ancestor permission checks). On macOS or Windows, run them in a Linux container, for example `docker run --rm -v "$PWD":/src -w /src golang:1.27.4 go test ./internal/agent/...`. |
 | Rules | `go test ./internal/server/rules/ ./internal/server/rulesfeed/` | Loads the shipped rules and runs every `rules-tests/*.yaml` through the real engine; feed bundle build, signing and verification. |
+| Drafting evaluation | `panoptes-server rules eval -rules rules -tests rules-tests -ids <a,b> -runs 1 -variants claude-haiku-5-5@medium` | Not part of CI and **spends real money**: drafts the reference rules with the listed models and scores them against the reference tests (metrics in [rules-feed.md](rules-feed.md#rules-eval)). Its unit tests use a fake provider and make no network calls. |
 | Matcher integration | `PANOPTES_TEST_GRYPE_DB=<dir> go test -tags integration ./internal/server/match/` | Needs a Grype DB; skips when none is available. |
 | Shell checks | `sh -n deploy/install.sh`, `shellcheck deploy/install.sh deploy/e2e/*.sh scripts/govulncheck.sh` | Also in CI. |
 | End to end | `deploy/e2e/run.sh` | Docker Compose: a Matrix homeserver, the server, three Debian hosts with the real agent; asserts alerts, routing, dedup, the fix flow and the web login. Needs Docker, `curl`, `jq`, `openssl`. See below. |

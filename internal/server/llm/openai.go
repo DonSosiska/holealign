@@ -76,6 +76,10 @@ func (p *openAIProvider) Complete(ctx context.Context, system, user string) (str
 			} `json:"message"`
 			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
+		Usage struct {
+			PromptTokens     int64 `json:"prompt_tokens"`
+			CompletionTokens int64 `json:"completion_tokens"`
+		} `json:"usage"`
 	}
 	if err := json.Unmarshal(raw, &out); err != nil {
 		return "", fmt.Errorf("llm: openai-compatible: bad response: %w", err)
@@ -83,6 +87,7 @@ func (p *openAIProvider) Complete(ctx context.Context, system, user string) (str
 	if len(out.Choices) == 0 {
 		return "", errors.New("llm: openai-compatible: no choices")
 	}
+	reportUsage(ctx, Usage{Model: p.model, InputTokens: out.Usage.PromptTokens, OutputTokens: out.Usage.CompletionTokens})
 	c := out.Choices[0]
 	if c.Message.Refusal != "" || c.FinishReason == "content_filter" {
 		return "", ErrRefused

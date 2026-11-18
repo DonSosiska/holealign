@@ -133,14 +133,35 @@ func RunTests(rules []model.Rule, tests []RuleTests) []TestFailure {
 }
 
 func runCase(e *Engine, ruleID string, c TestCase) string {
+	ev, err := EvalCase(e, c)
+	if err != nil {
+		return err.Error()
+	}
+	if ev.Rule == nil || ev.Rule.ID != ruleID {
+		got := "no rule"
+		if ev.Rule != nil {
+			got = "rule " + ev.Rule.ID
+		}
+		return fmt.Sprintf("the finding is matched by %s, not by %s", got, ruleID)
+	}
+	if ev.Verdict != c.Want {
+		return fmt.Sprintf("verdict %s (%s), want %s", ev.Verdict, ev.Reason, c.Want)
+	}
+	return ""
+}
+
+// EvalCase evaluates the finding of a test case on its host context exactly as RunTests does and
+// returns the evaluation (ev.Rule is nil when no rule matched). An error means the case itself
+// cannot be evaluated (facts that are not JSON-compatible).
+func EvalCase(e *Engine, c TestCase) (core.Evaluation, error) {
 	// Facts arrive from agents as JSON: round-trip so numbers are float64 like on the wire.
 	b, err := json.Marshal(c.Facts)
 	if err != nil {
-		return "facts are not JSON-compatible: " + err.Error()
+		return core.Evaluation{}, errors.New("facts are not JSON-compatible: " + err.Error())
 	}
 	facts := model.Facts{}
 	if err := json.Unmarshal(b, &facts); err != nil {
-		return "facts: " + err.Error()
+		return core.Evaluation{}, errors.New("facts: " + err.Error())
 	}
 	if facts == nil {
 		facts = model.Facts{}
@@ -164,18 +185,7 @@ func runCase(e *Engine, ruleID string, c TestCase) string {
 		q.Set("upstream", c.Finding.Source)
 		f.PURL = "pkg:" + purlType(c.Finding.Type) + "/test/" + url.PathEscape(c.Finding.Package) + "?" + q.Encode()
 	}
-	ev := e.Evaluate(context.Background(), hc, f)
-	if ev.Rule == nil || ev.Rule.ID != ruleID {
-		got := "no rule"
-		if ev.Rule != nil {
-			got = "rule " + ev.Rule.ID
-		}
-		return fmt.Sprintf("the finding is matched by %s, not by %s", got, ruleID)
-	}
-	if ev.Verdict != c.Want {
-		return fmt.Sprintf("verdict %s (%s), want %s", ev.Verdict, ev.Reason, c.Want)
-	}
-	return ""
+	return e.Evaluate(context.Background(), hc, f), nil
 }
 
 func purlType(t string) string {

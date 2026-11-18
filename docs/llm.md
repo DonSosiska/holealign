@@ -101,6 +101,45 @@ re-served by another model in the same call. The OpenAI-compatible provider send
 Set a spend limit on the provider side too, since a daily call limit is not a cost limit. Counters
 are stored in the database, so a restart does not reset them.
 
+### Prompt caching, usage and effort
+
+Prompt caching. The Anthropic provider puts a cache breakpoint (`cache_control: ephemeral`, default
+5-minute TTL) on the system prompt in every request. The system prompt (rules of the task, CEL
+environment, fact catalog, examples) is byte-identical across calls within a process: it is built only
+from the fact catalog and the built-in or repository examples, never from the finding, a timestamp or
+anything iterated in map order. Everything that varies (finding, advisory, siblings, host distribution,
+the retry messages) is in the user prompt. A retry, and a second draft within five minutes, therefore
+reads the system prompt from the cache at the cheaper cache-read rate; the first call pays the cache-write
+rate (1.25x input). Models have a minimum cacheable prefix, so a short prompt may not be cached at all;
+that only means no saving. The OpenAI-compatible provider sends no cache hints.
+
+Usage and cost estimate. After every successful call the provider reports input, output, cache-read and
+cache-write tokens. The server logs one INFO line per completed draft attempt, for example
+`llm: draft attempt completed model=claude-sonnet-5-5 attempt=1 input_tokens=... output_tokens=...
+cache_read_tokens=... cache_write_tokens=... est_usd=0.0412`. The estimate comes from a small built-in
+price table (USD per million tokens, cache write 1.25x input):
+
+| Model | Input | Output | Cache read |
+|---|---|---|---|
+| `claude-sonnet-5-5` | 2 | 10 | 0.10 |
+| `claude-opus-5-5` | 4 | 20 | 0.20 |
+| `claude-haiku-5-5` | 0.10 | 0.50 | 0.01 |
+| `claude-sonnet-5` | 2 | 10 | 0.20 |
+
+These are list prices as of 2026-11 and are for estimation only; the provider's bill is authoritative. An
+unknown model (and every OpenAI-compatible model) logs `est_usd=unknown`; the OpenAI-compatible provider
+reports `prompt_tokens` and `completion_tokens` when the server returns them. `rules draft` prints one
+summary line to stderr (stdout stays the pull request body):
+`usage: model=... calls=N in=... out=... cache_read=... cache_write=... est_usd=...`.
+
+Effort. `llm.effort` (`low`, `medium`, `high`, `xhigh` or `max`; default `medium`; environment
+`PANOPTES_LLM_EFFORT`) sets the reasoning effort the Anthropic provider requests. An invalid value is a
+configuration error. `rules draft` and `rules eval` take `-effort` (default: the environment value, else
+`medium`). Only `claude-sonnet-5-5` and `claude-opus-5-5` are called through the beta endpoint with
+server-side fallback after a refusal; other models, Haiku 5.5 included, have no fallback and accept the
+same effort values. Higher effort costs more output tokens and time; measure it with
+[`rules eval`](rules-feed.md#rules-eval) before changing the default.
+
 ## What is sent to the LLM
 
 Sent, in one request per draft:
@@ -180,6 +219,9 @@ costs calls and produces `failed` drafts rather than wrong rules.
 - Local (Ollama, vLLM): pick a model with good instruction following and JSON mode support, and
   expect more validator retries from small models. Keep it on a trusted network; plain `http://` to
   a non-loopback host triggers a warning.
+- To decide whether a cheaper model (for example `claude-haiku-5-5`) is good enough, measure it on
+  your own reference rules with `panoptes-server rules eval`
+  ([rules-feed.md](rules-feed.md#rules-eval)). It spends real money.
 - Whatever you use, every draft needs the same human review. Drafts are AI-assisted: the validator shows a
   rule is well-formed and cannot lower a verdict, not that it is correct. Compare the conditions and the
   package selectors with the advisory before approving ([rules.md](rules.md#review-workflow-for-llm-drafts)).

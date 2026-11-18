@@ -112,6 +112,7 @@ With environment variables only: `PANOPTES_RULES_FEED_ENABLED=true`,
 | `llm.model` | string | `claude-sonnet-5-5` | `PANOPTES_LLM_MODEL` | Model name sent to the provider. |
 | `llm.base_url` | string (URL) | empty | `PANOPTES_LLM_BASE_URL` | Required for `openai-compatible` (e.g. `http://ollama:11434/v1`); optional endpoint override for `anthropic`. |
 | `llm.api_key_env` | string | `PANOPTES_LLM_API_KEY` | `PANOPTES_LLM_API_KEY_ENV` | Name of the environment variable that holds the API key. |
+| `llm.effort` | string | `medium` | `PANOPTES_LLM_EFFORT` | Reasoning effort of the `anthropic` provider: `low`, `medium`, `high`, `xhigh` or `max`. Anything else fails at start. Ignored by `openai-compatible`. See [llm.md](llm.md#prompt-caching-usage-and-effort). |
 | `llm.daily_limit` | int | `50` | `PANOPTES_LLM_DAILY_LIMIT` | Maximum drafting calls per day. A value of `0` or less falls back to 50. |
 
 ### Admin
