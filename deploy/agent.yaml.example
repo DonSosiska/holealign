@@ -1,5 +1,6 @@
 # Panoptes agent configuration, installed as /etc/panoptes/agent.yaml (root:panoptes, mode 0640).
-# Values shown are the defaults unless marked required.
+# Values shown are the defaults unless marked required. Unknown keys are ignored.
+# Reference for every key: docs/configuration.md.
 
 # Base URL of panoptes-server (required). Must be https:// with a host and no user:password@.
 # Redirects are never followed. TLS 1.2 or newer is required.
@@ -29,7 +30,8 @@ allow_insecure_http: false
 # not re-enroll on its own: a host that lost its credentials needs a fresh token here.
 enroll_token: "pt_replace-me"
 
-# Labels select Matrix rooms on the server (see the label routes in the web UI).
+# Labels select Matrix rooms on the server (see the label routes in the web UI). Lowercase,
+# ^[a-z0-9][a-z0-9._-]{0,63}$, at most 32. Ignored when the enrollment token carries labels.
 labels: [prod, web]
 
 # Privilege separation (systemd install): the root collector listens on this unix socket and

@@ -5,13 +5,28 @@ systemd), how to put TLS in front of it, how to install agents on monitored host
 packages, or by hand), how to verify releases, how to upgrade and uninstall, and how to run
 agentless mode. Every configuration key is listed in [configuration.md](configuration.md).
 
-Contents: [Server](#server) - [TLS](#tls) - [First admin user](#first-admin-user) -
-[Agents](#agents) - [Verifying releases](#verifying-releases) - [Upgrading](#upgrading) -
+Contents: [Choosing a mode](#choosing-a-mode) - [Server](#server) - [TLS](#tls) -
+[First admin user](#first-admin-user) - [Agents](#agents) - [Privilege separation](#privilege-separation) -
+[systemd units](#systemd-units) - [Verifying releases](#verifying-releases) - [Upgrading](#upgrading) -
 [Uninstalling](#uninstalling) - [Agentless mode](#agentless-mode)
+
+In commands, `X.Y.Z` is a release version and `vX.Y.Z` its Git tag. Use the releases page to find the
+current one; the project had no tagged release when this page was written, in which case build from
+source ([development.md](development.md)) or use the Compose build.
+
+## Choosing a mode
+
+| You want | Use | Needs |
+|---|---|---|
+| Try it on one machine, see the UI | [Docker Compose](#docker-compose) server, then [agentless](#agentless-mode) or one agent | Docker |
+| Monitor the server's own host only | [Agentless mode](#agentless-mode) | server install plus `install.sh --collector-only` |
+| Monitor a fleet | Server (any method) plus [`install.sh`](#installsh) or [packages](#packages) on each host | an enrollment token per group of hosts, TLS in front of the agent port |
+| Hosts without internet | `--binary`, [air-gapped feeds](operations.md#air-gapped-and-feed-updates) | files copied by hand |
 
 ## Server
 
-Pick one. All three run the same `panoptes-server serve`. The server needs outbound HTTPS for the
+Pick one. Docker image: `ghcr.io/donsosiska/panoptes-server:X.Y.Z` (distroless, uid 65532, signed; there is
+no agent image, the agent is a host service). All three run the same `panoptes-server serve`. The server needs outbound HTTPS for the
 vulnerability feed (Grype DB, about 100 MB on first start) and, if configured, Matrix, the LLM and
 OSV (advisory text for drafting). Without outbound access see
 [air-gapped feeds](operations.md#air-gapped-and-feed-updates).
@@ -225,11 +240,19 @@ Use short-lived tokens per group of hosts with labels and a `max_hosts` cap
 
 ### install.sh
 
+Download the script from a **release tag**, not from `main`: a tag is a fixed, reviewable version, while
+`main` changes. Read it before you run it, and install the same version it belongs to:
+
 ```sh
-curl --proto '=https' --tlsv1.2 -fsSLO https://raw.githubusercontent.com/DonSosiska/panoptes/main/deploy/install.sh
+V=X.Y.Z
+curl --proto '=https' --tlsv1.2 -fsSLO https://raw.githubusercontent.com/DonSosiska/panoptes/v$V/deploy/install.sh
 less install.sh
-sudo sh install.sh --server https://panoptes.example.com --token-file /root/panoptes.token --labels prod,web
+sudo sh install.sh --version $V --server https://panoptes.example.com --token-file /root/panoptes.token --labels prod,web
 ```
+
+Without `--version` the script installs the latest release. Do not pipe it into a shell (`curl | sh`)
+on a production host; the script itself is built so a truncated download cannot run half of it, but you
+should still read what you run as root.
 
 `install.sh` needs root, Linux, systemd, `curl`, `tar` and a SHA-256 tool (it installs missing
 ones with the system package manager). It supports amd64 and arm64. It creates the system user
@@ -306,6 +329,33 @@ panoptes-agent -config agent.yaml -once   # one check-in and upload, then exit (
 All agent flags: `-config`, `-mode all|collector|sender`, `-once`, `-print-facts`,
 `-print-inventory`, `-print-server-pin`, `-log-level debug|info|warn|error`, `-version`.
 Config keys: [configuration.md](configuration.md#agent-configuration).
+
+## Privilege separation
+
+The agent is one binary run as two processes. Reading `sshd -T`, `nginx -T`, `/proc/*/fd` and the
+whole filesystem for the SBOM needs root, and talking to a network server must not.
+
+| Process | Unit | User | Network | Does |
+|---|---|---|---|---|
+| collector | `panoptes-collector.service` | root, group `panoptes` | none (`PrivateNetwork=yes`, only `AF_UNIX`) | runs the fixed set of collectors and Syft, answers on `/run/panoptes/collector.sock` |
+| sender | `panoptes-agent.service` | `panoptes` | outbound HTTPS to `server_url` | enrolls, checks in, uploads inventories; the only process that talks to the server |
+
+A bug in a parser that handles untrusted host data (a crafted config file or package database) is
+therefore in a process that cannot open a connection, and the process with network access has no
+root. The collector accepts only root and `collector_user`, checked by uid on the socket. `-mode all`
+runs both roles in one process (used by `-once`, containers and tests); it gives up the separation.
+More: [architecture.md](architecture.md#privilege-separation).
+
+## systemd units
+
+| Unit | Installed by | Notes |
+|---|---|---|
+| `panoptes-server.service` | server package, or by hand | dynamic user, full sandboxing, `StateDirectory=panoptes`, reads `/etc/panoptes/server.env` |
+| `panoptes-collector.service` | agent package, `install.sh` (also `--collector-only`) | root, no network, 1 GiB memory and 50 % CPU cap |
+| `panoptes-agent.service` | agent package, `install.sh` (not `--collector-only`) | user `panoptes`, requires the collector |
+
+The units in `deploy/systemd/` are the source; `install.sh` embeds identical copies (a test compares
+them). Change a unit with `systemctl edit`, not by editing the installed file.
 
 ## Verifying releases
 
@@ -464,4 +514,4 @@ panoptes-server host delete <hostname>   # also deletes its findings
 sudo systemctl restart panoptes-server
 ```
 
-or set `local_agent.enabled: false`. Details: [operations](operations.md#troubleshooting).
+or set `local_agent.enabled: false`. Details: [operations](troubleshooting.md#local-agent-agentless-mode).

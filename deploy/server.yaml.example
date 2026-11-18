@@ -1,5 +1,6 @@
 # Panoptes server configuration, installed as /etc/panoptes/server.yaml.
-# Every key is optional; the values shown are the defaults.
+# Every key is optional; the values shown are the defaults. Unknown keys are an error.
+# Reference for every key: docs/configuration.md.
 # Secrets are never stored here: they come from environment variables
 # (see server.env.example). Any scalar can also be set as PANOPTES_<SECTION>_<KEY>.
 
@@ -33,7 +34,9 @@ retention:
   resolved_findings: 30d
   notifications: 90d
 
-# Per-host protection against one host starving or flooding the server (0 = unlimited).
+# Per-host protection against one host starving or flooding the server.
+# findings_per_host and match_seconds_per_host_hour: 0 = unlimited.
+# inventory_*: 0 = use the built-in default (the values shown).
 limits:
   # Open findings kept per host, ranked after rule evaluation (exploitable first); findings over the
   # cap keep their previous state and are never reported as resolved (WARN + pipeline_error alert).
@@ -64,6 +67,14 @@ rules:
     interval: 6h
     # Base64 ed25519 public keys; required when enabled. List two keys while rotating.
     trusted_keys: []
+    # Ready-to-use settings for the public feed (key_id 75eef42e119d4dda; canonical key:
+    # https://github.com/DonSosiska/panoptes-rules/blob/main/keys/rules-public.key).
+    # Compare the key with that file before you trust it, then replace the block above with:
+    #   enabled: true
+    #   url: https://donsosiska.github.io/panoptes-rules/latest.json
+    #   interval: 6h
+    #   trusted_keys: ["UuFW4nYSCwI3xfHhwapVhYrjYhVO6i7yaxOTv9KFCuM="]
+    #   stale_after: 7d
     # feed_stale alert ("rules feed") when no poll succeeded for this long or the last 3 polls failed.
     stale_after: 7d
 
@@ -142,11 +153,12 @@ local_agent:
   exclude_paths: []
   docker_socket: /var/run/docker.sock   # images are scanned if it exists and is readable
 
-# Names in *_env keys must match ^PANOPTES_[A-Z0-9_]+$ and be pairwise different (Matrix token, LLM
-# key, admin password).
+# Names in *_env keys (matrix.access_token_env, llm.api_key_env, admin.initial_password_env) must
+# match ^PANOPTES_[A-Z0-9_]+$ and be pairwise different.
 # A WARN is logged at startup for http:// public_url / matrix.homeserver / llm.base_url on
 # non-loopback hosts.
 admin:
-  # Min 12 characters; PANOPTES_ADMIN_PASSWORD_FILE (path) is also honoured. Environment variable with the password for user "admin". Used only when no
-  # web user exists yet (first start).
+  # Name of the environment variable holding the password for user "admin" (min 12 characters).
+  # Used only when no web user exists yet (first start). PANOPTES_ADMIN_PASSWORD_FILE (a path)
+  # is also honoured and takes precedence.
   initial_password_env: PANOPTES_ADMIN_PASSWORD

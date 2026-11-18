@@ -1,15 +1,15 @@
 # Operations
 
 Day-to-day running of Panoptes: the `panoptes-server` command line, backup and restore, retention and
-limits, health alerts, running without internet access, logs, a troubleshooting table, and how to
-re-enroll a host. Installation is in [installation.md](installation.md), every setting in
+limits, health alerts, running without internet access, monitoring and logs, key and token rotation,
+re-enrolling a host and scaling. Symptoms and fixes are in [troubleshooting.md](troubleshooting.md). Installation is in [installation.md](installation.md), every setting in
 [configuration.md](configuration.md).
 
 Contents: [CLI reference](#cli-reference) - [Backup and restore](#backup-and-restore) -
-[Retention and limits](#retention-and-limits) - [Health alerts](#health-alerts) -
-[Air-gapped and feed updates](#air-gapped-and-feed-updates) -
-[Monitoring and logs](#monitoring-and-logs) - [Troubleshooting](#troubleshooting) -
-[Re-enrolling a host](#re-enrolling-a-host)
+[Upgrades](#upgrades) - [Retention and limits](#retention-and-limits) - [Health alerts](#health-alerts) -
+[Air-gapped and feed updates](#air-gapped-and-feed-updates) - [Monitoring and logs](#monitoring-and-logs) -
+[Troubleshooting](#troubleshooting) - [Key and token rotation](#key-and-token-rotation) - [Re-enrolling a host](#re-enrolling-a-host) -
+[Scaling notes](#scaling-notes)
 
 ## CLI reference
 
@@ -22,7 +22,7 @@ panoptes-server [-config FILE] host list
 panoptes-server [-config FILE] host allow-reenroll <id|hostname> [-ttl 1h]
 panoptes-server [-config FILE] host delete <id|hostname>
 panoptes-server [-config FILE] user set-password <user>          # password on stdin
-panoptes-server rules keygen|build|sign|verify|import|status      # signed rules feed, see rules-feed.md
+panoptes-server rules keygen|build|sign|verify|import|status|candidates|draft   # rules feed tooling, see rules-feed.md
 panoptes-server -version
 ```
 
@@ -62,14 +62,23 @@ printf '%s\n' "$PW" | sudo panoptes-server user set-password admin; unset PW
 
 ## Backup and restore
 
-All server state is in `data_dir` (default `/var/lib/panoptes`): `panoptes.db` (SQLite, WAL mode,
-with `panoptes.db-wal` and `panoptes.db-shm` while running) and `grype-db/`. The Grype DB is a
-cache and is downloaded again; back up the database and your configuration:
+All server state is in `data_dir` (default `/var/lib/panoptes`):
+
+| Path | Content | Back up? |
+|---|---|---|
+| `panoptes.db` (+ `-wal`, `-shm` while running) | SQLite, WAL mode: everything below | yes |
+| `grype-db/` | Grype vulnerability DB cache | no, downloaded again (about 100 MB) |
+| `rules-feed/` | the accepted rules bundle | no, downloaded again at the next poll (air-gapped: keep the tarball you imported) |
+| `local-agent/credentials.json` | key of the built-in local agent (agentless mode), 0600 | optional; without it the local agent provisions a new key at start |
+
+The server holds no private keys of its own: agent keys and enrollment tokens are stored only as
+SHA-256 hashes, and passwords as bcrypt hashes. Back up the database and your configuration:
 
 | What | Where | Needed for |
 |---|---|---|
 | `panoptes.db` | `<data_dir>` | hosts and agent key hashes, findings, user and LLM rules, tokens, users, Matrix routes edited in the UI, notification dedup state |
 | `server.yaml`, `server.env` | `/etc/panoptes/` (or `deploy/.env`) | settings and secrets |
+| TLS certificate and key, CA file | wherever you keep them | agent API and admin listeners; agents need the CA file or pins |
 | agent hosts | nothing | agents keep their key in `state_dir`; they can be reinstalled |
 
 Consistent copy, online (needs the `sqlite3` CLI):
@@ -105,6 +114,23 @@ If the database is lost entirely, agents get `401` (their key hash is gone). The
 was blanked after the first check-in, so each host needs a fresh enrollment token in
 `agent.yaml`; see [Re-enrolling a host](#re-enrolling-a-host).
 
+Test a backup: restore it on another machine with the same version and open the UI. A backup is
+sensitive: it holds hostnames, package inventories, findings and password hashes.
+
+## Upgrades
+
+1. Read [CHANGELOG.md](../CHANGELOG.md) for the new version.
+2. Back up (above). Migrations are one-way.
+3. Upgrade the server ([installation.md](installation.md#upgrading)); migrations run at start. Check
+   `journalctl -u panoptes-server` for `panoptes-server listening`.
+4. Restart after a rules update: shipped rules are read at start. Signed feed rules and web-edited
+   rules reload on their own.
+5. Upgrade agents at your pace: old agents keep working within the same API version
+   ([contracts.md](contracts.md)). Re-run `install.sh --version X.Y.Z --min-version X.Y.Z` per host or
+   use your configuration management.
+
+Roll back by restoring the backup and installing the old version.
+
 ## Retention and limits
 
 | Key | Default | Effect |
@@ -116,6 +142,11 @@ was blanked after the first check-in, so each host needs a fresh enrollment toke
 | `limits.inventory_attempts_per_minute` | `10` | Inventory uploads per host per minute, charged before the body is read (identical re-uploads too); over it: 429 with `Retry-After`. |
 | `limits.inventory_attempt_burst` | `6` | Burst of the bucket above. |
 | `limits.inventory_concurrent_decodes` | `4` | Inventory bodies decoded at once, server-wide; one at a time per host. Over it: 503 (server) or 429 (same host) with `Retry-After`. |
+
+Rate limits per client address or host that are not configurable: check-ins burst 3 then 1 per 20 s,
+inventories burst 3 then 1 per 5 min, invalid enrollments 10/min, failed bearer authentications 30/min,
+invalid inventories 6/min per host. Behind a proxy without `trusted_proxies` all clients share one
+address and these per-client limits.
 
 Other built-in bounds (not configurable): at most 2 hosts are matched at once, each run has a 10
 minute timeout and each target 5 minutes; an inventory is capped at 64 MiB decompressed, 50 000
@@ -175,32 +206,19 @@ for more detail; `panoptes-agent -print-facts` and `-print-inventory` show what 
 
 ## Troubleshooting
 
-| Symptom | Likely cause and fix |
+Symptom, cause and fix tables live in [troubleshooting.md](troubleshooting.md).
+
+## Key and token rotation
+
+| Secret | How to rotate |
 |---|---|
-| Agent log `unauthorized and cannot re-enroll; retrying later` (HTTP 401) | The server does not know the agent key: host deleted, database restored from an older backup, or token revoked before enrollment. `enroll_token` was blanked, so put a **fresh** token in `/etc/panoptes/agent.yaml`, `systemctl restart panoptes-agent`. If the host still exists on the server, run `host allow-reenroll` first. |
-| 401 at enroll | Token unknown, revoked or expired: `token list`, create a new one. |
-| 403 at enroll | The token's `max-hosts` is used up: create another token. |
-| Agent log `server refused enrollment: host already exists` (HTTP 409) | The machine ID is already enrolled and the agent has no valid old key (state lost, cloned VM image). On the server: `host allow-reenroll <hostname>`; the agent retries hourly, or restart it. Cloned VMs need a unique `/etc/machine-id`. |
-| HTTP 429 `rate limited by server` | Normal back-pressure: check-ins allow a burst of 3 then 1 per 20 s, inventories a burst of 3 then 1 per 5 min; invalid enrolls 10/min per client. The agent honours `Retry-After`. If **all** agents are limited, the server sees one client address: behind a reverse proxy set `trusted_proxies` so it reads `X-Forwarded-For`. |
-| HTTP 413 | Facts above 1 MiB or an inventory above 64 MiB decompressed. Exclude paths (`exclude_paths`) or shrink what is scanned. |
-| HTTP 415 on inventory | No target was a CycloneDX document (an old or modified agent). |
-| Host in the UI but no findings | No inventory uploaded yet (first scan takes minutes; `journalctl -u panoptes-agent` shows `inventory uploaded`), the SBOM was skipped (see `pipeline_error` alerts and the server log), or the Grype DB is not loaded yet (`no local grype db yet` in the log). |
-| Agent TLS error, `x509`, or the log shows a presented hash after a handshake failure | Certificate not trusted: use `--ca-file`, or the pin no longer matches (`server_cert_sha256`): get the new one with `panoptes-agent -print-server-pin` and compare it out of band. |
-| Sender cannot reach `/run/panoptes/collector.sock` (permission denied, no such file) | The collector is not running (`systemctl status panoptes-collector`), the user `panoptes` is missing, or `collector_user` / the socket group is wrong. Expected: directory `root:panoptes 0750`, socket `root:panoptes 0660`. Start order: the collector first (the agent unit requires it). |
-| Fact `agent.skipped` lists entries such as `nginx: /etc/nginx/conf.d writable by gid 33` | The collector refuses to run `nginx -T`, `php -i`, `sshd -T`, `apachectl` or `sudo -V` when their config tree or a parent directory is not root-owned and not group- or world-writable. Fix the permissions; rules needing those facts stay `conditions_unknown` until then. |
-| Fact `agent.collector_error` | The collector answered with an error (`busy`, request too large, a failing collector); the check-in carries the previously known facts. Check `journalctl -u panoptes-collector`. |
-| Fact `agent.inventory_error` | The last scan failed or timed out. Raise `host_scan_timeout` / `image_scan_timeout`, add `exclude_paths`; after failures the next try is delayed (up to 6 h). |
-| Local agent (`local_agent`): `local agent stopped; restarting` with a host-info error, or `collector socket not usable, falling back` in the server log; collector log `rejecting connection from unauthorised uid` (`journalctl -u panoptes-collector`) | Collector permission denied or uid rejected. The collector accepts only root and `collector_user` (`panoptes`), checked with `SO_PEERCRED`. A systemd `DynamicUser` server (the shipped default) is rejected, and `SupplementaryGroups=panoptes` alone does not help. Run the server as the static user `panoptes` (see [installation](installation.md#agentless-mode)), then restart it. With `source: auto` the local agent uses `inprocess` until then; the startup log names the source it chose. Also check `systemctl status panoptes-collector` and that the socket is `root:panoptes 0660`. |
-| Local agent: `local agent NOT started: a host with this machine's id already exists ...` (ERROR) | A standalone `panoptes-agent` (or an earlier enrollment) already owns this machine, and the local agent does not take it over. Either run `panoptes-server host delete <hostname>` (this also deletes its findings), stop and uninstall the standalone agent, and restart the server; or set `local_agent.enabled: false`. After deleting the local host while the server runs, restart the server: the local agent only notices on its next start. |
-| Local agent: `local agent stopped; restarting` with a `retry_in` value, `panic recovered in local agent`, or `local agent did not stop in time` at shutdown | The local agent crashed or failed (for example the collector is down, or the inventory failed). It restarts with backoff (5 s, doubling, max 5 min) and never stops the server. Read the `err` field. With `source: collector`, check `journalctl -u panoptes-collector`. The host raises `agent_silent` if the local agent keeps failing. A `local agent did not stop in time` WARN at shutdown means the local agent was still running 30 s after shutdown began; the server exits anyway. |
-| Local agent: server fails to start with `local_agent.*` errors (`source ... must be collector, inprocess or auto`, `collector_socket must be an absolute path`, `checkin_interval must be at least 1m`, `labels: invalid label`, `labels: too many labels (max 32)`) | The `local_agent` section is validated even when `enabled: false`. Fix the value in `server.yaml` or `PANOPTES_LOCAL_AGENT_*` ([configuration](configuration.md#local-agent-agentless-mode)). |
-| Local agent: `local_agent.labels changed` in the log, and the host gets a new key | Expected: labels are authoritative and changing them rotates the local agent key at the next server start. Nothing else needs doing. |
-| `FEED STALE` alert, `grype db update failed; keeping previous db` | The server cannot download the DB (egress, proxy, DNS), or `feeds.update` is false. Check connectivity from the server; see [air-gapped](#air-gapped-and-feed-updates). |
-| No Matrix messages | Look for `matrix notifier enabled` in the log; check the dashboard banner and the status (401/403 token or bot not in the room, 404 wrong room ID). Remember that `affected_not_exploitable` is silent, `CHECK` is delayed 2 h when an LLM is on, and already-sent alerts are not repeated. See [notifications.md](notifications.md#delivery-problems). |
-| Web login fails or is slow | After several wrong passwords attempts for a name are delayed (never locked out), and an address with many failures is blocked for a few minutes (a browser that has logged in before carries a known-device cookie and is not blocked by other clients' failures). Behind a reverse proxy set `trusted_proxies`; otherwise all clients share one address and the log shows a one-time `X-Forwarded-For received from a peer that is not in trusted_proxies` WARN. Reset a password with `user set-password`. |
-| Server will not start: `initial admin password must be at least 12 characters` | Fix `PANOPTES_ADMIN_PASSWORD` / the file named by `PANOPTES_ADMIN_PASSWORD_FILE`. |
-| Server will not start: `parse ...: field ... not found` | An unknown or misspelled key in `server.yaml` (the server file is strict). |
-| `invalid rule skipped` in the log | A rule failed validation; the message names the rule and the problem ([rules.md](rules.md#testing-a-rule-locally)). |
+| Enrollment token | `token create` a new one, then `token revoke` the old. Revoking stops new enrollments only; enrolled agents keep working. Use short `-expires` and `-max-hosts`. |
+| Agent key | Re-enroll the host ([below](#re-enrolling-a-host)): the new key replaces the old one. |
+| Web password | Settings, Users (asks your current password), or `user set-password <user>`. |
+| Matrix token, LLM key, admin password variable | Change `server.env` (or `.env`) and restart the server. |
+| Server TLS certificate | Renew the files and restart the server. Agents with `server_cert_sha256` need the new key's pin: list old and new pins first, rotate the certificate, remove the old pin later. A renewal with the same key keeps the pin valid. |
+| Rules feed signing key | Add the new public key next to the old one in `rules.feed.trusted_keys`, publish bundles signed with the new key, then remove the old one ([rules-feed.md](rules-feed.md)). |
+| Local agent key | Changing `local_agent.labels` rotates it at the next server start; no other action is needed. |
 
 ## Re-enrolling a host
 
@@ -225,3 +243,20 @@ An enrolled host cannot be re-enrolled by anyone holding only an enrollment toke
    history stay. After the first check-in the token is removed from the file again.
 
 If you do not need the history, `host delete <host>` followed by a normal enrollment is simpler.
+
+## Scaling notes
+
+- One server process and one SQLite file. There is no clustering and no external database; run one
+  server per data directory. Measured capacity figures are not published: size by watching your own
+  fleet.
+- Work that scales with hosts: Grype matching (at most 2 hosts at once, 10 minute run timeout,
+  `limits.match_seconds_per_host_hour` per host), inventory decoding (`limits.inventory_concurrent_decodes`)
+  and rule evaluation after each inventory or rules change. The shipped Compose file and unit allot 4 GiB of memory; watch
+  the server's memory on your fleet before you lower it.
+- Each agent checks in every 5 minutes (a small JSON request) and uploads an inventory only when
+  packages changed or every `inventory_interval` (6 h). Raise `checkin_interval` for very large fleets
+  (the server may suggest a value; agents clamp it to 60 s to 1 h).
+- Behind one NAT or proxy, set `trusted_proxies` so per-client limits see real addresses.
+- Keep `data_dir` on local disk (SQLite WAL does not work well on network filesystems) with room for
+  the Grype DB (about 100 MB download) and a second copy while it updates.
+- A host with a huge SBOM is bounded by `limits.findings_per_host`; a `pipeline_error` alert tells you.
