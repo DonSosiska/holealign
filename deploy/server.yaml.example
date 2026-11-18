@@ -85,14 +85,14 @@ feeds:
   update: true
 
 # Silence alerts: an agent that stops checking in, a stale/failing vulnerability feed or a failing
-# pipeline is reported to Matrix.
+# pipeline is reported to the notify.ops destinations.
 alerts:
   # Alert when a host has not checked in for this long. 0 disables agent_silent/agent_back.
   agent_silent_after: 30m
   # Alert when the vulnerability DB was not updated for this long (or refreshing keeps failing).
   # 0 disables feed_stale/feed_ok.
   feed_stale_after: 48h
-  # Rooms for server-level events (feed, pipeline, mass silence). Empty: matrix.default_rooms.
+  # Deprecated alias of notify.ops (still accepted, merged into it).
   ops_rooms: []
 
 # Web UI triage: which unknown findings "need attention" (the rest is "background").
@@ -101,18 +101,42 @@ triage:
   # Critical/High with a fix available. Env: HOLEALIGN_TRIAGE_EPSS_THRESHOLD.
   epss_threshold: 0.1
 
+# Notification channels. Each is enabled by its section; the secret is read from the environment
+# variable it names. Docs: docs/notifications.md.
 matrix:
   # Homeserver for alerts, e.g. https://matrix.example.com. Empty disables Matrix.
   homeserver: ""
   # Name of the environment variable holding the bot's access token.
   access_token_env: HOLEALIGN_MATRIX_TOKEN
-  # Rooms used when no label route matches, e.g. ["!abc:example.com"].
+  # Deprecated aliases of notify.default / notify.routes[].to (still accepted, merged, one WARN):
   default_rooms: []
-  # Label to rooms. Web UI edits are stored in the database and merged with these.
+  routes: []
+
+# Slack: bot token (xoxb-...) with the chat:write scope; the bot must be invited to each channel.
+# Uncomment to enable (the variable name must be different from the other *_env names).
+# slack:
+#   token_env: HOLEALIGN_SLACK_TOKEN
+
+# Telegram: bot token from @BotFather; the bot must be a member of each chat.
+# telegram:
+#   bot_token_env: HOLEALIGN_TELEGRAM_TOKEN
+
+# Where alerts go. A destination is "scheme:target":
+#   Matrix   !abc123:matrix.example.com   (a bare room ID; or matrix:!abc123:matrix.example.com)
+#   Slack    slack:C0123456789            (channel ID, not the name)
+#   Telegram telegram:-1001234567890      (chat id; telegram:-1001234567890/17 for topic 17)
+# Every destination is validated at start; its channel must be configured above.
+notify:
+  # Used when no label route matches a host.
+  default: []
+  # Label to destinations. Web UI edits are stored in the database and merged with these.
   # Example:
   #   routes:
-  #     - {label: prod, rooms: ["!prod:example.com"]}
+  #     - {label: prod,    to: ["!prod:example.com", "slack:C0123456789"]}
+  #     - {label: staging, to: ["telegram:-1001234567890/17"]}
   routes: []
+  # Server-level events (feed, pipeline, mass silence). Empty: default.
+  ops: []
 
 llm:
   # none | anthropic | openai-compatible (e.g. Ollama)
@@ -153,7 +177,8 @@ local_agent:
   exclude_paths: []
   docker_socket: /var/run/docker.sock   # images are scanned if it exists and is readable
 
-# Names in *_env keys (matrix.access_token_env, llm.api_key_env, admin.initial_password_env) must
+# Names in *_env keys (matrix.access_token_env, slack.token_env, telegram.bot_token_env,
+# llm.api_key_env, admin.initial_password_env) must
 # match ^HOLEALIGN_[A-Z0-9_]+$ and be pairwise different.
 # A WARN is logged at startup for http:// public_url / matrix.homeserver / llm.base_url on
 # non-loopback hosts.

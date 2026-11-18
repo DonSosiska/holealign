@@ -17,7 +17,7 @@ Contents: [Assets and trust](#assets-and-trust) - [Threats and mitigations](#thr
 | The agent key of each host | Lets someone act as that host towards the server. |
 | Enrollment tokens | Let someone register a host. |
 | The admin session and password | Every web account is a full administrator: approve rules, create tokens and users, edit routes. |
-| Matrix token, LLM key | Reach external services as you. |
+| Matrix token, Slack bot token, Telegram bot token, LLM key | Reach external services as you (post as your bot, spend your LLM budget). |
 | The rules repository and its signing key | Whoever can publish a signed rules bundle can change verdicts and request configuration-file reads on every server that trusts the key. |
 | Host facts and inventories | Reveal what is installed and how it is configured. |
 
@@ -42,7 +42,7 @@ listed ([feed trust chain](#the-rules-feed-trust-chain)). The architecture is in
 | **Spoofed client addresses** (`X-Forwarded-For`) | The header is honoured only when the TCP peer is in `trusted_proxies`; the right-most untrusted entry is used. Broad entries trigger a WARN, and so does an `X-Forwarded-For` header arriving on the admin listener from a peer that is not in `trusted_proxies` (logged once; it hints at a proxy that is not configured). |
 | **Admin UI** attack | Separate listener, loopback by default, never serves the agent API; the agent listener serves nothing but `/api/v1/*` and `/healthz`. Sessions have a 1 h idle and 12 h absolute lifetime, `HttpOnly` and `SameSite=Lax` cookies (`Secure` with an https `public_url`), CSRF tokens, login delays per user name and blocks per address (a browser holding a known-device cookie for the user bypasses the per-address blocks, so failures from a shared address never lock out the real user), approving a rule shows its expressions (`exploitable_if`, `not_affected_if`) and flags LLM-written text as unverified, a re-authentication (current password) for approving or rejecting rules, editing rules, creating tokens, changing routes and managing users, and an audit log. There are no roles: every account is a full administrator (see [Known limitations](#known-limitations)). |
 | **Malicious LLM output** or advisory text | The LLM only drafts; a draft is validated, inert (its file requests are not sent, it cannot lower a verdict, it only yields `exploitable` if grounded in host facts) until a human approves with password re-entry on a versioned form. Untrusted inputs are normalised, de-tagged and delimited. See [llm.md](llm.md). |
-| **Injection into Matrix messages** | Untrusted fields are length-capped and stripped of control characters, `@` gets a zero-width space, empty `m.mentions`, bodies capped at 8 KiB; draft text is not shown in alerts: the evaluation reason of a draft is a fixed string and the notifier replaces any reason starting with `LLM draft` by one. |
+| **Injection into chat messages** (Matrix, Slack, Telegram) | Untrusted fields are length-capped and stripped of control characters and `@` gets a zero-width space. Each channel then escapes for its own markup: Matrix HTML-escapes and sends empty `m.mentions` with bodies capped at 8 KiB; Slack escapes `&`, `<`, `>` (so `<!channel>`, `<@U...>`, `<url\|text>` stay inert), guards formatting characters, sets no `link_names` and disables unfurling; Telegram sends HTML restricted to `b`, `code`, `a` with every value escaped, link previews off, at most 3900 visible characters per message so no entity is split; draft text is not shown in alerts: the evaluation reason of a draft is a fixed string and the notifier replaces any reason starting with `LLM draft` by one. |
 | **Malicious or tampered rules** (a hijacked feed host, a man in the middle, a poisoned bundle, a replayed old bundle) | Bundles are verified with ed25519 against `rules.feed.trusted_keys` before anything is read; the pointer cannot redirect to another host; a lower or equal `seq` is never installed and `index.json` must carry the pointer's `seq`; extraction is strict and bounded; every rule must validate and pass its own tests; the accepted bundle is re-verified at every start. Details: [the feed trust chain](#the-rules-feed-trust-chain). |
 | **Tampered releases** | Releases are made only by the release workflow after tests pass, in the `release` environment (reviewer approval), only for tags on `main`. Keyless cosign signature on `checksums.txt` with an exact certificate identity (workflow path and tag), SPDX SBOMs, GitHub build provenance. `install.sh` verifies the signature and refuses downgrades. Actions and base images are pinned to digests. The `.deb` and `.rpm` packages are **not** apt- or rpm-signed (see limitations): verify their checksums against the signed `checksums.txt`. |
 | Data stolen from **backups or logs** | Evaluation reasons never contain `file.match` values (only match counts); the audit log records actors and client addresses, not passwords. Protect backups like the database. |
@@ -110,9 +110,16 @@ Do these in a real deployment.
 - [ ] Keep `server.env` at mode 0600 and out of version control.
 - [ ] Give the LLM key a **spend limit** at the provider and keep `llm.daily_limit` low; use a
   dedicated key.
-- [ ] Use a dedicated Matrix bot account and a token you can revoke. Alerts contain host names and
-  package versions: keep the rooms private. Holealign does not do Matrix end-to-end encryption, so use
-  unencrypted rooms and a homeserver you trust ([notifications.md](notifications.md#matrix-setup)).
+- [ ] Use a dedicated bot account or app per channel and a token you can revoke: the Matrix bot, a
+  Slack app with only `chat:write`, a Telegram bot from @BotFather. Each token has its own environment
+  variable (`HOLEALIGN_MATRIX_TOKEN`, `HOLEALIGN_SLACK_TOKEN`, `HOLEALIGN_TELEGRAM_TOKEN`); the config
+  rejects one variable name used for two secrets. Alerts contain host names and package versions: keep
+  the rooms, channels and groups private. Holealign does not do Matrix end-to-end encryption, so use
+  unencrypted rooms and a homeserver you trust ([notifications.md](notifications.md#matrix)).
+- [ ] The Slack and Telegram API addresses are constants in the program. Neither `server.yaml` nor the web
+  UI accepts a URL for a channel (a route is only `scheme:target`, with the target syntax-checked), so a
+  config or UI edit cannot make the server call an arbitrary host (no SSRF surface). The Telegram token
+  is part of the request URL; the server never logs or returns request URLs.
 
 **Rules feed**
 
@@ -129,7 +136,7 @@ Do these in a real deployment.
 - [ ] Verify what you install ([installation.md](installation.md#verifying-releases)); pin
   image versions, and use `--min-version` in automation.
 - [ ] Alert on silence: keep `alerts.agent_silent_after` and `alerts.feed_stale_after` enabled and
-  route `alerts.ops_rooms` to a room somebody watches.
+  route `notify.ops` to a room or channel somebody watches.
 - [ ] Limit who can run commands on the server: `holealign-server` CLI commands act as the service
   user on the database.
 
@@ -146,7 +153,7 @@ Do these in a real deployment.
 ## Known limitations
 
 - **There are no roles.** Every account in the web UI is a full administrator: it can approve and edit
-  rules, create and revoke enrollment tokens, edit Matrix routes and create, change or delete users. There
+  rules, create and revoke enrollment tokens, edit notification routes and create, change or delete users. There
   is no read-only or observer role, no RBAC and no 2FA. Create an account only for someone you trust with
   all of that. Authentication is a password with rate-limiting and re-authentication for sensitive actions.
   Put the admin UI behind a VPN or an authenticating proxy.
@@ -176,7 +183,7 @@ Do these in a real deployment.
 - **One known dependency advisory.** `govulncheck` reports GO-2026-6905 (the `ar` parser used by Syft's deb
   support) with no fixed upstream release yet; it is accepted per binary in
   [`.govulncheck-allow`](../.govulncheck-allow) until one exists.
-- **Matrix, LLM and OSV are external services.** Matrix alerts are not end-to-end encrypted; LLM prompts
+- **Matrix, Slack, Telegram, LLM and OSV are external services.** Matrix alerts are not end-to-end encrypted, and Slack and Telegram see the alert text in clear (host names, package versions, vulnerability IDs); LLM prompts
   include package names and versions from your hosts.
 - **Agents run as root.** The collector is hardened and isolated, but anything that runs as root on every
   host is a high-value target: treat the server and the release pipeline accordingly.

@@ -214,7 +214,7 @@ Socket protocol and limits: [contracts.md section 2](contracts.md#2-agent-config
 | Signed rules feed bundle | `<data_dir>/rules-feed/` | The accepted bundle and its signature; re-verified at every start. Only when the feed is enabled or a bundle was imported. |
 | Local rules (LLM drafts, edits in the UI) | database | Override a built-in or feed rule with the same ID, except that a draft never replaces one. |
 | Local agent credentials | `<data_dir>/local-agent/credentials.json` | 0600; only with `local_agent.enabled`. |
-| Matrix label routes edited in the UI | database, setting `matrix.routes` | Merged with `matrix.routes` from `server.yaml`. |
+| Notification label routes edited in the UI | database, setting `matrix.routes` (key kept; JSON `{label,to}`, old `rooms` still read) | Merged with `notify.routes` from `server.yaml`. |
 | Agent credentials | `<state_dir>/` (default `/var/lib/holealign-agent`) | `agent_id`, `agent_key`; owned by `holealign`, mode 0700 directory. |
 | Agent configuration | `/etc/holealign/agent.yaml` | `root:holealign`, 0640. Holds the enrollment token until the first successful check-in. |
 | Server configuration | `/etc/holealign/server.yaml`, secrets in `/etc/holealign/server.env` | The env file holds the admin password, Matrix token, LLM key (0600). |

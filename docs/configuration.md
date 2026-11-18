@@ -55,7 +55,7 @@ default, then the file, then the environment (an empty variable is ignored).
 | `feeds.update` | bool | `true` | `HOLEALIGN_FEEDS_UPDATE` | `false` disables all network updates (air-gapped, tests). |
 | `alerts.agent_silent_after` | duration | `30m` | `HOLEALIGN_ALERTS_AGENT_SILENT_AFTER` | Alert when a host has not checked in for this long. `0` disables `agent_silent` / `agent_back`. |
 | `alerts.feed_stale_after` | duration | `48h` | `HOLEALIGN_ALERTS_FEED_STALE_AFTER` | Alert when the vulnerability DB is older than this or refreshing keeps failing. `0` disables `feed_stale` / `feed_ok`. |
-| `alerts.ops_rooms` | list of room IDs | `[]` | `HOLEALIGN_ALERTS_OPS_ROOMS` | Matrix rooms for server-level events (feed, pipeline, mass silence). Empty: `matrix.default_rooms`. |
+| `alerts.ops_rooms` | list of room IDs | `[]` | `HOLEALIGN_ALERTS_OPS_ROOMS` | **Deprecated** alias of `notify.ops` (merged into it at load; one startup warning). |
 
 ### Rules feed
 
@@ -95,14 +95,42 @@ With environment variables only: `HOLEALIGN_RULES_FEED_ENABLED=true`,
 |---|---|---|---|---|
 | `triage.epss_threshold` | float 0..1 | `0.1` | `HOLEALIGN_TRIAGE_EPSS_THRESHOLD` | A `conditions_unknown` finding with EPSS at or above this value goes to the web UI's "needs attention" tier (see [Reading the dashboard](rules.md#reading-the-dashboard-attention-vs-background)). Display only: alerts are not affected. |
 
-### Matrix
+### Notifications
+
+How alerts are routed and which channels exist: [notifications.md](notifications.md). A destination is
+`scheme:target`: a Matrix room `!id:server` (the form without a scheme), `slack:C0123456789` or
+`telegram:-1001234567890[/topic]`. Every destination is checked when the config loads (known scheme,
+valid target, channel configured), otherwise the server does not start.
 
 | Key | Type | Default | Environment | Description |
 |---|---|---|---|---|
-| `matrix.homeserver` | string (URL) | empty | `HOLEALIGN_MATRIX_HOMESERVER` | Homeserver base URL. Empty disables Matrix. |
+| `notify.default` | list of destinations | `[]` | `HOLEALIGN_NOTIFY_DEFAULT` | Used when no label route matches a host. |
+| `notify.routes` | list of `{label, to}` | `[]` | not overridable | Label to destinations (`to` is a list). Merged with the routes edited in the web UI (same label: destinations combined). |
+| `notify.ops` | list of destinations | `[]` | `HOLEALIGN_NOTIFY_OPS` | Server-level events (feed, pipeline, mass silence). Empty: `notify.default`. |
+
+#### Matrix
+
+| Key | Type | Default | Environment | Description |
+|---|---|---|---|---|
+| `matrix.homeserver` | string (URL) | empty | `HOLEALIGN_MATRIX_HOMESERVER` | Homeserver base URL. Empty disables Matrix (and Matrix destinations are rejected). |
 | `matrix.access_token_env` | string | `HOLEALIGN_MATRIX_TOKEN` | `HOLEALIGN_MATRIX_ACCESS_TOKEN_ENV` | Name of the environment variable that holds the bot's access token. |
-| `matrix.default_rooms` | list of room IDs | `[]` | `HOLEALIGN_MATRIX_DEFAULT_ROOMS` | Rooms used when no label route matches. Room IDs look like `!abc:example.com` (not aliases). |
-| `matrix.routes` | list of `{label, rooms}` | `[]` | not overridable | Label to rooms. Merged with the routes edited in the web UI. |
+| `matrix.default_rooms` | list of room IDs | `[]` | `HOLEALIGN_MATRIX_DEFAULT_ROOMS` | **Deprecated** alias of `notify.default`. |
+| `matrix.routes` | list of `{label, rooms}` | `[]` | not overridable | **Deprecated** alias of `notify.routes` (`rooms` is `to`). |
+
+#### Slack
+
+| Key | Type | Default | Environment | Description |
+|---|---|---|---|---|
+| `slack.token_env` | string | empty | `HOLEALIGN_SLACK_TOKEN_ENV` | Name of the environment variable that holds the bot token (`xoxb-...`, scope `chat:write`). Setting it enables Slack; conventional value `HOLEALIGN_SLACK_TOKEN`. The API address (`https://slack.com/api`) is fixed. |
+
+#### Telegram
+
+| Key | Type | Default | Environment | Description |
+|---|---|---|---|---|
+| `telegram.bot_token_env` | string | empty | `HOLEALIGN_TELEGRAM_BOT_TOKEN_ENV` | Name of the environment variable that holds the bot token (`123456:AA...`). Setting it enables Telegram; conventional value `HOLEALIGN_TELEGRAM_TOKEN`. The API address (`https://api.telegram.org`) is fixed. |
+
+The deprecated keys are still accepted: they are merged into the `notify.*` keys (duplicates dropped)
+and one WARN at startup names the ones in use.
 
 ### LLM
 
@@ -128,8 +156,11 @@ The server refuses to start when:
 - `feeds.interval` is not positive, `data_dir` is empty, or `alerts.*_after` is negative;
 - only one of `tls_cert`/`tls_key` (or `admin_tls_cert`/`admin_tls_key`) is set, or `trusted_proxies`
   contains something that is not an IP or CIDR;
-- a `*_env` name does not match `^HOLEALIGN_[A-Z0-9_]+$`, or `matrix.access_token_env`,
-  `llm.api_key_env` and `admin.initial_password_env` are not pairwise different;
+- a `*_env` name does not match `^HOLEALIGN_[A-Z0-9_]+$`, or `matrix.access_token_env`, `slack.token_env`,
+  `telegram.bot_token_env`, `llm.api_key_env` and `admin.initial_password_env` are not pairwise different;
+- a destination in `notify.default`, `notify.ops` or `notify.routes[].to` has an unknown scheme or a malformed
+  target, or uses a channel that is not configured (`slack:...` without `slack.token_env`, a Matrix room
+  without `matrix.homeserver`), or a route lists no destination;
 - `rules.feed.enabled` is set without a valid `rules.feed.trusted_keys` entry, `rules.feed.url` is not `https://` or
   `file://`, or `rules.feed.interval` is below `1m`;
 - `retention.*` or `limits.*` is negative, or `triage.epss_threshold` is outside 0..1;
@@ -146,6 +177,8 @@ non-loopback `listen` with neither `tls_cert` nor `trusted_proxies`; a single sh
 | `HOLEALIGN_CONFIG` | server | Path to `server.yaml`. |
 | `HOLEALIGN_<SECTION>_<KEY>` | server | Overrides any scalar or string-list key (table above). Empty values are ignored. Top-level keys: `HOLEALIGN_<KEY>`. |
 | `HOLEALIGN_MATRIX_TOKEN` | server | Matrix access token (the variable named by `matrix.access_token_env`). |
+| `HOLEALIGN_SLACK_TOKEN` | server | Slack bot token (the variable named by `slack.token_env`). |
+| `HOLEALIGN_TELEGRAM_TOKEN` | server | Telegram bot token (the variable named by `telegram.bot_token_env`). |
 | `HOLEALIGN_LLM_API_KEY` | server | LLM API key (the variable named by `llm.api_key_env`). |
 | `HOLEALIGN_ADMIN_PASSWORD` | server | Initial password of `admin` (the variable named by `admin.initial_password_env`). |
 | `HOLEALIGN_ADMIN_PASSWORD_FILE` | server | File holding the initial password; takes precedence over the variable. |
@@ -153,7 +186,7 @@ non-loopback `listen` with neither `tls_cert` nor `trusted_proxies`; a single sh
 | `HOLEALIGN_ENROLL_TOKEN`, `HOLEALIGN_REPO` | `install.sh` | Enrollment token; GitHub `owner/name` to download from. |
 
 The agent has no environment overrides for its keys. Environment overrides cannot set
-`matrix.routes` (a list of objects); use the file or the web UI.
+`notify.routes` and `matrix.routes` (lists of objects); use the file or the web UI.
 
 ## Local agent (agentless mode)
 

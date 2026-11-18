@@ -11,6 +11,11 @@ First public state of the project. No tagged release yet.
 
 ### Changed
 
+- `matrix.default_rooms`, `matrix.routes[].rooms` and `alerts.ops_rooms` are deprecated aliases of
+  `notify.default`, `notify.routes[].to` and `notify.ops`: still accepted, merged, with one WARN at startup.
+  Routes edited in the web UI are stored with the key `to` (rows with the old key `rooms` still load).
+  A Matrix destination now requires `matrix.homeserver` (previously rooms without a homeserver were
+  silently ignored). The settings page is titled "Notification routes".
 - The project is renamed from Panoptes to Holealign: Go module path
   `github.com/DonSosiska/holealign`, binaries `holealign-agent` and `holealign-server`, systemd units
   `holealign-*.service`, system user `holealign`, environment prefix `HOLEALIGN_`, paths
@@ -21,6 +26,15 @@ First public state of the project. No tagged release yet.
 
 ### Added
 
+- Server: notifications go through a channel abstraction. Routing targets are destinations, strings
+  `scheme:target`; a destination without a known scheme is a Matrix room, so existing configs and stored
+  routes keep working. New channels: Slack (`slack:<channel ID>`, bot token with `chat:write`,
+  `chat.postMessage`, mrkdwn, no unfurling) and Telegram (`telegram:<chat_id>[/<topic>]`, Bot API HTML,
+  4096 character limit respected, link previews off). Config: new `notify:` section (`default`, `routes[].to`,
+  `ops`), `slack.token_env`, `telegram.bot_token_env`; every destination is validated at load and in the web
+  UI (unknown scheme, malformed target or unconfigured channel is an error). Retry with `Retry-After`,
+  burst summaries, partial-delivery memory and delivery-problem banner work per destination for every
+  channel. Untrusted text is escaped per channel and mentions are neutralised. API base URLs are constants.
 - Agent: privilege-separated Linux agent. A root collector with no network access reads host state
   and serves it on a unix socket; an unprivileged sender is the only process that talks to the
   server. `-mode all` keeps the single-process behaviour for `-once`, containers and tests.
