@@ -37,9 +37,15 @@ Algorithm, per finding:
 4. `exploitable_if` true: `exploitable`; false: `affected_not_exploitable`.
 5. An expression error: `conditions_unknown`, and the reason contains the error.
 6. **Draft guard** (rules with `status: draft` only). A draft never lowers a verdict. Any result other
-   than `exploitable` becomes `conditions_unknown`. An `exploitable` result is kept only when the
+   than `exploitable` becomes `conditions_unknown` with the fixed reason "LLM draft suggests not
+   exploitable (unreviewed); conditions not verified" (the draft's own text is never put into a reason
+   and never relayed to chat). An `exploitable` result is kept only when the
    rule is grounded in host facts; a rule whose result does not depend on any fact becomes
-   `conditions_unknown`. Reviewed rules are never affected.
+   `conditions_unknown`. "Depends on a fact" means the result varies over values a real host can
+   report (known value sets such as `os.libc` glibc/musl, common distribution IDs, typical service and
+   module names), not merely over the literals the expression names: `facts["os.id"] != "zzz-never"` is
+   true on every real host and is not grounded; comparing an enumerable fact with a value outside its
+   known set is not grounded either. Reviewed rules are never affected.
 
 The reason is short and names the deciding facts, for example
 `os.libc=glibc, sshd.config.logingracetime=120`. It never contains `file.match` values.
@@ -84,11 +90,20 @@ explanation: "Exploitable only on glibc systems while LoginGraceTime is non-zero
 fix:
   upgrade: "Upgrade OpenSSH to the distribution's patched package and restart sshd."
   mitigation: "Set 'LoginGraceTime 0' in /etc/ssh/sshd_config and reload sshd."
+targets: [host]                          # optional: host (default) and/or container_image, see below
 fact_requests: []                        # optional file.match requests, see below (at most 5)
 status: reviewed                         # reviewed | draft | rejected
 source: user                             # builtin | user | llm:<model>
 references: [https://www.qualys.com/2024/07/01/cve-2024-6387/regresshion.txt]
 ```
+
+**Targets.** Host facts describe the machine, not the contents of a container image. A rule that reads
+any host data (`facts`, `fact_requests`, a `facts[...]` reference or `host.*`) is never evaluated for a
+finding in a container image: the verdict is `conditions_unknown` ("rule evaluates host facts; not
+applicable to container image targets"), never `affected_not_exploitable` or `exploitable`. The optional
+`targets` field (default `[host]`; allowed `host`, `container_image`) lists the target kinds a rule covers;
+`container_image` only has an effect for rules that read no host data. In rule tests set
+`target_kind: container_image` in `finding`.
 
 Rules for a good rule:
 
@@ -119,7 +134,7 @@ Functions:
 
 | Function | Meaning |
 |---|---|
-| `version_lt(a, b)` / `version_ge(a, b)` | Loose version comparison: numeric segments compared numerically (`"6.1.10" < "6.10.0"`). |
+| `version_lt(a, b)` / `version_ge(a, b)` | Version comparison in the ordering of the finding's package type: dpkg for `deb` (`2.4.52~rc1 < 2.4.52`), rpmvercmp for `rpm`, apk-tools for `apk`; other types use a loose comparison (numeric segments compared numerically, `"6.1.10" < "6.10.0"`). |
 | `has_module(list, name)` | Sugar for `name in list`. |
 
 Optional types are enabled. Use the optional index for map keys that may be missing:
@@ -213,7 +228,7 @@ fact_requests:
   `*.pfx`, `*.jks`, `.env`, `.htpasswd`, anything containing `secret`, `token`, `credential`,
   `key`, plus credential-bearing directories such as `/etc/kubernetes`, `/etc/ssl`, `/etc/pki`,
   `/etc/letsencrypt`, `/etc/default`, `/etc/sysconfig`, `/etc/docker`, `/etc/mysql`,
-  `/etc/postgresql`, `/etc/redis`, `/etc/cron*`, `/etc/ldap`. The full list is in
+  `/etc/postgresql`, `/etc/redis`, `/etc/cron*`, `/etc/ldap`, `/etc/apt/auth.conf*`, `tomcat-users.xml`, `/etc/gitlab`, `/etc/ssmtp`. The full list is in
   `internal/server/rules/filematch.go` and [contracts.md](contracts.md#4-rules).
 - `pattern`: RE2, at most 256 characters, repeat counts at most 100. It must contain a **mandatory
   literal** of at least 4 characters, must not match the empty string, and must match at most 3 of

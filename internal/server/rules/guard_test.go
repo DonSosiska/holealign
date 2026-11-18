@@ -61,7 +61,7 @@ func TestDraftGuard(t *testing.T) {
 	e = draftEngine(g)
 	f := map[string]any{"services.active": []any{"sshd"}}
 	for _, sev := range []string{"Low", "Medium", "High", "Critical"} {
-		want(t, evalSev(t, e, false, sev, f), model.VerdictConditionsUnknown, "LLM draft suggests not exploitable (unreviewed): because reasons")
+		want(t, evalSev(t, e, false, sev, f), model.VerdictConditionsUnknown, DraftNotExploitableReason)
 	}
 	want(t, evalKEV(t, e, true, f), model.VerdictConditionsUnknown, "LLM draft suggests not exploitable")
 	// not_affected_if on a draft cannot suppress either

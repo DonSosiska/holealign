@@ -63,12 +63,38 @@ var fmDenyPatterns = [][]string{
 	{"*.key"}, {"*.pem"}, {"*.p12"}, {"*.pfx"}, {"*.jks"}, {"*.keystore"},
 	{".htpasswd"}, {"*secret*"}, {"*credential*"}, {"*token*"},
 	{"networkmanager"}, {"wireguard"}, {"openvpn"}, {"ppp"}, {"security"}, {"polkit-1"},
-	{"ipsec*"}, {"strongswan*"}, {"cloud"}, {"mysql", "debian.cnf"}, {"*.env"},
+	{"ipsec*"}, {"strongswan*"}, {"cloud"}, {"mysql", "debian.cnf"}, {"*.env"}, {"tomcat-users*.xml"},
+}
+
+// fmDenyPaths are absolute path globs (lower case, one path.Match glob per component) of
+// credential-bearing files and directories: a path equal to or below an entry is never read.
+// The server enforces a longer list (denyPaths in internal/server/rules/filematch.go) before a
+// request is ever sent; the agent re-checks the entries below on resolved paths. A test keeps every
+// entry here a member of the server list and both pattern lists identical.
+var fmDenyPaths = []string{
+	"/etc/apt/auth.conf*", "/etc/hostapd", "/etc/squid/passwords*", "/etc/gitlab",
+	"/etc/phpmyadmin/config-db.php", "/etc/msmtprc", "/etc/nagios/resource.cfg", "/etc/ssmtp",
 }
 
 // fmDenied reports whether a cleaned absolute path hits the hard denylist.
 func fmDenied(abs string) bool {
 	comps := splitAbs(strings.ToLower(abs))
+	for _, e := range fmDenyPaths {
+		ec := strings.Split(e[1:], "/")
+		if len(comps) < len(ec) {
+			continue
+		}
+		ok := true
+		for i, p := range ec {
+			if m, err := path.Match(p, comps[i]); err != nil || !m {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			return true
+		}
+	}
 	for _, pat := range fmDenyPatterns {
 		for i := 0; i+len(pat) <= len(comps); i++ {
 			ok := true

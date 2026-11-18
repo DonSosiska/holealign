@@ -1,6 +1,37 @@
 package rules
 
-import "strings"
+import (
+	"strings"
+
+	gversion "github.com/anchore/grype/grype/version"
+)
+
+// versionCompareType compares two versions with the ordering of the package ecosystem:
+// deb follows dpkg (epoch, upstream, revision, "~" sorts before everything including the end of
+// the string), rpm follows rpmvercmp, apk follows apk-tools. Other types, and versions the
+// ecosystem parser rejects, use the loose comparison of versionCompare.
+func versionCompareType(a, b, pkgType string) int {
+	var f gversion.Format
+	switch strings.ToLower(pkgType) {
+	case "deb":
+		f = gversion.DebFormat
+	case "rpm":
+		f = gversion.RpmFormat
+	case "apk":
+		f = gversion.ApkFormat
+	default:
+		return versionCompare(a, b)
+	}
+	va, vb := gversion.New(strings.TrimSpace(a), f), gversion.New(strings.TrimSpace(b), f)
+	if va.Validate() != nil || vb.Validate() != nil {
+		return versionCompare(a, b)
+	}
+	c, err := va.Compare(vb)
+	if err != nil {
+		return versionCompare(a, b)
+	}
+	return c
+}
 
 // versionCompare compares two version strings loosely. A Debian-style epoch
 // ("1:9.2p1-2") is compared first. The remainder is split into segments at

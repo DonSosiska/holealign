@@ -45,6 +45,9 @@ type compiled struct {
 	declared []string // facts that must be present
 	refs     []factRef
 	redact   bool // rule reads file.match facts: never echo values in errors
+	// readsHost reports that the rule reads host facts: facts/fact_requests, any facts[...]
+	// reference or any host.* variable. Such a rule cannot be judged for container images.
+	readsHost bool
 	// factDep reports (drafts only) that exploitable_if's result actually
 	// varies with host facts; computed once at compile time.
 	factDep bool
@@ -142,12 +145,14 @@ func (e *Engine) Reload(ctx context.Context) error {
 		if c.exploit, r1, root, err = compileBoolAST(r.ExploitableIf); err != nil {
 			return nil, err
 		}
+		var root2 celast.Expr
 		if r.NotAffectedIf != "" {
-			if c.notAff, r2, err = compileBool(r.NotAffectedIf); err != nil {
+			if c.notAff, r2, root2, err = compileBoolAST(r.NotAffectedIf); err != nil {
 				return nil, err
 			}
 		}
 		c.refs = mergeRefs(r1, r2)
+		c.readsHost = len(c.declared) > 0 || len(c.refs) > 0 || usesHostVar(root) || usesHostVar(root2)
 		if r.Status == model.RuleDraft {
 			c.factDep = factDependent(c.exploit, root, r1, r)
 		}
@@ -297,13 +302,10 @@ func (c *compiled) grounded() bool {
 	return false
 }
 
-func firstChars(s string, n int) string {
-	r := []rune(strings.TrimSpace(s))
-	if len(r) > n {
-		r = r[:n]
-	}
-	return string(r)
-}
+// DraftNotExploitableReason is the fixed reason of a draft whose outcome would have lowered a
+// verdict. No LLM-authored text (explanation, keys, literals) ever enters an Evaluation.Reason of
+// this kind: reasons are relayed to chat rooms and dashboards.
+const DraftNotExploitableReason = "LLM draft suggests not exploitable (unreviewed); conditions not verified"
 
 // Evaluate implements core.RuleEvaluator (verdict algorithm of contracts section 4).
 func (e *Engine) Evaluate(ctx context.Context, hc core.HostContext, f model.Finding) core.Evaluation {
@@ -327,7 +329,7 @@ func (e *Engine) Evaluate(ctx context.Context, hc core.HostContext, f model.Find
 		ev.Reason = "LLM draft (unreviewed): " + ev.Reason
 	case model.VerdictNotExploitable:
 		ev.Verdict = model.VerdictConditionsUnknown
-		ev.Reason = "LLM draft suggests not exploitable (unreviewed): " + firstChars(c.rule.Explanation, 200)
+		ev.Reason = DraftNotExploitableReason
 	}
 	return ev
 }
@@ -339,6 +341,17 @@ func (e *Engine) evaluate(ctx context.Context, c *compiled, hc core.HostContext,
 	facts := hc.Facts
 	if facts == nil {
 		facts = hc.Host.Facts
+	}
+	if c.readsHost && !targetApplies(rule.Targets, f.TargetKind) {
+		ev.Verdict = model.VerdictConditionsUnknown
+		ev.Reason = "rule evaluates host facts; not applicable to " + kindLabel(f.TargetKind) + " targets"
+		return ev
+	}
+	if c.readsHost && f.TargetKind == model.TargetContainerImage {
+		// even a rule that lists container_image cannot judge an image on the host's facts
+		ev.Verdict = model.VerdictConditionsUnknown
+		ev.Reason = "rule evaluates host facts; not applicable to container image targets"
+		return ev
 	}
 	var missing []string
 	act := map[string]any{}
@@ -386,6 +399,79 @@ func (e *Engine) evaluate(ctx context.Context, c *compiled, hc core.HostContext,
 	}
 	ev.Reason = describe(c, act)
 	return ev
+}
+
+// targetApplies reports whether a rule with the given targets list (default: host only) covers
+// findings of the given target kind. An empty kind counts as host.
+func targetApplies(targets []string, k model.TargetKind) bool {
+	if k == "" {
+		k = model.TargetHost
+	}
+	if len(targets) == 0 {
+		return k == model.TargetHost
+	}
+	for _, t := range targets {
+		if t == string(k) {
+			return true
+		}
+	}
+	return false
+}
+
+func kindLabel(k model.TargetKind) string {
+	if k == model.TargetContainerImage {
+		return "container image"
+	}
+	if k == "" {
+		return string(model.TargetHost)
+	}
+	return string(k)
+}
+
+// usesHostVar reports whether the expression references the "host" variable.
+func usesHostVar(root celast.Expr) bool {
+	found := false
+	var rec func(e celast.Expr)
+	rec = func(e celast.Expr) {
+		if e == nil || found {
+			return
+		}
+		switch e.Kind() {
+		case celast.IdentKind:
+			if e.AsIdent() == "host" {
+				found = true
+			}
+		case celast.SelectKind:
+			rec(e.AsSelect().Operand())
+		case celast.CallKind:
+			c := e.AsCall()
+			rec(c.Target())
+			for _, a := range c.Args() {
+				rec(a)
+			}
+		case celast.ComprehensionKind:
+			c := e.AsComprehension()
+			for _, x := range []celast.Expr{c.IterRange(), c.AccuInit(), c.LoopCondition(), c.LoopStep(), c.Result()} {
+				rec(x)
+			}
+		case celast.ListKind:
+			for _, x := range e.AsList().Elements() {
+				rec(x)
+			}
+		case celast.MapKind:
+			for _, en := range e.AsMap().Entries() {
+				m := en.AsMapEntry()
+				rec(m.Key())
+				rec(m.Value())
+			}
+		case celast.StructKind:
+			for _, en := range e.AsStruct().Fields() {
+				rec(en.AsStructField().Value())
+			}
+		}
+	}
+	rec(root)
+	return found
 }
 
 func errText(c *compiled, err error) string {

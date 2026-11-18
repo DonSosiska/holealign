@@ -242,7 +242,7 @@ matches). The shipped rules' tests live in `rules-tests/`.
   rules: [{id, file, sha256}], tests: [{id, file, sha256}]}`. Every rule is `status: reviewed`.
 - `rules-<seq>.tar.gz.sig` = `{alg: "ed25519", key_id: <first 16 hex of sha256(pubkey)>,
   sig: base64(ed25519.Sign(priv, sha256(tarball)))}`.
-- `latest.json` = `{seq, url (relative or absolute), sha256, sig: <the sig object>}`; servers poll it.
+- `latest.json` = `{seq, url (relative, or absolute with the pointer's scheme, host and port), sha256, sig: <the sig object>}`; servers poll it.
 - Acceptance (atomic, any failure rejects the whole bundle, the installed bundle stays): pointer <= 64 KiB,
   https (or file://), no redirects; `seq` greater than the installed one (lower is logged and ignored);
   tarball <= 10 MiB with the pointer's sha256; signature by a key in `rules.feed.trusted_keys`; strict in-memory
@@ -265,7 +265,10 @@ matches). The shipped rules' tests live in `rules-tests/`.
   `/etc/wpa_supplicant`, `/etc/environment`, `/etc/default`, `/etc/sysconfig`, `/etc/aws`, `/etc/gcloud`,
   `/etc/vault*`, `/etc/consul*`, `/etc/nomad*`, `/etc/ansible`, `/etc/ldap`, `/etc/dovecot`, `/etc/docker`,
   `/etc/cron*`, `/etc/redis`, `/etc/mysql`, `/etc/postgresql`, `/etc/krb5*`, `/etc/letsencrypt`, `/etc/ssl`,
-  `/etc/pki`, ... see `rules/filematch.go`). The server policy is stricter than the agent's; the agent re-checks its
+  `/etc/pki`, `/etc/apt/auth.conf*`, `/etc/hostapd`, `/etc/squid/passwords*`, `/etc/gitlab`,
+  `/etc/phpmyadmin/config-db.php`, `/etc/msmtprc`, `/etc/nagios/resource.cfg`, `/etc/ssmtp`, any `tomcat-users*.xml`, ...
+  see `rules/filematch.go`). The agent keeps a copy of the component-pattern list and of the newest absolute entries
+  (`internal/agent/facts/filematch.go`); tests keep them in sync. The server policy is stricter than the agent's; the agent re-checks its
   own denylist on resolved paths and does not rely on the server.
 - `pattern` (at most 256 chars, valid RE2, repeat counts at most 100): must contain a **mandatory literal** of at
   least 4 characters (a literal every match must contain: parts under `?`/`*` quantifiers do not count; in an
@@ -295,6 +298,17 @@ source: builtin
 references: [https://www.qualys.com/2024/07/01/cve-2024-6387/regresshion.txt]
 ```
 
+### Rule targets
+Optional `targets` (list; values `host`, `container_image`; default `[host]`; unknown or duplicate values are
+rejected by `Validate`). Host facts describe the machine, not the inside of a container image, so a rule that reads
+any host data (a `facts` entry, a `fact_requests` entry, any `facts[...]` reference or any `host.*` variable) is
+**never** evaluated for a finding whose `target_kind` is `container_image`: the result is `conditions_unknown`,
+reason `rule evaluates host facts; not applicable to container image targets`, before the missing-facts check and
+before any expression runs. The same verdict results when the finding's target kind is not listed in `targets`.
+Listing `container_image` does not lift this: it only matters for rules that read no host data (for example a pure
+`pkg.*` / `version_lt` rule), which are evaluated normally for the kinds they list. Such a result is never
+`affected_not_exploitable`, `not_affected` or `exploitable`. Rule test cases may set `finding.target_kind`.
+
 ### Matching a rule to a finding
 A rule applies when `finding.vuln_id` or any of `finding.aliases` is in `rule.vulns`, AND a
 `packages` selector matches (`type` equal or empty, and exactly one of `name`, a `path.Match` glob over the
@@ -311,8 +325,13 @@ Variables:
 - `host` — `map(string, dyn)`: `hostname`, `labels` (list), `os_id`, `os_version_id`, `kernel`, `arch`
 
 Custom functions:
-- `version_lt(a string, b string) bool`, `version_ge(a, b)` — loose version comparison
-  (numeric segments compared numerically, e.g. `"6.1.10" < "6.10.0"`).
+- `version_lt(a string, b string) bool`, `version_ge(a, b)` — version comparison using the ordering of the
+  finding's package ecosystem (`pkg.type`): `deb` follows dpkg (epoch, upstream, revision; `~` sorts before
+  everything, so `2.4.52~rc1 < 2.4.52` and `1.0-1~bpo12+1 < 1.0-1`, while `1.0.0+dfsg > 1.0.0`), `rpm` follows
+  rpmvercmp (`~` and `^`), `apk` follows apk-tools (`_rc` < release < `_p`, `-rN`). Other types, and versions the
+  ecosystem parser rejects, use a loose comparison (numeric segments compared numerically, e.g.
+  `"6.1.10" < "6.10.0"`, missing segments count as 0). The two-argument form is a macro for the internal
+  three-argument form `version_lt(a, b, pkg.type)`; the signatures rules use are unchanged.
 - `has_module(list, name)` — sugar for `name in list`.
 
 CEL optional types are enabled (`cel.OptionalTypes()`), so rules can write
@@ -328,7 +347,9 @@ The legacy spelling `m.?["k"]` is rejected by `Validate` (use `m[?"key"]`). Fact
 6. Draft guard (applied to the result of steps 3-4; only when `status` is `draft`). A draft never lowers a verdict:
    - Any outcome other than `exploitable` (that is `affected_not_exploitable`, from `not_affected_if` or
      `exploitable_if` false) becomes `conditions_unknown`, at every severity, reason
-     `LLM draft suggests not exploitable (unreviewed): <explanation[:200]>`. Only `reviewed` rules can yield
+     the fixed string `LLM draft suggests not exploitable (unreviewed); conditions not verified` (no text of the draft, such
+     as its explanation, ever enters `Evaluation.Reason`; the notifier additionally replaces any reason starting with
+     `LLM draft` by a fixed string, so draft text is never relayed to Matrix). Only `reviewed` rules can yield
      `affected_not_exploitable`.
    - `exploitable` is kept (reason prefixed `LLM draft (unreviewed): `) only if the draft is *grounded*, otherwise it
      becomes `conditions_unknown`, reason `LLM draft: condition does not depend on host facts`. Grounded means
@@ -336,9 +357,19 @@ The legacy spelling `m.?["k"]` is rejected by `Validate` (use `m[?"key"]`). Fact
      not `<x>.installed` (names in string literals or only listed in `facts` do not count), and (b) semantically,
      `exploitable_if` is fact-dependent: at compile time the expression is evaluated (at most 256 evaluations, the
      usual cost limit) against synthetic activations in which every referenced fact is varied over type-appropriate
-     values (missing, empty, typical, the literals it is compared with, +-1 for numbers; maps and lists with the
-     referenced keys/elements present and absent) while `pkg` (taken from the rule's package selectors) and `host`
-     are held constant. If the result never takes both values true and false (errors are ignored), e.g.
+     *realistic* values (missing, empty, typical; enumerable facts such as `os.libc` {glibc, musl}, `os.id` (common
+     distributions) and `services.source` take exactly their known values; version facts take version-like values;
+     open-ended string/list/map facts take a built-in pool of generic realistic values such as common service, kernel
+     module, nginx/apache module, PHP SAPI names and config values; ports and +-1 for numbers; maps and lists with the
+     referenced keys/elements present and absent). A literal the expression compares with is added as a candidate
+     only if it is itself realistic for that fact (member of the pool, version-like, a number, or related to the
+     rule's package selectors), so `facts["os.id"] != "zzz-never"` or `!("zzz-never" in facts["services.active"])`
+     stay constant on real hosts and are not grounded; for an enumerable fact, a comparison with a literal outside the
+     known value set (`facts["os.libc"] != "nolibc"`) makes the draft ungrounded outright. In addition `pkg` (taken
+     from the rule's package selectors) and `host` are held constant. Legitimate drafts such as
+     `"php-fpm" in facts["php.sapi"] && ...` or `facts["sshd.config"]["logingracetime"] != "0"` remain grounded; a draft
+     that needs a value outside the pools stays `conditions_unknown`, which is the safe direction.
+     If the result never takes both values true and false (errors are ignored), e.g.
      `facts["os.id"] == facts["os.id"]`, `x != "" || true`, `size(l) >= 0`, `true || ...`, `c ? true : true`, the rule
      is fact-independent. The result is computed once per compiled rule.
    `reviewed` rules are never affected. `Evaluation.Rule`/`RuleStatus` remain set.

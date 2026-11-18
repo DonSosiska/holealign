@@ -1,0 +1,88 @@
+package facts
+
+import (
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"reflect"
+	"strconv"
+	"strings"
+	"testing"
+)
+
+func TestFileMatchDenylistCredentialLocations(t *testing.T) {
+	for _, p := range []string{
+		"/etc/apt/auth.conf", "/etc/apt/auth.conf.d/90-private", "/etc/apt/auth.conf.d",
+		"/opt/tomcat/conf/tomcat-users.xml", "/etc/tomcat9/tomcat-users.xml", "/usr/local/etc/tomcat/Tomcat-Users.xml",
+		"/etc/hostapd/hostapd.conf", "/etc/squid/passwords", "/etc/gitlab/gitlab.rb",
+		"/etc/phpmyadmin/config-db.php", "/etc/msmtprc", "/etc/nagios/resource.cfg", "/etc/ssmtp/ssmtp.conf",
+	} {
+		if !fmDenied(p) {
+			t.Errorf("%s should be denied", p)
+		}
+	}
+	for _, p := range []string{"/etc/apt/sources.list", "/etc/apt/apt.conf.d/20auto", "/etc/squid/squid.conf", "/etc/nagios/nagios.cfg", "/etc/phpmyadmin/config.inc.php"} {
+		if fmDenied(p) {
+			t.Errorf("%s should be allowed", p)
+		}
+	}
+}
+
+// strLists extracts the string literals of the composite literal assigned to the package-level
+// variable name in file: [][]string becomes one joined entry per row, []string one per element.
+func strLists(t *testing.T, file, name string) []string {
+	t.Helper()
+	f, err := parser.ParseFile(token.NewFileSet(), file, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	found := false
+	ast.Inspect(f, func(n ast.Node) bool {
+		vs, ok := n.(*ast.ValueSpec)
+		if !ok || len(vs.Names) != 1 || vs.Names[0].Name != name || len(vs.Values) != 1 {
+			return true
+		}
+		found = true
+		cl := vs.Values[0].(*ast.CompositeLit)
+		for _, e := range cl.Elts {
+			switch x := e.(type) {
+			case *ast.BasicLit:
+				s, _ := strconv.Unquote(x.Value)
+				out = append(out, s)
+			case *ast.CompositeLit:
+				var row []string
+				for _, c := range x.Elts {
+					s, _ := strconv.Unquote(c.(*ast.BasicLit).Value)
+					row = append(row, s)
+				}
+				out = append(out, strings.Join(row, "/"))
+			}
+		}
+		return false
+	})
+	if !found {
+		t.Fatalf("%s not found in %s", name, file)
+	}
+	return out
+}
+
+// The agent keeps its own copy of the server's file.match denylist. The component-pattern lists
+// must be identical; the agent's absolute paths must be a subset of the server's.
+func TestFileMatchDenylistInSyncWithServer(t *testing.T) {
+	const server = "../../server/rules/filematch.go"
+	srvPatterns := strLists(t, server, "denyPatterns")
+	agentPatterns := strLists(t, "filematch.go", "fmDenyPatterns")
+	if !reflect.DeepEqual(srvPatterns, agentPatterns) {
+		t.Errorf("deny pattern lists differ:\nserver: %v\nagent:  %v", srvPatterns, agentPatterns)
+	}
+	srvPaths := map[string]bool{}
+	for _, p := range strLists(t, server, "denyPaths") {
+		srvPaths[p] = true
+	}
+	for _, p := range strLists(t, "filematch.go", "fmDenyPaths") {
+		if !srvPaths[p] {
+			t.Errorf("agent deny path %q is missing from the server denyPaths", p)
+		}
+	}
+}

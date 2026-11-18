@@ -8,10 +8,12 @@ import (
 	"sync"
 
 	"cel.dev/cel-go/cel"
+	"cel.dev/cel-go/common"
 	celast "cel.dev/cel-go/common/ast"
 	"cel.dev/cel-go/common/types"
 	"cel.dev/cel-go/common/types/ref"
 	"cel.dev/cel-go/common/types/traits"
+	"cel.dev/cel-go/parser"
 )
 
 const (
@@ -35,17 +37,23 @@ func celEnv() (*cel.Env, error) {
 			cel.Variable("facts", strMap),
 			cel.Variable("pkg", strMap),
 			cel.Variable("host", strMap),
+			// version_lt(a, b) / version_ge(a, b) are macros that expand to the three-argument form
+			// with pkg.type, so the comparison follows the package ecosystem of the finding.
+			cel.Macros(
+				parser.NewGlobalMacro("version_lt", 2, versionMacro("version_lt")),
+				parser.NewGlobalMacro("version_ge", 2, versionMacro("version_ge")),
+			),
 			cel.Function("version_lt",
-				cel.Overload("version_lt_string_string",
-					[]*cel.Type{cel.StringType, cel.StringType}, cel.BoolType,
-					cel.BinaryBinding(func(a, b ref.Val) ref.Val {
-						return types.Bool(versionCompare(a.Value().(string), b.Value().(string)) < 0)
+				cel.Overload("version_lt_string_string_string",
+					[]*cel.Type{cel.StringType, cel.StringType, cel.StringType}, cel.BoolType,
+					cel.FunctionBinding(func(a ...ref.Val) ref.Val {
+						return types.Bool(versionCompareType(a[0].Value().(string), a[1].Value().(string), a[2].Value().(string)) < 0)
 					}))),
 			cel.Function("version_ge",
-				cel.Overload("version_ge_string_string",
-					[]*cel.Type{cel.StringType, cel.StringType}, cel.BoolType,
-					cel.BinaryBinding(func(a, b ref.Val) ref.Val {
-						return types.Bool(versionCompare(a.Value().(string), b.Value().(string)) >= 0)
+				cel.Overload("version_ge_string_string_string",
+					[]*cel.Type{cel.StringType, cel.StringType, cel.StringType}, cel.BoolType,
+					cel.FunctionBinding(func(a ...ref.Val) ref.Val {
+						return types.Bool(versionCompareType(a[0].Value().(string), a[1].Value().(string), a[2].Value().(string)) >= 0)
 					}))),
 			cel.Function("has_module",
 				cel.Overload("has_module_list_string",
@@ -60,6 +68,12 @@ func celEnv() (*cel.Env, error) {
 		)
 	})
 	return envInst, envErr
+}
+
+func versionMacro(fn string) parser.MacroExpander {
+	return func(eh parser.ExprHelper, _ celast.Expr, args []celast.Expr) (celast.Expr, *common.Error) {
+		return eh.NewCall(fn, args[0], args[1], eh.NewSelect(eh.NewIdent("pkg"), "type")), nil
+	}
 }
 
 // hasDotOptIndex reports whether src contains the legacy spelling ".?[" outside

@@ -108,7 +108,7 @@ func TestDraftGroundingEvaluate(t *testing.T) {
 		reason     string
 	}{
 		{"suppress via false&&", "x", model.Rule{ID: "a", Status: model.RuleDraft, Facts: []string{"os.id"}, ExploitableIf: `false && facts["os.id"] == "x"`},
-			map[string]any{"os.id": "debian"}, model.VerdictConditionsUnknown, "LLM draft suggests not exploitable (unreviewed): because reasons"},
+			map[string]any{"os.id": "debian"}, model.VerdictConditionsUnknown, DraftNotExploitableReason},
 		{"suppress via not_affected_if", "x", model.Rule{ID: "a", Status: model.RuleDraft, Facts: []string{"os.id"}, ExploitableIf: `facts["os.id"] == "debian"`, NotAffectedIf: `facts["os.id"] != ""`},
 			map[string]any{"os.id": "debian"}, model.VerdictConditionsUnknown, "LLM draft suggests not exploitable"},
 		{"spam via tautology", "x", model.Rule{ID: "a", Status: model.RuleDraft, Facts: []string{"os.id"}, ExploitableIf: `facts["os.id"] == facts["os.id"]`},

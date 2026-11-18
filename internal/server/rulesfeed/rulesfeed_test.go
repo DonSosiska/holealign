@@ -395,6 +395,36 @@ func TestHTTPRules(t *testing.T) {
 	if err := e.feed.Poll(context.Background()); err == nil || !strings.Contains(err.Error(), "scheme") {
 		t.Fatalf("scheme switch accepted: %v", err)
 	}
+	// nor to another host or port of the same scheme (the pointer is unsigned)
+	u, _ := url.Parse(srv.URL)
+	for _, bad := range []string{
+		"https://other.example/rules-1.tar.gz",
+		"https://169.254.169.254/latest/meta-data",
+		"https://" + u.Hostname() + ":1/rules-1.tar.gz",
+		"https://user@" + u.Host + "/rules-1.tar.gz",
+		"//other.example/rules-1.tar.gz",
+	} {
+		p, _ = MarshalJSONFile(MakePointer(1, bad, tb, sig))
+		srv.mu.Lock()
+		srv.pointer = p
+		srv.mu.Unlock()
+		e = newEnv(t, k, srv.URL+"/feed/latest.json", srv.Client())
+		if err := e.feed.Poll(context.Background()); err == nil || !strings.Contains(err.Error(), "differs from the pointer") {
+			t.Fatalf("bundle url %q accepted: %v", bad, err)
+		}
+	}
+}
+
+func TestHostPortDefaults(t *testing.T) {
+	a, _ := url.Parse("https://Feed.Example/x")
+	b, _ := url.Parse("https://feed.example:443/y")
+	if hostPort(a) != hostPort(b) {
+		t.Errorf("%q != %q", hostPort(a), hostPort(b))
+	}
+	c, _ := url.Parse("https://feed.example:8443/y")
+	if hostPort(a) == hostPort(c) {
+		t.Error("port ignored")
+	}
 }
 
 // rawBundle writes a tar.gz with arbitrary entries (no validation).
