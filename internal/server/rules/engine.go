@@ -342,9 +342,13 @@ func (e *Engine) evaluate(ctx context.Context, c *compiled, hc core.HostContext,
 	if facts == nil {
 		facts = hc.Host.Facts
 	}
-	if c.readsHost && !targetApplies(rule.Targets, f.TargetKind) {
+	if !targetApplies(rule.Targets, f.TargetKind) {
 		ev.Verdict = model.VerdictConditionsUnknown
-		ev.Reason = "rule evaluates host facts; not applicable to " + kindLabel(f.TargetKind) + " targets"
+		if c.readsHost {
+			ev.Reason = "rule evaluates host facts; not applicable to " + kindLabel(f.TargetKind) + " targets"
+		} else {
+			ev.Reason = "rule does not cover " + kindLabel(f.TargetKind) + " targets"
+		}
 		return ev
 	}
 	if c.readsHost && f.TargetKind == model.TargetContainerImage {

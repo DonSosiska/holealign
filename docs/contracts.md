@@ -314,8 +314,10 @@ any host data (a `facts` entry, a `fact_requests` entry, any `facts[...]` refere
 reason `rule evaluates host facts; not applicable to container image targets`, before the missing-facts check and
 before any expression runs. The same verdict results when the finding's target kind is not listed in `targets`.
 Such a result is never `affected_not_exploitable`, `not_affected` or `exploitable`. Listing `container_image` does
-not lift this. A rule that reads no host data (a pure `pkg.*` / `version_lt` rule) is not subject to this check at all:
-the engine evaluates it for every target kind, and `targets` has no effect on it (the field is validated and stored).
+not lift this. A rule that reads no host data (a pure `pkg.*` / `version_lt` rule) is evaluated for exactly the kinds
+in `targets`; for any other kind the result is `conditions_unknown`, reason `rule does not cover <kind> targets`
+(`container_image` or `host`). An image-capable rule therefore reads no host data and sets
+`targets: [host, container_image]`.
 Rule test cases may set `finding.target_kind`.
 
 ### Rule schema

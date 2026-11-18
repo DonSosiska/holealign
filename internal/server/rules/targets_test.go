@@ -41,9 +41,14 @@ func TestTargetsDefaultHostOnly(t *testing.T) {
 	want(t, ev, model.VerdictConditionsUnknown, "container image")
 }
 
-func TestTargetsFactFreeRuleAppliesToImages(t *testing.T) {
+func TestTargetsFactFreeRuleFollowsTargets(t *testing.T) {
 	e := targetRule(model.Rule{ExploitableIf: `pkg.name == "foo"`})
+	want(t, evalKind(t, e, model.TargetHost, nil), model.VerdictExploitable)
+	want(t, evalKind(t, e, model.TargetContainerImage, nil), model.VerdictConditionsUnknown, "does not cover", "container image")
+	e = targetRule(model.Rule{Targets: []string{"host", "container_image"}, ExploitableIf: `pkg.name == "foo"`})
 	want(t, evalKind(t, e, model.TargetContainerImage, nil), model.VerdictExploitable)
+	e = targetRule(model.Rule{Targets: []string{"container_image"}, ExploitableIf: `pkg.name == "foo"`})
+	want(t, evalKind(t, e, model.TargetHost, nil), model.VerdictConditionsUnknown, "does not cover", "host")
 }
 
 func TestTargetsHostVarCounts(t *testing.T) {
@@ -58,9 +63,9 @@ func TestTargetsListedImageStillNeverUsesHostFacts(t *testing.T) {
 		ExploitableIf: `facts["os.libc"] == "glibc"`})
 	want(t, evalKind(t, e, model.TargetContainerImage, map[string]any{"os.libc": "glibc"}), model.VerdictConditionsUnknown)
 	want(t, evalKind(t, e, model.TargetHost, map[string]any{"os.libc": "glibc"}), model.VerdictExploitable)
-	// host-only fact-free rule restricted to images only is still evaluated (it reads no facts)
+	// a fact-free rule restricted to images does not judge host findings
 	e = targetRule(model.Rule{Targets: []string{"container_image"}, ExploitableIf: `true`})
-	want(t, evalKind(t, e, model.TargetHost, nil), model.VerdictExploitable)
+	want(t, evalKind(t, e, model.TargetHost, nil), model.VerdictConditionsUnknown, "does not cover")
 }
 
 func TestTargetsValidation(t *testing.T) {

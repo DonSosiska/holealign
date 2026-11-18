@@ -53,10 +53,10 @@ host's running `sshd` is not in the image. So a rule that reads any host data (a
 for a finding in a container image. The verdict is `conditions_unknown`, reason `rule evaluates host
 facts; not applicable to container image targets`, before any expression runs. Never
 `exploitable`, never `affected_not_exploitable`. The optional `targets` list (`host`, `container_image`; default `[host]`) names the target kinds a rule
-covers. In the current engine it is enforced only for rules that read host data, and for those the
-result for an image is `conditions_unknown` whatever `targets` says. A rule that reads no host data
-(a pure `pkg.*` / `version_lt` rule) is evaluated for every target kind, host and image alike. So
-write image-capable rules as pure `pkg.*` rules, and do not rely on `targets` to widen or narrow them.
+covers; for any other kind the verdict is `conditions_unknown`, reason `rule does not cover <kind>
+targets`. For a rule that reads host data the image case is `conditions_unknown` whatever `targets`
+says. So an image-capable rule is a pure `pkg.*` / `version_lt` rule with
+`targets: [host, container_image]`.
 
 **Layers.** Rules come from three layers, lowest precedence first: built-in (the eight shipped
 rules, embedded in the binary), the signed rules feed, and the local database (edits in the web UI and
@@ -501,7 +501,8 @@ copy the rule into the server's `rules_dir`, restart, and read the verdict reaso
   `apache2` vs `httpd`.
 - **Reading `php.sapi` as "running".** It is "installed on disk".
 - **Reading host facts for an image.** The finding is `conditions_unknown` by design; do not try to
-  force it with `targets`. A rule meant for images can only use `pkg.*`.
+  force it with `targets`. A rule meant for images can only use `pkg.*` and must list
+  `container_image` in `targets`.
 - **Case and type.** `sshd.config` keys are lowercase; its values are strings, so `== "0"`, not `== 0`.
   `sockets.ports` holds ints.
 - **Comparing versions across formats.** Use the `pkg["type"]` ordering; do not hand-roll string
