@@ -49,12 +49,25 @@ type Telegram struct {
 	BotTokenEnv string `yaml:"bot_token_env"`
 }
 
+// Discord configures the Discord channel: named webhooks. The destination is "discord:<name>"; the
+// webhook URL (which is the secret) is read from the environment variable URLEnv names, never from
+// the config file or the web UI. An empty URLEnv defaults to HOLEALIGN_DISCORD_<NAME>_URL.
+type Discord struct {
+	Webhooks map[string]DiscordWebhook `yaml:"webhooks"`
+}
+
+// DiscordWebhook is one Discord webhook.
+type DiscordWebhook struct {
+	URLEnv string `yaml:"url_env"`
+}
+
 // Channels reports which notification channels are configured, by destination scheme.
 func (c *Config) Channels() map[string]bool {
 	return map[string]bool{
 		"matrix":   c.Matrix.Homeserver != "",
 		"slack":    c.Slack.TokenEnv != "",
 		"telegram": c.Telegram.BotTokenEnv != "",
+		"discord":  len(c.Discord.Webhooks) > 0,
 	}
 }
 
@@ -103,9 +116,15 @@ func (c *Config) ValidateDestination(dest string) error {
 	if err := notify.ValidateDestination(dest); err != nil {
 		return err
 	}
-	scheme, _ := notify.ParseDestination(dest)
+	scheme, target := notify.ParseDestination(dest)
 	if !c.Channels()[scheme] {
 		return fmt.Errorf("%q uses the %s channel, which is not configured (%s)", dest, scheme, channelHint(scheme))
+	}
+	switch scheme {
+	case "discord":
+		if _, ok := c.Discord.Webhooks[target]; !ok {
+			return fmt.Errorf("%q: no webhook named %q under discord.webhooks (configured: %s)", dest, target, mapKeys(c.Discord.Webhooks))
+		}
 	}
 	return nil
 }
@@ -150,7 +169,69 @@ func channelHint(scheme string) string {
 		return "set slack.token_env"
 	case "telegram":
 		return "set telegram.bot_token_env"
+	case "discord":
+		return "add a webhook under discord.webhooks"
 	default:
 		return "set matrix.homeserver"
 	}
+}
+
+// mapKeys lists the keys of m, sorted, for error messages.
+func mapKeys[V any](m map[string]V) string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	return strings.Join(keys, ", ")
+}
+
+// sortedKeys returns the keys of m in order, so errors are deterministic.
+func sortedKeys[V any](m map[string]V) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	return keys
+}
+
+// envFor returns the environment variable of a named webhook: the configured one, or the default
+// HOLEALIGN_<SECTION>_<NAME>_<SUFFIX> derived from the name.
+func envFor(section, name, configured, suffix string) string {
+	if configured != "" {
+		return configured
+	}
+	n := strings.ToUpper(strings.NewReplacer("-", "_").Replace(name))
+	return "HOLEALIGN_" + section + "_" + n + "_" + suffix
+}
+
+// DiscordURLEnv is the environment variable that holds the URL of Discord webhook name.
+func (c *Config) DiscordURLEnv(name string) string {
+	return envFor("DISCORD", name, c.Discord.Webhooks[name].URLEnv, "URL")
+}
+
+// validateDiscord checks the names of the webhooks. Their URLs come from the environment.
+func (c *Config) validateDiscord() error {
+	for _, name := range sortedKeys(c.Discord.Webhooks) {
+		if err := notify.ValidName(name); err != nil {
+			return fmt.Errorf("discord.webhooks.%s: %w", name, err)
+		}
+	}
+	return nil
+}
+
+// validateEnvURLs checks the webhook URLs that are present in the environment at load time, so a
+// malformed or foreign URL is rejected at startup. A URL that is not set is reported when the
+// channel is built. Errors name the key and the variable, never the URL.
+func (c *Config) validateEnvURLs(lookup func(string) (string, bool)) error {
+	for _, name := range sortedKeys(c.Discord.Webhooks) {
+		env := c.DiscordURLEnv(name)
+		if v, ok := lookup(env); ok && v != "" {
+			if err := notify.ValidDiscordURL(v); err != nil {
+				return fmt.Errorf("discord.webhooks.%s.url_env (%s): %w", name, env, err)
+			}
+		}
+	}
+	return nil
 }

@@ -136,7 +136,7 @@ func (s *Server) renderSettings(w http.ResponseWriter, r *http.Request, sess *se
 // channelNames lists the configured notification channels for the settings page.
 func (s *Server) channelNames() []string {
 	var out []string
-	for _, name := range []string{"matrix", "slack", "telegram"} {
+	for _, name := range []string{"matrix", "slack", "telegram", "discord", "teams", "webhook", "email"} {
 		if s.cfg.Channels()[name] {
 			out = append(out, name)
 		}

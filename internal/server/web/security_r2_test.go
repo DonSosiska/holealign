@@ -554,6 +554,7 @@ func testValid(d string) error {
 	c := config.Default()
 	c.Matrix.Homeserver = "https://m"
 	c.Slack.TokenEnv, c.Telegram.BotTokenEnv = "HOLEALIGN_SLACK_TOKEN", "HOLEALIGN_TELEGRAM_TOKEN"
+	c.Discord.Webhooks = map[string]config.DiscordWebhook{"ops": {}}
 	return c.ValidateDestination(d)
 }
 

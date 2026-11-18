@@ -253,7 +253,7 @@ func wire(cfg *config.Config, st store.Store, log *slog.Logger, trig *lateTrigge
 		}
 	}
 
-	// Notification channels (optional): Matrix, Slack, Telegram. Each is enabled by its config
+	// Notification channels (optional): Matrix, Slack, Telegram, Discord, Teams, generic webhooks, email. Each is enabled by its config
 	// section; destinations are routed by notify.default / notify.routes / notify.ops and the
 	// routes edited in the web UI.
 	var channels []notify.Channel
@@ -279,6 +279,18 @@ func wire(cfg *config.Config, st store.Store, log *slog.Logger, trig *lateTrigge
 		} else {
 			channels = append(channels, ch)
 			log.Info("telegram channel enabled")
+		}
+	}
+	if len(cfg.Discord.Webhooks) > 0 {
+		hooks := map[string]string{}
+		for name := range cfg.Discord.Webhooks {
+			hooks[name] = os.Getenv(cfg.DiscordURLEnv(name))
+		}
+		if ch, err := notify.NewDiscordChannel(hooks, nil); err != nil {
+			log.Error("discord channel disabled", "err", err)
+		} else {
+			channels = append(channels, ch)
+			log.Info("discord channel enabled", "webhooks", len(hooks))
 		}
 	}
 	if len(channels) > 0 {

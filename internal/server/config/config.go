@@ -60,6 +60,7 @@ type Config struct {
 	Notify   Notify   `yaml:"notify"`
 	Slack    Slack    `yaml:"slack"`
 	Telegram Telegram `yaml:"telegram"`
+	Discord  Discord  `yaml:"discord"`
 
 	deprecated []string // deprecated keys in use, reported by Warnings
 
@@ -338,6 +339,9 @@ func load(path string, lookup func(string) (string, bool)) (*Config, error) {
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
+	if err := cfg.validateEnvURLs(lookup); err != nil {
+		return nil, err
+	}
 	return &cfg, nil
 }
 
@@ -370,12 +374,18 @@ func (c *Config) validate() error {
 	if _, err := ParseCIDRs(c.TrustedProxies); err != nil {
 		return fmt.Errorf("trusted_proxies: %w", err)
 	}
+	if err := c.validateDiscord(); err != nil {
+		return err
+	}
 	secretEnvs := []struct{ key, val string }{
 		{"matrix.access_token_env", c.Matrix.AccessTokenEnv},
 		{"slack.token_env", c.Slack.TokenEnv},
 		{"telegram.bot_token_env", c.Telegram.BotTokenEnv},
 		{"llm.api_key_env", c.LLM.APIKeyEnv},
 		{"admin.initial_password_env", c.Admin.InitialPasswordEnv},
+	}
+	for _, name := range sortedKeys(c.Discord.Webhooks) {
+		secretEnvs = append(secretEnvs, struct{ key, val string }{"discord.webhooks." + name + ".url_env", c.DiscordURLEnv(name)})
 	}
 	// *_env values name environment variables; restrict them so a config file cannot be used to
 	// read arbitrary variables (HOME, AWS_*, ...) or to reuse the admin password as another secret.
