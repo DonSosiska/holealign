@@ -84,11 +84,20 @@ explanation: "Exploitable only on glibc systems while LoginGraceTime is non-zero
 fix:
   upgrade: "Upgrade OpenSSH to the distribution's patched package and restart sshd."
   mitigation: "Set 'LoginGraceTime 0' in /etc/ssh/sshd_config and reload sshd."
+targets: [host]                          # optional: host (default) and/or container_image, see below
 fact_requests: []                        # optional file.match requests, see below (at most 5)
 status: reviewed                         # reviewed | draft | rejected
 source: user                             # builtin | user | llm:<model>
 references: [https://www.qualys.com/2024/07/01/cve-2024-6387/regresshion.txt]
 ```
+
+**Targets.** Host facts describe the machine, not the contents of a container image. A rule that reads
+any host data (`facts`, `fact_requests`, a `facts[...]` reference or `host.*`) is never evaluated for a
+finding in a container image: the verdict is `conditions_unknown` ("rule evaluates host facts; not
+applicable to container image targets"), never `affected_not_exploitable` or `exploitable`. The optional
+`targets` field (default `[host]`; allowed `host`, `container_image`) lists the target kinds a rule covers;
+`container_image` only has an effect for rules that read no host data. In rule tests set
+`target_kind: container_image` in `finding`.
 
 Rules for a good rule:
 

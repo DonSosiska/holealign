@@ -113,6 +113,19 @@ func Validate(r model.Rule) error {
 		}
 	}
 
+	seenKind := map[string]bool{}
+	for i, k := range r.Targets {
+		switch k {
+		case string(model.TargetHost), string(model.TargetContainerImage):
+			if seenKind[k] {
+				add("targets[%d]: duplicate %q", i, k)
+			}
+			seenKind[k] = true
+		default:
+			add("targets[%d]: %q is invalid (want host or container_image)", i, k)
+		}
+	}
+
 	// fact_requests
 	reqs := map[string]bool{}
 	if len(r.FactRequests) > maxFactRequests {

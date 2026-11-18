@@ -295,6 +295,17 @@ source: builtin
 references: [https://www.qualys.com/2024/07/01/cve-2024-6387/regresshion.txt]
 ```
 
+### Rule targets
+Optional `targets` (list; values `host`, `container_image`; default `[host]`; unknown or duplicate values are
+rejected by `Validate`). Host facts describe the machine, not the inside of a container image, so a rule that reads
+any host data (a `facts` entry, a `fact_requests` entry, any `facts[...]` reference or any `host.*` variable) is
+**never** evaluated for a finding whose `target_kind` is `container_image`: the result is `conditions_unknown`,
+reason `rule evaluates host facts; not applicable to container image targets`, before the missing-facts check and
+before any expression runs. The same verdict results when the finding's target kind is not listed in `targets`.
+Listing `container_image` does not lift this: it only matters for rules that read no host data (for example a pure
+`pkg.*` / `version_lt` rule), which are evaluated normally for the kinds they list. Such a result is never
+`affected_not_exploitable`, `not_affected` or `exploitable`. Rule test cases may set `finding.target_kind`.
+
 ### Matching a rule to a finding
 A rule applies when `finding.vuln_id` or any of `finding.aliases` is in `rule.vulns`, AND a
 `packages` selector matches (`type` equal or empty, and exactly one of `name`, a `path.Match` glob over the

@@ -35,6 +35,8 @@ type TestFinding struct {
 	Version  string `yaml:"version"`
 	Severity string `yaml:"severity"`
 	KEV      bool   `yaml:"kev"`
+	// TargetKind is "host" (default) or "container_image".
+	TargetKind string `yaml:"target_kind"`
 }
 
 // TestHost is the host context of a case.
@@ -151,6 +153,12 @@ func runCase(e *Engine, ruleID string, c TestCase) string {
 	f := model.Finding{VulnID: c.Finding.Vuln, PackageName: c.Finding.Package, PackageType: c.Finding.Type,
 		PackageVer: c.Finding.Version, Severity: c.Finding.Severity, KEV: c.Finding.KEV,
 		Target: "host", TargetKind: model.TargetHost}
+	if c.Finding.TargetKind != "" {
+		f.TargetKind = model.TargetKind(c.Finding.TargetKind)
+		if f.TargetKind == model.TargetContainerImage {
+			f.Target = "image:latest"
+		}
+	}
 	if c.Finding.Source != "" {
 		q := url.Values{}
 		q.Set("upstream", c.Finding.Source)

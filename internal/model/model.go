@@ -175,6 +175,7 @@ type Rule struct {
 	Title         string            `json:"title" yaml:"title"`
 	Packages      []PackageSelector `json:"packages" yaml:"packages"`                               // finding must match one selector
 	Facts         []string          `json:"facts" yaml:"facts"`                                     // facts the expressions read; any missing -> conditions_unknown
+	Targets       []string          `json:"targets,omitempty" yaml:"targets,omitempty"`             // target kinds the rule applies to: host, container_image (default host)
 	FactRequests  []FactRequest     `json:"fact_requests,omitempty" yaml:"fact_requests,omitempty"` // parametrised facts to request from agents
 	ExploitableIf string            `json:"exploitable_if" yaml:"exploitable_if"`                   // CEL, bool
 	NotAffectedIf string            `json:"not_affected_if,omitempty" yaml:"not_affected_if,omitempty"`
