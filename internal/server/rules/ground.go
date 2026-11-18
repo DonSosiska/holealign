@@ -22,7 +22,8 @@ import (
 const (
 	groundMaxEvals   = 256
 	groundMaxVariant = 6
-	groundCandCap    = 10
+	groundCandCap    = 14
+	groundListCap    = 24
 	groundTimeout    = 2 * time.Second
 	hintAncestors    = 4
 	hintCap          = 8
@@ -212,13 +213,14 @@ func capCands(c []any) []any {
 	return c
 }
 
-// candidates returns type-appropriate values for fact name, "typical" first and
-// "missing" last. keys are the literal map keys referenced for that fact.
+// candidates returns realistic, type-appropriate values for fact name, "typical" first and
+// "missing" last. keys are the literal map keys referenced for that fact. h holds only the
+// hint literals that are realistic for the fact (see realisticHints); the literals the expression
+// names are never added on their own, so a comparison with a value no real host has stays constant.
 func candidates(name string, keys []string, h *hints) []any {
 	if h == nil {
 		h = &hints{}
 	}
-	strs := append([]string{"x", ""}, h.strs...)
 	ints := append([]int64{1, 0}, h.ints...)
 	for _, n := range h.ints {
 		ints = append(ints, n+1, n-1)
@@ -227,24 +229,44 @@ func candidates(name string, keys []string, h *hints) []any {
 	t, _ := FactTypeOf(name)
 	switch t {
 	case TString:
+		var strs []string
+		switch {
+		case enumSets[name] != nil:
+			strs = append(strs, h.strs...)
+			strs = append(strs, enumSets[name]...)
+		case isVersionFact(name):
+			strs = append(strs, h.strs...)
+			strs = append(strs, versionPool...)
+		default:
+			strs = append([]string{"x", ""}, h.strs...)
+		}
 		for _, s := range strs {
 			c = append(c, s)
 		}
 	case TBool:
 		c = []any{true, false}
 	case TStringList:
-		c = append(c, strList(), strList(h.strs...))
-		for _, s := range strs {
+		pool := listPools[name]
+		if strings.HasPrefix(name, FileMatchPrefix) || pool == nil {
+			pool = []string{"x", ""}
+		}
+		c = append(c, strList(), strList(h.strs...), strListOf(pool))
+		for _, s := range h.strs {
 			c = append(c, strList(s))
 		}
+		for _, s := range pool {
+			c = append(c, strList(s))
+		}
+		return append(capN(c, groundListCap), missingValue{})
 	case TIntList:
-		c = append(c, intList(), intList(h.ints...))
+		c = append(c, intList(), intList(h.ints...), intList(22, 80, 443, 3306, 8080))
 		for _, n := range ints {
 			c = append(c, intList(n))
 		}
 	case TStringMap:
+		vals := append(append([]string{}, h.strs...), valuePool...)
 		c = append(c, map[string]any{})
-		for _, s := range strs {
+		for _, s := range vals {
 			m := map[string]any{}
 			for _, k := range keys {
 				m[k] = s
@@ -255,10 +277,14 @@ func candidates(name string, keys []string, h *hints) []any {
 			c = append(c, map[string]any{k: "x"})
 			break
 		}
+		return append(capN(c, groundListCap), missingValue{})
 	case TMapOfList:
 		c = append(c, map[string]any{})
 		variants := [][]any{strList(), strList("x"), strList(h.strs...)}
 		for _, s := range h.strs {
+			variants = append(variants, strList(s))
+		}
+		for _, s := range directivePool {
 			variants = append(variants, strList(s))
 		}
 		for _, v := range variants {
@@ -268,17 +294,29 @@ func candidates(name string, keys []string, h *hints) []any {
 			}
 			c = append(c, m)
 		}
+		return append(capN(c, groundListCap), missingValue{})
 	case TObjectList:
+		strs := append(append([]string{"x", ""}, h.strs...), "tcp", "0.0.0.0", "127.0.0.1")
 		c = append(c, []any{}, []any{map[string]any{}})
 		for _, n := range ints {
 			for _, s := range strs[:2] {
 				c = append(c, []any{map[string]any{"port": n, "address": s, "name": s, "image": s, "process": s, "proto": s, "protocol": s, "state": s}})
 			}
 		}
+		for _, s := range strs[2:] {
+			c = append(c, []any{map[string]any{"port": int64(22), "address": s, "name": s, "image": s, "process": s, "proto": s, "protocol": s, "state": s, "privileged": true}})
+		}
 	default:
 		return []any{missingValue{}}
 	}
 	return append(capCands(c), missingValue{})
+}
+
+func capN(c []any, n int) []any {
+	if len(c) > n {
+		return c[:n]
+	}
+	return c
 }
 
 // groundVariants builds the constant pkg values the analysis runs with, one per
@@ -361,9 +399,14 @@ func factDependent(prog cel.Program, root celast.Expr, refs []factRef, r model.R
 	}
 	sort.Strings(names)
 	hs := collectHints(root)
+	words := pkgWords(r)
 	cands := make([][]any, len(names))
 	for i, n := range names {
-		cands[i] = candidates(n, keys[n], hs[n])
+		rh, ungrounded := realisticHints(n, hs[n], words)
+		if ungrounded {
+			return false // compared with a value that no real host reports
+		}
+		cands[i] = candidates(n, keys[n], rh)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), groundTimeout)
@@ -415,6 +458,28 @@ func factDependent(prog cel.Program, root celast.Expr, refs []factRef, r model.R
 			}
 			if sawTrue && sawFalse {
 				return true
+			}
+		}
+		// the first few candidates of every fact together (hint-derived values come first)
+		{
+			const top = 5
+			cur := make([]int, len(names))
+			for n := 0; n < 3125 && evals < budget; n++ {
+				v := n
+				for i := range cur {
+					lim := top
+					if len(cands[i]) < lim {
+						lim = len(cands[i])
+					}
+					cur[i] = v % lim
+					v /= lim
+				}
+				if try(append([]int(nil), cur...)) && sawTrue && sawFalse {
+					return true
+				}
+				if v > 0 {
+					break
+				}
 			}
 		}
 		// pseudo-random combinations (deterministic)

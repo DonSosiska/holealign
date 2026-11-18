@@ -354,9 +354,19 @@ The legacy spelling `m.?["k"]` is rejected by `Validate` (use `m[?"key"]`). Fact
      not `<x>.installed` (names in string literals or only listed in `facts` do not count), and (b) semantically,
      `exploitable_if` is fact-dependent: at compile time the expression is evaluated (at most 256 evaluations, the
      usual cost limit) against synthetic activations in which every referenced fact is varied over type-appropriate
-     values (missing, empty, typical, the literals it is compared with, +-1 for numbers; maps and lists with the
-     referenced keys/elements present and absent) while `pkg` (taken from the rule's package selectors) and `host`
-     are held constant. If the result never takes both values true and false (errors are ignored), e.g.
+     *realistic* values (missing, empty, typical; enumerable facts such as `os.libc` {glibc, musl}, `os.id` (common
+     distributions) and `services.source` take exactly their known values; version facts take version-like values;
+     open-ended string/list/map facts take a built-in pool of generic realistic values such as common service, kernel
+     module, nginx/apache module, PHP SAPI names and config values; ports and +-1 for numbers; maps and lists with the
+     referenced keys/elements present and absent). A literal the expression compares with is added as a candidate
+     only if it is itself realistic for that fact (member of the pool, version-like, a number, or related to the
+     rule's package selectors), so `facts["os.id"] != "zzz-never"` or `!("zzz-never" in facts["services.active"])`
+     stay constant on real hosts and are not grounded; for an enumerable fact, a comparison with a literal outside the
+     known value set (`facts["os.libc"] != "nolibc"`) makes the draft ungrounded outright. In addition `pkg` (taken
+     from the rule's package selectors) and `host` are held constant. Legitimate drafts such as
+     `"php-fpm" in facts["php.sapi"] && ...` or `facts["sshd.config"]["logingracetime"] != "0"` remain grounded; a draft
+     that needs a value outside the pools stays `conditions_unknown`, which is the safe direction.
+     If the result never takes both values true and false (errors are ignored), e.g.
      `facts["os.id"] == facts["os.id"]`, `x != "" || true`, `size(l) >= 0`, `true || ...`, `c ? true : true`, the rule
      is fact-independent. The result is computed once per compiled rule.
    `reviewed` rules are never affected. `Evaluation.Rule`/`RuleStatus` remain set.

@@ -41,7 +41,11 @@ Algorithm, per finding:
    exploitable (unreviewed); conditions not verified" (the draft's own text is never put into a reason
    and never relayed to chat). An `exploitable` result is kept only when the
    rule is grounded in host facts; a rule whose result does not depend on any fact becomes
-   `conditions_unknown`. Reviewed rules are never affected.
+   `conditions_unknown`. "Depends on a fact" means the result varies over values a real host can
+   report (known value sets such as `os.libc` glibc/musl, common distribution IDs, typical service and
+   module names), not merely over the literals the expression names: `facts["os.id"] != "zzz-never"` is
+   true on every real host and is not grounded; comparing an enumerable fact with a value outside its
+   known set is not grounded either. Reviewed rules are never affected.
 
 The reason is short and names the deciding facts, for example
 `os.libc=glibc, sshd.config.logingracetime=120`. It never contains `file.match` values.
