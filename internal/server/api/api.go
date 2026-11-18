@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -71,6 +72,12 @@ type Deps struct {
 	BadAuthPerMinute  int           // failed Bearer auth per client IP, default 30
 	// InvalidInventoryPerMinute caps inventory uploads per host that fail validation, default 6.
 	InvalidInventoryPerMinute int
+	// InventoryAttemptsPerMinute / InventoryAttemptBurst: per-host bucket charged by every inventory
+	// request before its body is read (defaults 10/min, burst 6; negative disables).
+	InventoryAttemptsPerMinute int
+	InventoryAttemptBurst      int
+	// InventoryConcurrentDecodes bounds inventory bodies being decoded at once, server-wide (default 4).
+	InventoryConcurrentDecodes int
 	// ClientIP overrides how the client address is derived (e.g. from X-Forwarded-For behind a
 	// trusted reverse proxy). Default: the TCP peer address.
 	ClientIP func(*http.Request) string
@@ -85,6 +92,10 @@ type server struct {
 	enrollOK     *ipLimiter // generous cap for requests with a valid token
 	authLim      *ipLimiter
 	badInvLim    *tokenBucketLimiter // per host, charged by inventory uploads failing validation
+	attemptLim   *tokenBucketLimiter // per host, charged by every inventory request before the body is read
+	decodeSem    chan struct{}       // bounds concurrent inventory decodes server-wide
+	invMu        sync.Mutex
+	invInflight  map[string]struct{} // hosts with an inventory decode in progress
 }
 
 func orDefault[T int | time.Duration](v, def T) T {
@@ -92,6 +103,14 @@ func orDefault[T int | time.Duration](v, def T) T {
 		return def
 	}
 	return v
+}
+
+// attemptInterval turns a per-minute rate into a bucket refill interval; negative disables.
+func attemptInterval(perMinute int) time.Duration {
+	if perMinute < 0 {
+		return -1
+	}
+	return time.Minute / time.Duration(max(perMinute, 1))
 }
 
 // NewMux returns a ServeMux with the agent API registered. Web UI routes can be mounted on the
@@ -114,10 +133,15 @@ func NewMux(d Deps) *http.ServeMux {
 	d.EnrollOKPerMinute = orDefault(d.EnrollOKPerMinute, 600)
 	d.BadAuthPerMinute = orDefault(d.BadAuthPerMinute, 30)
 	d.InvalidInventoryPerMinute = orDefault(d.InvalidInventoryPerMinute, 6)
+	d.InventoryAttemptsPerMinute = orDefault(d.InventoryAttemptsPerMinute, 10)
+	d.InventoryAttemptBurst = orDefault(d.InventoryAttemptBurst, 6)
+	d.InventoryConcurrentDecodes = orDefault(d.InventoryConcurrentDecodes, 4)
 	if d.ClientIP == nil {
 		d.ClientIP = remoteIP
 	}
 	s := &server{Deps: d, log: d.Logger,
+		decodeSem: make(chan struct{}, max(d.InventoryConcurrentDecodes, 1)), invInflight: map[string]struct{}{},
+		attemptLim:   newTokenBucketLimiter(attemptInterval(d.InventoryAttemptsPerMinute), max(d.InventoryAttemptBurst, 1)),
 		checkinLim:   newTokenBucketLimiter(d.CheckinInterval, d.CheckinBurst),
 		inventoryLim: newTokenBucketLimiter(d.InventoryInterval, d.InventoryBurst),
 		enrollLim:    newIPLimiter(d.EnrollPerMinute), enrollOK: newIPLimiter(d.EnrollOKPerMinute), authLim: newIPLimiter(d.BadAuthPerMinute),
@@ -250,7 +274,7 @@ func cleanText(s string, max int) string {
 	var b strings.Builder
 	n := 0
 	for _, r := range s {
-		if unicode.IsControl(r) || (r >= 0x202A && r <= 0x202E) || (r >= 0x2066 && r <= 0x2069) {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || (r >= 0x202A && r <= 0x202E) || (r >= 0x2066 && r <= 0x2069) {
 			continue
 		}
 		if n++; n > max {
@@ -259,6 +283,24 @@ func cleanText(s string, max int) string {
 		b.WriteRune(r)
 	}
 	return b.String()
+}
+
+var osIDRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]*$`)
+
+// cleanOS bounds and cleans every agent-supplied OS field. id and version_id must also match a
+// conservative charset; a field that does not is dropped (stored empty), the check-in is kept.
+func cleanOS(o model.OSInfo) model.OSInfo {
+	ident := func(v string) string {
+		v = cleanText(v, 64)
+		if !osIDRe.MatchString(v) {
+			return ""
+		}
+		return v
+	}
+	return model.OSInfo{
+		ID: ident(o.ID), VersionID: ident(o.VersionID),
+		PrettyName: cleanText(o.PrettyName, 128), Kernel: cleanText(o.Kernel, 128), Arch: cleanText(o.Arch, 64),
+	}
 }
 
 // ValidateLabels checks label count and syntax (also used by the CLI for token labels).
@@ -372,6 +414,7 @@ func (s *server) handleCheckin(w http.ResponseWriter, r *http.Request) {
 	}
 	req.Hostname = cleanText(req.Hostname, maxHostname)
 	req.AgentVersion = cleanText(req.AgentVersion, 64)
+	req.OS = cleanOS(req.OS)
 	res, err := s.Store.ApplyCheckin(r.Context(), host.ID, req, s.Now())
 	var le *store.LimitError
 	if errors.As(err, &le) {
@@ -434,6 +477,34 @@ func (s *server) handleInventory(w http.ResponseWriter, r *http.Request) {
 		tooMany(w, wait, "too many invalid inventory uploads")
 		return
 	}
+	// Cheap attempt bucket: every request is charged before anything is read or decoded, including
+	// identical-hash re-uploads and over-limit ones.
+	if wait := s.attemptLim.take(host.ID, s.Now()); wait > 0 {
+		tooMany(w, wait, "inventory upload attempts too frequent")
+		return
+	}
+	// One decode in flight per host, and a global bound on concurrent decodes.
+	s.invMu.Lock()
+	if _, busy := s.invInflight[host.ID]; busy {
+		s.invMu.Unlock()
+		tooMany(w, 5*time.Second, "an inventory upload from this host is already being processed")
+		return
+	}
+	s.invInflight[host.ID] = struct{}{}
+	s.invMu.Unlock()
+	defer func() {
+		s.invMu.Lock()
+		delete(s.invInflight, host.ID)
+		s.invMu.Unlock()
+	}()
+	select {
+	case s.decodeSem <- struct{}{}:
+		defer func() { <-s.decodeSem }()
+	default:
+		w.Header().Set("Retry-After", "5")
+		writeErr(w, http.StatusServiceUnavailable, "server busy decoding inventories; retry later")
+		return
+	}
 	if r.ContentLength > MaxInventoryBytes { // declared size, before reading anything
 		s.invalidInventory(w, host.ID, http.StatusRequestEntityTooLarge, map[string]string{"error": "inventory too large (max 64 MiB)"})
 		return
@@ -465,8 +536,8 @@ func (s *server) handleInventory(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	// An identical inventory is answered before validation and the limiter and spends no token:
-	// nothing changes.
+	// An identical inventory is answered before validation and the inventory limiter and spends no
+	// inventory token: nothing changes (the attempt bucket above was still charged).
 	if host.InventoryHash != "" && host.InventoryHash == p.Hash {
 		resp := map[string]any{"status": "accepted"} // unchanged: no re-matching
 		if sk, err := s.Store.ListSkippedTargets(r.Context(), host.ID); err == nil && len(sk) > 0 {

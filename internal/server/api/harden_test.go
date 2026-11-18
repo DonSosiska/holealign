@@ -176,6 +176,7 @@ func TestInventoryRateLimitAndDuplicateHash(t *testing.T) {
 	e := setupWith(t, func(d *Deps) {
 		d.Now = func() time.Time { return now }
 		d.CheckinInterval, d.EnrollPerMinute, d.BadAuthPerMinute = -1, -1, -1
+		d.InventoryAttemptsPerMinute = -1
 	})
 	er := e.enroll(t, "m")
 	inv := func(hash string) (int, string) {
@@ -220,6 +221,7 @@ func TestIdenticalInventorySpendsNoToken(t *testing.T) {
 	e := setupWith(t, func(d *Deps) {
 		d.Now = func() time.Time { return now }
 		d.CheckinInterval, d.EnrollPerMinute, d.BadAuthPerMinute = -1, -1, -1
+		d.InventoryAttemptsPerMinute = -1
 	})
 	er := e.enroll(t, "m")
 	inv := func(hash string) int {
