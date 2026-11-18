@@ -77,9 +77,9 @@ func TestInventoryOneDecodePerHost(t *testing.T) {
 	}
 	_ = pw.CloseWithError(io.ErrClosedPipe)
 	<-done
-	if resp, body := e.do(t, "POST", "/api/v1/inventory", er.AgentKey, js, nil); resp.StatusCode != 202 {
-		t.Fatalf("after release: %d %s", resp.StatusCode, body)
-	}
+	expectEventually202(t, func() (*http.Response, []byte) {
+		return e.do(t, "POST", "/api/v1/inventory", er.AgentKey, js, nil)
+	})
 }
 
 func TestInventoryGlobalDecodeSemaphore(t *testing.T) {
@@ -96,8 +96,25 @@ func TestInventoryGlobalDecodeSemaphore(t *testing.T) {
 	}
 	_ = pw.CloseWithError(io.ErrClosedPipe)
 	<-done
-	if resp, body := e.do(t, "POST", "/api/v1/inventory", b.AgentKey, js, nil); resp.StatusCode != 202 {
-		t.Fatalf("after release: %d %s", resp.StatusCode, body)
+	// The client sees the aborted upload before the server handler has returned and released its
+	// slot, so allow a moment for the release.
+	expectEventually202(t, func() (*http.Response, []byte) {
+		return e.do(t, "POST", "/api/v1/inventory", b.AgentKey, js, nil)
+	})
+}
+
+func expectEventually202(t *testing.T, try func() (*http.Response, []byte)) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		resp, body := try()
+		if resp.StatusCode == 202 {
+			return
+		}
+		if (resp.StatusCode != 503 && resp.StatusCode != 429) || time.Now().After(deadline) {
+			t.Fatalf("after release: %d %s", resp.StatusCode, body)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 
