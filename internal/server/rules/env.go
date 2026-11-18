@@ -8,8 +8,8 @@ import (
 	"sync"
 
 	"cel.dev/cel-go/cel"
-	celast "cel.dev/cel-go/common/ast"
 	"cel.dev/cel-go/common"
+	celast "cel.dev/cel-go/common/ast"
 	"cel.dev/cel-go/common/types"
 	"cel.dev/cel-go/common/types/ref"
 	"cel.dev/cel-go/common/types/traits"
