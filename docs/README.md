@@ -1,8 +1,7 @@
 # Panoptes documentation
 
 Start with the [quick start](quickstart.md) if you want to see it work, or with the
-[project README](../README.md) if you want to know what it is. `api.md` is being added alongside this
-index.
+[project README](../README.md) if you want to know what it is.
 
 ## Use
 
