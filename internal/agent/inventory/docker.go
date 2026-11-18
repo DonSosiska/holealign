@@ -35,7 +35,10 @@ func newDockerClient(socket string) *dockerClient {
 	if st, err := os.Stat(socket); err != nil || st.Mode()&os.ModeSocket == 0 {
 		return nil
 	}
+	// One transport per client, so idle connections must not be kept: otherwise every
+	// check-in leaks a connection and its goroutines until the collector runs out of fds.
 	tr := &http.Transport{
+		DisableKeepAlives: true,
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			var d net.Dialer
 			return d.DialContext(ctx, "unix", socket)

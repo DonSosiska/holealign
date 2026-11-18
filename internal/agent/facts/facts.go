@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
-	"os"
 	"runtime"
 	"sync"
 
@@ -58,7 +57,7 @@ var builtinCollectors = []collector{
 func defaultEnv() *Env {
 	return &Env{
 		Runner:       execRunner{},
-		FS:           os.DirFS("/"),
+		FS:           rootFS,
 		DockerSocket: "/var/run/docker.sock",
 		SafeOpen:     safeOpen,
 		TreeTrust:    treeTrusted,

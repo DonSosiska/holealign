@@ -76,6 +76,12 @@ that talks to the network is not root.
   OS info and change detection come from the collector. `/etc/panoptes/agent.yaml` is `root:panoptes 0640`.
 - Socket protocol: one request per connection, one JSON line of at most 64 KiB, answered by one JSON document
   (gzip-compressed for `inventory`; errors are plain JSON). `SO_PEERCRED` uid must be 0 or the `collector_user`'s uid.
+  A `facts` request is bounded to 2 minutes and cancelled when the client closes the connection. `accept`
+  errors such as EMFILE, ENFILE and ECONNABORTED are retried with a short backoff; they do not end the
+  collector. At most one inventory scan runs at a time; a request that arrives during a scan gets a "busy" error.
+  Config-style files the collector reads (`file.match` directories, `nginx.conf` and its includes, Apache
+  `.conf` files, `/etc/os-release` and the like) are `stat`ed first and opened with `O_NONBLOCK`, and only
+  regular files and directories are used, so a FIFO planted by a local user cannot block the root collector.
 
 | Request | Response |
 |---|---|
@@ -160,7 +166,7 @@ sets `<x>.installed = false` and omits the other `<x>.*` facts.
 | `sshd.config` | map<string,string> | `sshd -T` (keys lowercased, first value) |
 | `nginx.installed`, `nginx.version` | bool, string | `nginx -v` |
 | `nginx.modules` | list<string> | `nginx -V` configure args (`--with-*` names, e.g. `http_v2_module`) |
-| `nginx.directives` | map<string,list<string>> | `nginx -T`, directive name → all values seen (comments stripped; secret-looking values masked as `***`, values capped at 256 bytes) |
+| `nginx.directives` | map<string,list<string>> | `nginx -T`, directive name → all values seen (comments stripped; secret-looking keys and values masked as `***`, values capped at 256 bytes; the bodies of `map`, `geo`, `split_clients`, `charset_map`, `match` and `types` blocks are data and are skipped, only the opener is kept) |
 | `nginx.http2` | bool | `http2 on` directive or `listen ... http2` |
 | `apache.installed`, `apache.version` | bool, string | `apachectl -v` / `httpd -v` |
 | `apache.modules` | list<string> | `apachectl -M` (e.g. `proxy_module`) |
@@ -175,10 +181,10 @@ sets `<x>.installed = false` and omits the other `<x>.*` facts.
 | `sudo.version` | string | `sudo -V` |
 | `agent.inventory_error` | string | last inventory scan error (truncated to 200 chars); absent when the last scan succeeded |
 | `agent.collector_error` | string | last error the root collector answered with (truncated to 200 chars); the check-in carried the previously known facts; absent when the collector answered normally |
-| `agent.skipped` | list<string> | tools not run because their config tree is not trustworthy, e.g. `nginx: /etc/nginx/conf.d writable by gid 33`. Before `nginx -V/-T`, `php -i`, `sshd -T`, `apachectl/httpd -v/-M` and `sudo -V` the agent verifies that `/etc/nginx` (+ `/usr/local/etc/nginx`, `/usr/local/nginx/conf`), `/etc/php/*/cli` (+ `/etc/php.ini`, `/etc/php.d`, `/usr/local/etc/php`), `/etc/ssh/sshd_config{,.d}`, `/etc/apache2` (+ `/etc/httpd`, `/usr/local/apache2/conf`, `/usr/local/etc/apache24`; includes `envvars`) and `/etc/sudo.conf` and their parents are root-owned and not group/world-writable (≤ 2000 entries walked); otherwise the command is skipped and its facts omitted. Before `nginx -T` the `include`/`load_module` directives of the verified tree are scanned (≤ 200 files of ≤ 1 MiB); every location outside the verified roots is verified the same way, else `nginx -T` is skipped. Helper binaries must have EVERY ancestor directory up to `/` root-owned and not group/world-writable |
+| `agent.skipped` | list<string> | tools not run because their config tree is not trustworthy, e.g. `nginx: /etc/nginx/conf.d writable by gid 33`. Before `nginx -V/-T`, `php -i`, `sshd -T`, `apachectl/httpd -v/-M` and `sudo -V` the agent verifies that `/etc/nginx` (+ `/usr/local/etc/nginx`, `/usr/local/nginx/conf`), `/etc/php/*/cli` (+ `/etc/php.ini`, `/etc/php.d`, `/usr/local/etc/php`), `/etc/ssh/sshd_config{,.d}`, `/etc/apache2` (+ `/etc/httpd`, `/usr/local/apache2/conf`, `/usr/local/etc/apache24`; includes `envvars`) and `/etc/sudo.conf` and their parents are root-owned and not group/world-writable (≤ 2000 entries walked); otherwise the command is skipped and its facts omitted. Symbolic links inside a tree (or a root that is a link) are followed: the target, its ancestors and everything below a linked directory are verified too (directories once; the 2000-entry cap is shared; a loop ends, overflow fails closed). Before `nginx -T` the `include`, `load_module`, `*_by_lua_file`, `perl_modules`, `perl_require`, `js_import` and `js_path` directives of the verified tree are scanned (≤ 200 files of ≤ 1 MiB); every location outside the verified roots is verified the same way, else `nginx -T` is skipped. Helper binaries must have EVERY ancestor directory up to `/` root-owned and not group/world-writable |
 | `file.match:<id>` | list<string> | **parametrised**, see below |
 
-Command execution rules for collectors: fixed argv (no shell), 10 s timeout, stdout capped at 4 MiB,
+Command execution rules for collectors: fixed argv (no shell), 10 s timeout (each command runs in its own process group, and the whole group is killed on timeout), stdout capped at 4 MiB,
 `LC_ALL=C`. All commands are hard-coded in the agent.
 
 ### `file.match` collector

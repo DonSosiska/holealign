@@ -429,7 +429,7 @@ func boundedGlob(ctx context.Context, fsys fs.FS, glob string, limit int) []stri
 		if _, err := path.Match(comp, ""); err != nil {
 			return
 		}
-		f, err := fsys.Open(relPath(dir))
+		f, err := openGuarded(fsys, dir, true)
 		if err != nil {
 			return
 		}
@@ -549,7 +549,7 @@ func openPhysical(env *Env, physical string) (fs.File, error) {
 		}); err != nil {
 			return nil, err
 		}
-		f, err = env.FS.Open(relPath(physical))
+		f, err = openGuarded(env.FS, physical, false)
 	}
 	if err != nil {
 		return nil, err

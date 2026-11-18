@@ -65,7 +65,7 @@ func apacheConfigEnablesH2(fsys fs.FS) bool {
 				return nil
 			}
 			files++
-			data, err := fs.ReadFile(fsys, p)
+			data, err := readFileGuarded(fsys, "/"+p)
 			if err != nil {
 				return nil
 			}

@@ -310,7 +310,8 @@ func TestCollectSkipsUntrustedTrees(t *testing.T) {
 	}
 }
 
-var recordingMu sync.Mutex // collectors run concurrently
+// recordingMu guards the shared ran slices: collectors run concurrently.
+var recordingMu sync.Mutex
 
 type recordingRunner struct {
 	ran *[]string

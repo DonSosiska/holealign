@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/DonSosiska/panoptes/internal/agent/hostdata"
@@ -35,7 +36,19 @@ const (
 	requestReadTimeout   = 10 * time.Second
 	responseWriteTimeout = 5 * time.Minute
 	maxConns             = 8
+	acceptBackoff        = 100 * time.Millisecond
 )
+
+// FactsDeadline bounds one facts request end to end (a hung collector must not pin a
+// slot of the facts semaphore forever); it is also cancelled when the client goes away.
+const FactsDeadline = 2 * time.Minute
+
+// temporaryAcceptError reports errors after which accepting may succeed again.
+func temporaryAcceptError(err error) bool {
+	return errors.Is(err, syscall.EMFILE) || errors.Is(err, syscall.ENFILE) ||
+		errors.Is(err, syscall.ECONNABORTED) || errors.Is(err, syscall.ENOBUFS) ||
+		errors.Is(err, syscall.ENOMEM)
+}
 
 // Server answers requests from the sender.
 type Server struct {
@@ -57,6 +70,8 @@ type Server struct {
 	// FactsCacheTTL: identical facts requests within this window get the previous result
 	// (0 = DefaultFactsCacheTTL, negative disables the cache).
 	FactsCacheTTL time.Duration
+	// FactsTimeout bounds one facts request (0 = FactsDeadline).
+	FactsTimeout time.Duration
 
 	initOnce sync.Once
 	factsSem chan struct{} // concurrent facts collections
@@ -69,6 +84,7 @@ type Server struct {
 	invAt         time.Time
 	invCache      *model.InventoryPayload
 	invErr        error
+	invRunning    bool // a scan is in progress: invCache/invErr are not valid yet
 	changePending bool // a package change was reported and no real scan has run since
 }
 
@@ -126,7 +142,7 @@ func (s *Server) facts(ctx context.Context, reqs []model.FactRequest) (model.Fac
 		return nil, errBusy
 	}
 	f, err := s.Backend.Facts(ctx, reqs)
-	if err != nil || ttl <= 0 {
+	if err != nil || ttl <= 0 || ctx.Err() != nil { // partial results of a cancelled run are not cached
 		return f, err
 	}
 	s.factsMu.Lock()
@@ -286,6 +302,16 @@ func (s *Server) ServeListener(ctx context.Context, l net.Listener) error {
 			if errors.As(err, &ne) && ne.Timeout() {
 				continue
 			}
+			if temporaryAcceptError(err) {
+				// fd exhaustion or an aborted connection must not end the collector.
+				s.log().Warn("collector: temporary accept error", "err", err)
+				select {
+				case <-time.After(acceptBackoff):
+				case <-ctx.Done():
+					return nil
+				}
+				continue
+			}
 			return err
 		}
 		select {
@@ -334,7 +360,9 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 	resp := hostdata.Response{OK: true}
 	switch req.Op {
 	case hostdata.OpFacts:
-		f, err := s.facts(ctx, req.FactRequests)
+		fctx, cancel := s.factsContext(ctx, conn)
+		f, err := s.facts(fctx, req.FactRequests)
+		cancel()
 		resp.Facts = f
 		resp = fail(resp, err)
 	case hostdata.OpInventory:
@@ -362,6 +390,31 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 		resp = hostdata.Response{Error: "unknown op"}
 	}
 	s.respond(conn, req.Gzip && req.Op == hostdata.OpInventory, resp)
+}
+
+// factsContext derives the context of one facts request: it ends after FactsTimeout (default
+// FactsDeadline) and as soon as the client closes its end of conn (the request is fully read
+// and the client sends nothing more, so any read result means it went away). The returned
+// cancel must be called when the request is done; it also stops the watcher.
+func (s *Server) factsContext(ctx context.Context, conn net.Conn) (context.Context, context.CancelFunc) {
+	d := s.FactsTimeout
+	if d <= 0 {
+		d = FactsDeadline
+	}
+	ctx, cancel := context.WithTimeout(ctx, d)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		var b [1]byte
+		_, _ = conn.Read(b[:]) // returns on EOF, error, or the deadline set below
+		cancel()
+	}()
+	return ctx, func() {
+		cancel()
+		_ = conn.SetReadDeadline(time.Now()) // unblock the watcher
+		<-done
+		_ = conn.SetReadDeadline(time.Time{})
+	}
 }
 
 func fail(r hostdata.Response, err error) hostdata.Response {
@@ -396,7 +449,7 @@ func (s *Server) inventory(ctx context.Context) (*model.InventoryPayload, error)
 	}
 	// cached reports whether the previous result may be served; call with invMu held.
 	cached := func() bool {
-		if gap <= 0 || s.invAt.IsZero() {
+		if gap <= 0 || s.invAt.IsZero() || s.invRunning {
 			return false
 		}
 		since := time.Since(s.invAt)
@@ -432,6 +485,7 @@ func (s *Server) inventory(ctx context.Context) (*model.InventoryPayload, error)
 		return serve()
 	}
 	s.invAt = time.Now()
+	s.invRunning = true
 	pending := s.changePending
 	s.changePending = false // a real scan sees the change
 	s.invMu.Unlock()
@@ -440,6 +494,7 @@ func (s *Server) inventory(ctx context.Context) (*model.InventoryPayload, error)
 
 	s.invMu.Lock()
 	defer s.invMu.Unlock()
+	s.invRunning = false
 	if err != nil {
 		s.invCache, s.invErr = nil, err
 		s.changePending = s.changePending || pending // not scanned after all
