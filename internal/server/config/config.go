@@ -61,6 +61,7 @@ type Config struct {
 	Slack    Slack    `yaml:"slack"`
 	Telegram Telegram `yaml:"telegram"`
 	Discord  Discord  `yaml:"discord"`
+	Teams    Teams    `yaml:"teams"`
 
 	deprecated []string // deprecated keys in use, reported by Warnings
 
@@ -387,6 +388,9 @@ func (c *Config) validate() error {
 	for _, name := range sortedKeys(c.Discord.Webhooks) {
 		secretEnvs = append(secretEnvs, struct{ key, val string }{"discord.webhooks." + name + ".url_env", c.DiscordURLEnv(name)})
 	}
+	for _, name := range sortedKeys(c.Teams.Webhooks) {
+		secretEnvs = append(secretEnvs, struct{ key, val string }{"teams.webhooks." + name + ".url_env", c.TeamsURLEnv(name)})
+	}
 	// *_env values name environment variables; restrict them so a config file cannot be used to
 	// read arbitrary variables (HOME, AWS_*, ...) or to reuse the admin password as another secret.
 	for _, e := range secretEnvs {
@@ -509,6 +513,11 @@ func (c *Config) Warnings() []string {
 	check("matrix.homeserver", c.Matrix.Homeserver)
 	check("llm.base_url", c.LLM.BaseURL)
 
+	for _, name := range sortedKeys(c.Teams.Webhooks) {
+		if c.Teams.Webhooks[name].AllowAnyHost {
+			w = append(w, fmt.Sprintf("teams.webhooks.%s.allow_any_host is set: the webhook URL is not restricted to Microsoft hosts", name))
+		}
+	}
 	if nets, err := ParseCIDRs(c.TrustedProxies); err == nil {
 		for _, n := range nets {
 			ones, bits := n.Mask.Size()

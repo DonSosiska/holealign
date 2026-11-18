@@ -293,6 +293,18 @@ func wire(cfg *config.Config, st store.Store, log *slog.Logger, trig *lateTrigge
 			log.Info("discord channel enabled", "webhooks", len(hooks))
 		}
 	}
+	if len(cfg.Teams.Webhooks) > 0 {
+		hooks := map[string]notify.TeamsHook{}
+		for name, w := range cfg.Teams.Webhooks {
+			hooks[name] = notify.TeamsHook{URL: os.Getenv(cfg.TeamsURLEnv(name)), AllowAnyHost: w.AllowAnyHost}
+		}
+		if ch, err := notify.NewTeamsChannel(hooks, nil); err != nil {
+			log.Error("teams channel disabled", "err", err)
+		} else {
+			channels = append(channels, ch)
+			log.Info("teams channel enabled", "webhooks", len(hooks))
+		}
+	}
 	if len(channels) > 0 {
 		ncfg := notify.Config{
 			Default: cfg.Notify.Default,

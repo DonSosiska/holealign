@@ -61,6 +61,20 @@ type DiscordWebhook struct {
 	URLEnv string `yaml:"url_env"`
 }
 
+// Teams configures the Microsoft Teams channel: named Workflows webhooks ("When a Teams webhook
+// request is received"). The destination is "teams:<name>"; the URL (a secret) is read from the
+// environment variable URLEnv names (default HOLEALIGN_TEAMS_<NAME>_URL).
+type Teams struct {
+	Webhooks map[string]TeamsWebhook `yaml:"webhooks"`
+}
+
+// TeamsWebhook is one Teams webhook. Its host must end in one of notify.TeamsHostSuffixes unless
+// AllowAnyHost is set.
+type TeamsWebhook struct {
+	URLEnv       string `yaml:"url_env"`
+	AllowAnyHost bool   `yaml:"allow_any_host"`
+}
+
 // Channels reports which notification channels are configured, by destination scheme.
 func (c *Config) Channels() map[string]bool {
 	return map[string]bool{
@@ -68,6 +82,7 @@ func (c *Config) Channels() map[string]bool {
 		"slack":    c.Slack.TokenEnv != "",
 		"telegram": c.Telegram.BotTokenEnv != "",
 		"discord":  len(c.Discord.Webhooks) > 0,
+		"teams":    len(c.Teams.Webhooks) > 0,
 	}
 }
 
@@ -121,6 +136,10 @@ func (c *Config) ValidateDestination(dest string) error {
 		return fmt.Errorf("%q uses the %s channel, which is not configured (%s)", dest, scheme, channelHint(scheme))
 	}
 	switch scheme {
+	case "teams":
+		if _, ok := c.Teams.Webhooks[target]; !ok {
+			return fmt.Errorf("%q: no webhook named %q under teams.webhooks (configured: %s)", dest, target, mapKeys(c.Teams.Webhooks))
+		}
 	case "discord":
 		if _, ok := c.Discord.Webhooks[target]; !ok {
 			return fmt.Errorf("%q: no webhook named %q under discord.webhooks (configured: %s)", dest, target, mapKeys(c.Discord.Webhooks))
@@ -171,6 +190,8 @@ func channelHint(scheme string) string {
 		return "set telegram.bot_token_env"
 	case "discord":
 		return "add a webhook under discord.webhooks"
+	case "teams":
+		return "add a webhook under teams.webhooks"
 	default:
 		return "set matrix.homeserver"
 	}
@@ -211,11 +232,21 @@ func (c *Config) DiscordURLEnv(name string) string {
 	return envFor("DISCORD", name, c.Discord.Webhooks[name].URLEnv, "URL")
 }
 
+// TeamsURLEnv is the environment variable that holds the URL of Teams webhook name.
+func (c *Config) TeamsURLEnv(name string) string {
+	return envFor("TEAMS", name, c.Teams.Webhooks[name].URLEnv, "URL")
+}
+
 // validateDiscord checks the names of the webhooks. Their URLs come from the environment.
 func (c *Config) validateDiscord() error {
 	for _, name := range sortedKeys(c.Discord.Webhooks) {
 		if err := notify.ValidName(name); err != nil {
 			return fmt.Errorf("discord.webhooks.%s: %w", name, err)
+		}
+	}
+	for _, name := range sortedKeys(c.Teams.Webhooks) {
+		if err := notify.ValidName(name); err != nil {
+			return fmt.Errorf("teams.webhooks.%s: %w", name, err)
 		}
 	}
 	return nil
@@ -230,6 +261,14 @@ func (c *Config) validateEnvURLs(lookup func(string) (string, bool)) error {
 		if v, ok := lookup(env); ok && v != "" {
 			if err := notify.ValidDiscordURL(v); err != nil {
 				return fmt.Errorf("discord.webhooks.%s.url_env (%s): %w", name, env, err)
+			}
+		}
+	}
+	for _, name := range sortedKeys(c.Teams.Webhooks) {
+		env := c.TeamsURLEnv(name)
+		if v, ok := lookup(env); ok && v != "" {
+			if err := notify.ValidTeamsURL(v, c.Teams.Webhooks[name].AllowAnyHost); err != nil {
+				return fmt.Errorf("teams.webhooks.%s.url_env (%s): %w", name, env, err)
 			}
 		}
 	}

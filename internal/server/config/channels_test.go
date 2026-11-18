@@ -62,3 +62,48 @@ notify:
 		t.Errorf("hint = %v", err)
 	}
 }
+
+const teamsHook = "https://prod-1.westeurope.logic.azure.com:443/workflows/abc/triggers/manual/paths/invoke?sig=SECRETSECRETSECRET"
+
+func TestTeamsConfig(t *testing.T) {
+	cfg, err := loadYAMLEnv(t, `
+teams:
+  webhooks:
+    ops: {url_env: HOLEALIGN_TEAMS_OPS_URL}
+    lab: {allow_any_host: true}
+notify: {default: ["teams:ops"], ops: ["teams:lab"]}
+`, map[string]string{"HOLEALIGN_TEAMS_OPS_URL": teamsHook, "HOLEALIGN_TEAMS_LAB_URL": "https://hooks.example.org/teams"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Channels()["teams"] || cfg.TeamsURLEnv("lab") != "HOLEALIGN_TEAMS_LAB_URL" {
+		t.Error("teams not enabled or env default wrong")
+	}
+	found := false
+	for _, w := range cfg.Warnings() {
+		found = found || strings.Contains(w, "teams.webhooks.lab.allow_any_host")
+	}
+	if !found {
+		t.Errorf("no allow_any_host warning: %v", cfg.Warnings())
+	}
+	// a foreign host is rejected at load unless allow_any_host is set
+	_, err = loadYAMLEnv(t, `teams: {webhooks: {ops: {}}}`, map[string]string{"HOLEALIGN_TEAMS_OPS_URL": "https://evil.example/x?sig=SECRETSECRET"})
+	if err == nil || !strings.Contains(err.Error(), "teams.webhooks.ops.url_env") || strings.Contains(err.Error(), "SECRETSECRET") {
+		t.Errorf("foreign host: %v", err)
+	}
+	_, err = loadYAMLEnv(t, `teams: {webhooks: {ops: {allow_any_host: true}}}`, map[string]string{"HOLEALIGN_TEAMS_OPS_URL": "http://evil.example/x"})
+	if err == nil {
+		t.Error("http accepted with allow_any_host")
+	}
+	for name, y := range map[string]string{
+		"not configured": `notify: {default: ["teams:ops"]}`,
+		"unknown name":   `teams: {webhooks: {ops: {}}}` + "\n" + `notify: {default: ["teams:x"]}`,
+		"bad name":       `teams: {webhooks: {"A B": {}}}`,
+		"duplicate env":  `teams: {webhooks: {a: {url_env: HOLEALIGN_X}}}` + "\n" + `discord: {webhooks: {b: {url_env: HOLEALIGN_X}}}`,
+		"unknown key":    `teams: {webhooks: {a: {url: "https://x.logic.azure.com/"}}}`,
+	} {
+		if _, err := loadYAML(t, y); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}

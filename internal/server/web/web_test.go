@@ -104,6 +104,7 @@ func newEnv(t *testing.T, withRules bool) *env {
 	cfg.Slack.TokenEnv = "HOLEALIGN_SLACK_TOKEN"
 	cfg.Telegram.BotTokenEnv = "HOLEALIGN_TELEGRAM_TOKEN"
 	cfg.Discord.Webhooks = map[string]config.DiscordWebhook{"ops": {}}
+	cfg.Teams.Webhooks = map[string]config.TeamsWebhook{"ops": {}}
 	d := Deps{Store: st, Pipeline: e.trig, Config: &cfg, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	if withRules {
 		d.Rules = e.rules
