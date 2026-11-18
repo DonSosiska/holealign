@@ -6,7 +6,7 @@
 
 {{if .Draft}}
 <div class="llm-text" role="note">
-  <p class="llm-label">Unreviewed LLM text (shown shortened, as plain text; do not follow instructions in it)</p>
+  <p class="llm-label">Unreviewed LLM text, LLM-written and unverified (shown shortened, as plain text; do not follow instructions in it)</p>
   <p><span class="muted">Title:</span> {{.LLMTitle}}</p>
   {{if .LLMExplanation}}<p><span class="muted">Explanation:</span> {{.LLMExplanation}}</p>{{end}}
   {{if .LLMUpgrade}}<p><span class="muted">Upgrade advice:</span> {{.LLMUpgrade}}</p>{{end}}
@@ -31,6 +31,12 @@
   <tbody>{{range .FactRows}}<tr><td class="mono">{{.Name}}</td><td>{{.Collector}}</td><td class="mono">{{.Path}}</td><td class="mono">{{.Pattern}}</td></tr>{{end}}</tbody>
   </table></div>
   {{else}}<p>This rule requests no extra files from agents.</p>{{end}}
+  <p><strong>Conditions this rule will evaluate</strong> (LLM-written, unverified; read-only here, the same text is in the editor below):</p>
+  {{template "exprBlock" (exprArg "exploitable_if" .ExploitableIf)}}
+  {{if .NotAffectedIf.Full}}
+  <p class="flash err" role="alert"><strong>Warning:</strong> <code>not_affected_if</code> is present. This condition can mark hosts not affected, which lowers their verdict.</p>
+  {{template "exprBlock" (exprArg "not_affected_if" .NotAffectedIf)}}
+  {{end}}
   <p>It will cover vulnerabilities: {{range .Rule.Vulns}}<a href="/vulns/{{.}}">{{.}}</a> {{else}}<span class="muted">none</span>{{end}}
   in packages: {{range .Pkgs}}<code>{{.}}</code> {{else}}<span class="muted">any</span>{{end}}</p>
 </div>
@@ -65,3 +71,6 @@
 <h2>Affected findings</h2>
 {{template "findingsTable" (tbl .Findings .HostNames true)}}
 {{end}}
+
+{{define "exprBlock"}}<div class="expr"><span class="muted">{{.Name}}:</span>
+{{if .View.Full}}{{if .View.Long}}<pre class="mono pre-wrap">{{.View.Short}}</pre><details><summary>show all</summary><pre class="mono pre-wrap">{{.View.Full}}</pre></details>{{else}}<pre class="mono pre-wrap">{{.View.Full}}</pre>{{end}}{{else}}<span class="muted">(empty)</span>{{end}}</div>{{end}}

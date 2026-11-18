@@ -110,7 +110,7 @@ the server-generated fix command are shown.
 Mass silence: when more than max(5, 30% of the fleet) hosts go silent in one pass, one aggregated
 `AGENT SILENT` event naming up to 50 hosts goes to the ops rooms, and one event per label lists the
 silent hosts with that label for that label's rooms ("server or network problem?"). Silence alerts are
-held back for twice the check-in interval after the server starts.
+held back for twice the check-in interval after the server starts. Delivery is tracked per destination (the ops overview, each label's rooms, the hosts without a label): if one destination fails, only that message is retried on the next pass, and a host counts as notified once every message naming it was delivered.
 
 Safety of the text: every untrusted field (hostnames, package names, reasons) is cut to 300
 characters with control characters removed, a zero-width space follows every `@` so nothing pings

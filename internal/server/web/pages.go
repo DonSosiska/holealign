@@ -442,8 +442,54 @@ func (s *Server) renderRule(w http.ResponseWriter, r *http.Request, sess *sessio
 		"Version": ruleVersion(stored), "Draft": rule.Status == model.RuleDraft, "RuleSource": s.ruleSources()[rule.ID],
 		"FactRows": factRows(rule), "Pkgs": pkgs,
 		"LLMTitle": clip(rule.Title, llmTitleMax), "LLMExplanation": clip(rule.Explanation, llmExplanationMax),
+		"ExploitableIf": newExprView(rule.ExploitableIf), "NotAffectedIf": newExprView(rule.NotAffectedIf),
 		"LLMUpgrade": clip(rule.Fix.Upgrade, llmFixMax), "LLMMitigation": clip(rule.Fix.Mitigation, llmFixMax),
 	})
+}
+
+const (
+	exprShortMax = 300  // runes shown before "show all"
+	exprFullMax  = 4000 // runes shown at most
+)
+
+// exprView is a rule expression prepared for read-only display on the approve panel.
+type exprView struct {
+	Short string
+	Full  string
+	Long  bool
+}
+
+func newExprView(e string) exprView {
+	full := exprText(e, exprFullMax)
+	if full == "" {
+		return exprView{}
+	}
+	v := exprView{Short: full, Full: full}
+	if r := []rune(full); len(r) > exprShortMax {
+		v.Short, v.Long = string(r[:exprShortMax])+"…", true
+	}
+	return v
+}
+
+// exprText is clip that keeps line breaks and tabs, so multi-line expressions stay readable.
+func exprText(s string, max int) string {
+	var b strings.Builder
+	n := 0
+	for _, r := range s {
+		switch {
+		case r == '\n' || r == '\t':
+		case r == '\r':
+			continue
+		case unicode.IsControl(r), r >= 0x202A && r <= 0x202E, r >= 0x2066 && r <= 0x2069, r == 0x2028, r == 0x2029:
+			continue
+		}
+		if n++; n > max {
+			b.WriteString("…")
+			break
+		}
+		b.WriteRune(r)
+	}
+	return strings.TrimSpace(b.String())
 }
 
 // clip removes control and bidi characters from untrusted text and cuts it to max runes.

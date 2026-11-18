@@ -15,7 +15,7 @@ Contents: [Assets and trust](#assets-and-trust) - [Threats and mitigations](#thr
 | Root on monitored hosts | The collector runs as root to read host state. |
 | The agent key of each host | Lets someone act as that host towards the server. |
 | Enrollment tokens | Let someone register a host. |
-| The admin session and password | Approve rules, create tokens, edit routes. |
+| The admin session and password | Every web account is a full administrator: approve rules, create tokens and users, edit routes. |
 | Matrix token, LLM key | Reach external services as you. |
 | Host facts and inventories | Reveal what is installed and how it is configured. |
 
@@ -36,8 +36,8 @@ or advisory text. The architecture is in [architecture.md](architecture.md).
 | A stolen **enrollment token** | Tokens can expire, have a host cap and carry authoritative labels. A token cannot take over an enrolled host: re-enrollment of an existing machine ID needs the host's current key or an administrator's `host allow-reenroll` (time-limited, single use). The agent blanks the token in its config after the first check-in. |
 | **Label spoofing** to steer alerts | Labels of a token-enrolled host are authoritative on the server; labels sent by the agent are ignored in that case. |
 | **Flooding** the server | Body size limits (1 MiB enroll, 64 MiB inventory), per-host token buckets for check-in and inventory, limits per client address (invalid enrollments, failed authentication, invalid uploads), per-host caps on findings and matcher time, bounded SBOMs (CycloneDX only, at most 50 000 components), bounded internal maps. |
-| **Spoofed client addresses** (`X-Forwarded-For`) | The header is honoured only when the TCP peer is in `trusted_proxies`; the right-most untrusted entry is used. Broad entries trigger a WARN. |
-| **Admin UI** attack | Separate listener, loopback by default, never serves the agent API; the agent listener serves nothing but `/api/v1/*` and `/healthz`. Sessions have a 1 h idle and 12 h absolute lifetime, `HttpOnly` and `SameSite=Lax` cookies (`Secure` with an https `public_url`), CSRF tokens, login delays per user name and blocks per address (a correct password is never locked out), a re-authentication (current password) for approving or rejecting rules, editing rules, creating tokens, changing routes and managing users, and an audit log. |
+| **Spoofed client addresses** (`X-Forwarded-For`) | The header is honoured only when the TCP peer is in `trusted_proxies`; the right-most untrusted entry is used. Broad entries trigger a WARN, and so does an `X-Forwarded-For` header arriving on the admin listener from a peer that is not in `trusted_proxies` (logged once; it hints at a proxy that is not configured). |
+| **Admin UI** attack | Separate listener, loopback by default, never serves the agent API; the agent listener serves nothing but `/api/v1/*` and `/healthz`. Sessions have a 1 h idle and 12 h absolute lifetime, `HttpOnly` and `SameSite=Lax` cookies (`Secure` with an https `public_url`), CSRF tokens, login delays per user name and blocks per address (a browser holding a known-device cookie for the user bypasses the per-address blocks, so failures from a shared address never lock out the real user), approving a rule shows its expressions (`exploitable_if`, `not_affected_if`) and flags LLM-written text as unverified, a re-authentication (current password) for approving or rejecting rules, editing rules, creating tokens, changing routes and managing users, and an audit log. |
 | **Malicious LLM output** or advisory text | The LLM only drafts; a draft is validated, inert (its file requests are not sent, it cannot lower a verdict, it only yields `exploitable` if grounded in host facts) until a human approves with password re-entry on a versioned form. Untrusted inputs are normalised, de-tagged and delimited. See [llm.md](llm.md). |
 | **Injection into Matrix messages** | Untrusted fields are length-capped and stripped of control characters, `@` gets a zero-width space, empty `m.mentions`, bodies capped at 8 KiB; draft text is not shown in alerts. |
 | **Tampered releases** | Releases are made only by the release workflow after tests pass, in the `release` environment (reviewer approval), only for tags on `main`. Keyless cosign signature with an exact certificate identity (workflow path and tag), SPDX SBOMs, GitHub build provenance. `install.sh` verifies the signature and refuses downgrades. Actions and base images are pinned to digests. |
@@ -99,8 +99,11 @@ Do these in a real deployment.
 
 ## Known limitations
 
-- **No RBAC and no 2FA.** Every web user is an administrator; authentication is a password with
-  rate-limiting and re-authentication for sensitive actions. Put the admin UI behind a VPN or an
+- **No roles, no RBAC and no 2FA.** There is no read-only or observer role in the web UI: every
+  web account is a full administrator and can approve rules, create enrollment tokens and API
+  credentials, edit routes and create or delete users. Create an account only for someone you trust
+  with all of that. Authentication is a password with rate-limiting and re-authentication for
+  sensitive actions. Put the admin UI behind a VPN or an
   authenticating proxy.
 - **The systemd units need verification on your hosts.** Their hardening (`ProtectSystem=strict`,
   `PrivateNetwork`, the system-call filter, and child tools such as `nginx -T`, `php -i`, `sshd -T`
