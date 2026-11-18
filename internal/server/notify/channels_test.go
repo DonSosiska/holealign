@@ -138,13 +138,14 @@ func TestParseAndValidateDestinations(t *testing.T) {
 			t.Errorf("ParseDestination(%q) = %q %q, want %q %q", in, sc, tg, want[0], want[1])
 		}
 	}
-	for _, in := range []string{"!room:example.org", "#alias:example.org", "matrix:!room:example.org", "slack:C0123456789",
+	v12 := "!2yijIgSMxGZwffdVoU4ny4n00S4Atg9YwXs8Cw4lwi0" // room version 12: no server part
+	for _, in := range []string{"!room:example.org", "#alias:example.org", "matrix:!room:example.org", v12, "matrix:" + v12, "slack:C0123456789",
 		"telegram:-1001234567890", "telegram:-100123456/42"} {
 		if err := ValidateDestination(in); err != nil {
 			t.Errorf("ValidateDestination(%q): %v", in, err)
 		}
 	}
-	for _, in := range []string{"", " ", "room:server", "!nocolon", "! a:b", "slack:", "slack:general", "slack:#general", "slack:c0123456789",
+	for _, in := range []string{"", " ", "room:server", "!nocolon", "! a:b", v12[:42], v12 + "x", "#" + v12[1:], "!2yijIgSMxGZwffdVoU4ny4n00S4Atg9YwXs8Cw4lwi+", "slack:", "slack:general", "slack:#general", "slack:c0123456789",
 		"slack:C012", "slack:C0123456789/extra", "slack:T0123456789", "telegram:", "telegram:@chan", "telegram:abc",
 		"telegram:0", "telegram:-100/0", "telegram:-100/-1", "telegram:-100/", "telegram:1/2/3", "signal:123",
 		"unknown:!room:example.org", "https://hooks.slack.com/services/T/B/x", "slack:C01234 56789", "!r:s" + strings.Repeat("a", 300)} {

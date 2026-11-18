@@ -21,7 +21,7 @@ channels can be mixed freely in one route.
 
 | Channel | Destination | Example |
 |---|---|---|
-| Matrix | `!id:server` (room ID), or `matrix:!id:server`, or an alias `#alias:server` | `!abc123:matrix.example.com` |
+| Matrix | `!id:server` (room ID), a room version 12 ID `!<43-character hash>` (no server part), or `matrix:` before either; an alias `#alias:server` passes the syntax check | `!abc123:matrix.example.com` |
 | Slack | `slack:<channel ID>`: `C...` public, `G...` private, `D...` direct message. IDs only, never names. | `slack:C0123456789` |
 | Telegram | `telegram:<chat_id>` or `telegram:<chat_id>/<message_thread_id>` (a topic of a forum group) | `telegram:-1001234567890`, `telegram:-1001234567890/17` |
 | Discord | `discord:<name>`: the name of a webhook in `discord.webhooks` | `discord:ops` |
@@ -93,6 +93,8 @@ notify:
 4. **Find the room IDs.** Holealign needs the internal ID (`!abc123:matrix.example.com`), not an
    alias (`#prod-alerts:...`): the send API addresses rooms by ID, so an alias passes the syntax check
    but is rejected by the homeserver at delivery. In Element: Room settings, Advanced, "Internal room ID".
+   Rooms created with room version 12 have IDs without a server part (`!` and a 43-character hash);
+   use them as they are.
 5. **Configure the server.** The token goes in the environment, the rest in `server.env`/`.env` or
    `server.yaml`:
 

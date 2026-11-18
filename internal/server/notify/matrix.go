@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -59,15 +60,24 @@ func (m *Matrix) ValidTarget(target string) error { return validMatrixTarget(tar
 
 const maxMatrixIDLen = 255
 
+const matrixIDHint = "not a Matrix room ID (expected !id:server, a room version 12 ID such as !<43-character hash>, or #alias:server)"
+
+var matrixV12RoomRe = regexp.MustCompile(`^![A-Za-z0-9_-]{43}$`)
+
 func validMatrixTarget(t string) error {
 	if len(t) > maxMatrixIDLen {
 		return fmt.Errorf("a Matrix ID is longer than %d characters", maxMatrixIDLen)
 	}
 	if t == "" || (t[0] != '!' && t[0] != '#') {
-		return errors.New("not a Matrix room ID (expected !id:server)")
+		return errors.New(matrixIDHint)
+	}
+	// Room version 12 room IDs have no server part: "!" and the 43-character unpadded URL-safe
+	// base64 hash of the create event. Older room IDs and all aliases are "!id:server"/"#alias:server".
+	if t[0] == '!' && matrixV12RoomRe.MatchString(t) {
+		return nil
 	}
 	if i := strings.IndexByte(t, ':'); i < 2 || i == len(t)-1 {
-		return errors.New("not a Matrix room ID (expected !id:server)")
+		return errors.New(matrixIDHint)
 	}
 	if strings.IndexFunc(t, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0 {
 		return errors.New("a Matrix ID must not contain whitespace or control characters")
