@@ -77,6 +77,7 @@ func TestLoginLimiterIgnoresSpoofedXFF(t *testing.T) {
 	defer st.Close()
 	_, proxy, _ := net.ParseCIDR("10.0.0.0/8")
 	cfg := config.Default()
+	cfg.Matrix.Homeserver = "https://matrix.example.org"
 	srv, err := New(Deps{Store: st, Config: &cfg, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		ClientIP: clientip.New([]*net.IPNet{proxy})})
 	if err != nil {

@@ -35,6 +35,7 @@ func logEnv(t *testing.T, publicURL string) (*env, *lockedBuf) {
 	e := newEnv(t, true)
 	buf := &lockedBuf{}
 	cfg := config.Default()
+	cfg.Matrix.Homeserver = "https://matrix.example.org"
 	cfg.PublicURL = publicURL
 	srv, err := New(Deps{Store: e.st, Rules: e.rules, Pipeline: e.trig, Config: &cfg,
 		Logger: slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))})

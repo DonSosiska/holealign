@@ -699,7 +699,7 @@ func (s *Server) notifyProblems(raw string) []string {
 		seen[key] = true
 		line := "alerts are not being delivered to " + room
 		if room == "" {
-			line = "alerts have no Matrix room to go to"
+			line = "alerts have no notification destination to go to"
 		}
 		if p.Status > 0 {
 			line += ": " + strconv.Itoa(p.Status)

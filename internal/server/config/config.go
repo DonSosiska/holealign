@@ -55,6 +55,14 @@ type Config struct {
 	LLM    LLM    `yaml:"llm"`
 	Admin  Admin  `yaml:"admin"`
 
+	// Notify routes events to destinations ("scheme:target"); Slack and Telegram hold the
+	// credentials of those channels (Matrix: the matrix section). See docs/notifications.md.
+	Notify   Notify   `yaml:"notify"`
+	Slack    Slack    `yaml:"slack"`
+	Telegram Telegram `yaml:"telegram"`
+
+	deprecated []string // deprecated keys in use, reported by Warnings
+
 	// LocalAgent makes the server monitor its own host (agentless mode, contracts §6).
 	LocalAgent LocalAgent `yaml:"local_agent"`
 }
@@ -207,11 +215,12 @@ type Triage struct {
 type Alerts struct {
 	AgentSilentAfter time.Duration `yaml:"agent_silent_after"` // 0 disables agent_silent/agent_back
 	FeedStaleAfter   time.Duration `yaml:"feed_stale_after"`   // 0 disables feed_stale/feed_ok
-	// OpsRooms receive server-level events; empty falls back to matrix.default_rooms.
+	// OpsRooms is a deprecated alias of notify.ops.
 	OpsRooms []string `yaml:"ops_rooms"`
 }
 
-// Matrix configures the Matrix notifier (used by another package).
+// Matrix configures the Matrix channel: homeserver and credentials. DefaultRooms and Routes are
+// deprecated aliases of notify.default and notify.routes (merged into them at load).
 type Matrix struct {
 	Homeserver     string        `yaml:"homeserver"`
 	AccessTokenEnv string        `yaml:"access_token_env"`
@@ -219,7 +228,7 @@ type Matrix struct {
 	Routes         []MatrixRoute `yaml:"routes"`
 }
 
-// MatrixRoute sends findings of hosts carrying Label to Rooms.
+// MatrixRoute is the deprecated matrix.routes entry: findings of hosts carrying Label go to Rooms.
 type MatrixRoute struct {
 	Label string   `yaml:"label" json:"label"`
 	Rooms []string `yaml:"rooms" json:"rooms"`
@@ -361,30 +370,33 @@ func (c *Config) validate() error {
 	if _, err := ParseCIDRs(c.TrustedProxies); err != nil {
 		return fmt.Errorf("trusted_proxies: %w", err)
 	}
-	// *_env values name environment variables; restrict them so a config file cannot be used to
-	// read arbitrary variables (HOME, AWS_*, ...) or to reuse the admin password as another secret.
-	for _, e := range []struct{ key, val string }{
+	secretEnvs := []struct{ key, val string }{
 		{"matrix.access_token_env", c.Matrix.AccessTokenEnv},
+		{"slack.token_env", c.Slack.TokenEnv},
+		{"telegram.bot_token_env", c.Telegram.BotTokenEnv},
 		{"llm.api_key_env", c.LLM.APIKeyEnv},
 		{"admin.initial_password_env", c.Admin.InitialPasswordEnv},
-	} {
+	}
+	// *_env values name environment variables; restrict them so a config file cannot be used to
+	// read arbitrary variables (HOME, AWS_*, ...) or to reuse the admin password as another secret.
+	for _, e := range secretEnvs {
 		if e.val != "" && !envNameRe.MatchString(e.val) {
 			return fmt.Errorf("%s %q must match %s", e.key, e.val, envNameRe)
 		}
 	}
-	// The three secret variables must be pairwise different: one leaked/misused name must not
-	// expose a second secret (e.g. the admin password used as a Matrix or LLM token).
-	envs := []struct{ key, val string }{
-		{"matrix.access_token_env", c.Matrix.AccessTokenEnv},
-		{"llm.api_key_env", c.LLM.APIKeyEnv},
-		{"admin.initial_password_env", c.Admin.InitialPasswordEnv},
-	}
+	// The secret variables must be pairwise different: one leaked/misused name must not expose a
+	// second secret (e.g. the admin password used as a Matrix or LLM token).
+	envs := secretEnvs
 	for i := range envs {
 		for j := i + 1; j < len(envs); j++ {
 			if envs[i].val != "" && envs[i].val == envs[j].val {
 				return fmt.Errorf("%s and %s must name different environment variables (both %s)", envs[i].key, envs[j].key, envs[i].val)
 			}
 		}
+	}
+	c.mergeDeprecated()
+	if err := c.validateNotify(); err != nil {
+		return err
 	}
 	if c.Retention.ResolvedFindings < 0 || c.Retention.Notifications < 0 {
 		return errors.New("retention.* must not be negative")
@@ -461,6 +473,15 @@ func (c *Config) SharedListener() bool {
 }
 
 var envNameRe = regexp.MustCompile(`^HOLEALIGN_[A-Z0-9_]+$`)
+
+// Deprecated returns one startup warning naming the deprecated keys in use (they are still accepted
+// and merged into notify.*), or "" when there are none.
+func (c *Config) Deprecated() string {
+	if len(c.deprecated) == 0 {
+		return ""
+	}
+	return "deprecated config keys in use, still accepted and merged into notify.*: " + strings.Join(c.deprecated, "; ")
+}
 
 // Warnings returns non-fatal configuration problems to log at startup (cleartext transports).
 func (c *Config) Warnings() []string {
