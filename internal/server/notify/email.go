@@ -250,8 +250,14 @@ func (e *Email) Send(ctx context.Context, to string, msg Message) (err error) {
 	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
 	defer stop()
 	defer func() {
-		if err != nil && ctx.Err() != nil {
+		if err == nil {
+			return
+		}
+		if ctx.Err() != nil {
 			err = ctx.Err()
+		} else if d, ok := ctx.Deadline(); ok && !time.Now().Before(d) {
+			// the connection deadline (the context deadline) fired a moment before the context did
+			err = context.DeadlineExceeded
 		}
 	}()
 
