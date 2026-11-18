@@ -567,14 +567,7 @@ func toCandidate(d *osvDetail, pkg, eco, typ string, kev map[string]bool) (c Can
 		return Candidate{}, false, false
 	}
 	c = Candidate{Vuln: cve, Package: pkg, Source: pkg, Type: typ, Ecosystem: eco, Published: d.Published, KEV: kev[cve], Aliases: []string{}}
-	seen := map[string]bool{cve: true}
-	for _, id := range ids {
-		if id != "" && !seen[id] {
-			seen[id] = true
-			c.Aliases = append(c.Aliases, id)
-		}
-	}
-	sort.Strings(c.Aliases)
+	c.Aliases = FilterAliases(cve, eco, ids, slog.Default())
 	c.CVSS, c.Severity = severityOf(d)
 	if c.Severity == "" {
 		if !c.KEV {
@@ -726,4 +719,67 @@ func enrichEPSS(ctx context.Context, f *fetcher, tmpl string, cs []Candidate, lo
 	for i := range cs {
 		cs[i].EPSS = scores[cs[i].Vuln]
 	}
+}
+
+var (
+	ghsaR      = regexp.MustCompile(`^GHSA-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}$`)
+	distroCVER = regexp.MustCompile(`^([A-Z]+)-(CVE-\d{4}-\d{4,})$`)
+)
+
+// distroPrefix is the OSV ID prefix of an ecosystem's own CVE records ("" when it has none).
+func distroPrefix(eco string) string {
+	base, _, _ := strings.Cut(eco, ":")
+	switch base {
+	case "Debian":
+		return "DEBIAN"
+	case "Ubuntu":
+		return "UBUNTU"
+	case "Alpine":
+		return "ALPINE"
+	}
+	return ""
+}
+
+// FilterAliases keeps, from ids (the OSV record's ID and aliases), only identifiers that name the
+// same vulnerability as cve: GHSA ids and the candidate ecosystem's own CVE-derived ids
+// (DEBIAN-CVE-..., ALPINE-CVE-..., UBUNTU-CVE-...). Any other CVE, other distro ids and free text
+// are dropped. When the record names more than one distinct CVE it is a multi-vulnerability record:
+// its GHSA ids cannot be tied to one CVE and are dropped too. The result is sorted and never
+// contains cve itself.
+func FilterAliases(cve, eco string, ids []string, log *slog.Logger) []string {
+	cves := map[string]bool{cve: true}
+	for _, id := range ids {
+		if cveOnlyR.MatchString(id) {
+			cves[id] = true
+		} else if m := distroCVER.FindStringSubmatch(id); m != nil {
+			cves[m[2]] = true
+		}
+	}
+	multi := len(cves) > 1
+	prefix := distroPrefix(eco)
+	out := []string{}
+	seen := map[string]bool{cve: true}
+	for _, id := range ids {
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		keep := false
+		switch {
+		case cveOnlyR.MatchString(id):
+		case ghsaR.MatchString(id):
+			keep = !multi
+		default:
+			if m := distroCVER.FindStringSubmatch(id); m != nil && prefix != "" && m[1] == prefix && m[2] == cve {
+				keep = true
+			}
+		}
+		if keep {
+			out = append(out, id)
+		} else if log != nil {
+			log.Info("alias dropped", "vuln", cve, "alias", id)
+		}
+	}
+	sort.Strings(out)
+	return out
 }

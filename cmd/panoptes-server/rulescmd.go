@@ -26,9 +26,12 @@ const rulesUsage = `usage: panoptes-server rules <command>
                                         check the signature and the complete bundle
   import [-sig file] <tarball>          install a bundle offline (needs rules.feed.trusted_keys)
   status                                show the installed rules feed bundle
-  candidates -packages <file> [-rules dir] [-max N] [-out file]
+  candidates -packages <file> [-rules <dir>] [-ecosystems <list>] [-since <window>] [-kev-max-age <age>]
+             [-max N] [-out <file>] [-cache <dir>] [-kev <url|file>] [-epss <url>] [-bulk-url <url>] [-osv-url <url>]
                                         list CVEs worth a rule that the repository does not cover (JSON)
-  draft  -candidate <json> -rules <dir> -tests <dir>
+  draft  (-candidate <json> | -candidate-file <file> -index N) -rules <dir> -tests <dir>
+         [-out-rules <dir>] [-out-tests <dir>] [-provider <p>] [-model <m>] [-base-url <url>]
+         [-osv-url <url>] [-max-attempts N]
                                         draft a rule and tests with an LLM; prints a PR body
                                         (exit 2: no valid draft, 3: rule ID exists)
 `

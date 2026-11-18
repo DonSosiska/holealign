@@ -316,34 +316,59 @@ func wire(cfg *config.Config, st store.Store, log *slog.Logger, trig *lateTrigge
 	return comp
 }
 
-// factCatalog describes the fact catalog to the LLM (see docs/contracts.md §3).
+// factCatalog describes the fact catalog to the LLM (see docs/contracts.md §3). The agent.* facts
+// describe the agent's own health, not whether a vulnerability is exploitable, so they are not offered.
 func factCatalog() []llm.FactSpec {
 	names := rules.CatalogFacts()
 	sort.Strings(names)
 	out := make([]llm.FactSpec, 0, len(names))
 	for _, n := range names {
+		if strings.HasPrefix(n, "agent.") {
+			continue
+		}
 		t, _ := rules.FactTypeOf(n)
 		out = append(out, llm.FactSpec{Name: n, Type: fmt.Sprint(t), Description: factDescriptions[n]})
 	}
 	return out
 }
 
+// factDescriptions: one entry per catalog fact (except agent.*), written from docs/contracts.md §3
+// and the collectors in internal/agent/facts. A fact whose collector did not run is absent, which
+// the rule engine treats as unknown.
 var factDescriptions = map[string]string{
-	"os.libc":           "glibc or musl",
-	"kernel.modules":    "names of loaded kernel modules (/proc/modules)",
-	"kernel.sysctl":     "selected sysctl values, keys like user.max_user_namespaces",
-	"services.active":   "running services: systemd unit names without .service (e.g. php8.2-fpm, apache2, ssh); without systemd, daemon names from /proc (sshd gives ssh and sshd, apache2/httpd give both, php-fpm8.2 gives php-fpm)",
-	"sockets.listening": "listening sockets: proto, addr, port, process",
-	"sockets.ports":     "distinct listening ports",
-	"sshd.config":       "effective sshd config from 'sshd -T', lowercase keys",
-	"nginx.modules":     "nginx -V configure modules, e.g. http_v2_module",
-	"nginx.directives":  "nginx -T: directive name -> all values",
-	"nginx.http2":       "nginx accepts HTTP/2",
-	"apache.modules":    "apachectl -M module names, e.g. proxy_module",
-	"apache.http2":      "mod_http2 loaded and h2/h2c enabled in Protocols",
-	"php.sapi":          "installed PHP SAPIs, exact values: cli, php-fpm, apache2handler",
-	"php.ini":           "selected php.ini values (allow_url_include, disable_functions, ...)",
-	"docker.containers": "running containers: name, image, image_id, ports, privileged",
+	"os.id":             "ID from /etc/os-release, lowercase, e.g. debian, ubuntu, alpine, rhel",
+	"os.version_id":     "VERSION_ID from /etc/os-release as a string, e.g. 12 or 3.20.3",
+	"os.libc":           "C library: exactly glibc or musl",
+	"os.libc_version":   "libc version from 'ldd --version', e.g. 2.36; absent when it could not be read",
+	"kernel.release":    "running kernel release from 'uname -r', e.g. 6.1.0-18-amd64",
+	"kernel.modules":    "names of loaded kernel modules (first column of /proc/modules), e.g. nf_tables",
+	"kernel.sysctl":     "map of sysctl key to its current value (string), only for this closed allowlist and only keys present on the kernel: kernel.unprivileged_userns_clone, user.max_user_namespaces, kernel.unprivileged_bpf_disabled, kernel.kptr_restrict, kernel.yama.ptrace_scope, kernel.dmesg_restrict, net.ipv4.ip_forward, net.ipv6.conf.all.disable_ipv6, fs.protected_symlinks, fs.protected_hardlinks, vm.unprivileged_userfaultfd, kernel.io_uring_disabled, kernel.apparmor_restrict_unprivileged_userns",
+	"services.active":   "running services: systemd unit names without .service (e.g. php8.2-fpm, apache2, ssh); without systemd, daemon names from /proc (sshd gives ssh and sshd, apache2/httpd give both, php-fpm8.2 gives php-fpm); sorted, deduplicated",
+	"services.source":   "where services.active came from: exactly systemd or proc; absent together with services.active",
+	"sockets.listening": "listening sockets, each a map with proto (tcp, tcp6, udp or udp6), addr (bound IP address as text, e.g. 0.0.0.0, 127.0.0.1, ::), port (int) and process (owning process name, empty when unknown)",
+	"sockets.ports":     "distinct listening port numbers (ints) over tcp and udp",
+	"sshd.installed":    "true when the sshd binary exists; false means OpenSSH server is not installed and the other sshd.* facts are absent",
+	"sshd.version":      "OpenSSH version string from 'sshd -V', e.g. 9.2p1 Debian-2+deb12u3",
+	"sshd.config":       "effective sshd configuration from 'sshd -T': map of lowercase keyword to its first value as a string (e.g. permitrootlogin -> without-password, passwordauthentication -> yes); absent when sshd -T was not run",
+	"nginx.installed":   "true when nginx is installed; false means the other nginx.* facts are absent",
+	"nginx.version":     "nginx version from 'nginx -v', e.g. 1.22.1",
+	"nginx.modules":     "names of --with-* configure flags from 'nginx -V' without the prefix, e.g. http_v2_module, http_ssl_module",
+	"nginx.directives":  "from 'nginx -T': map of directive name to the list of all argument strings seen (arguments joined by one space, one entry per occurrence, secret-looking values masked as ***, values capped at 256 bytes)",
+	"nginx.http2":       "true when 'http2 on' or a 'listen ... http2' flag is configured",
+	"apache.installed":  "true when Apache httpd is installed; false means the other apache.* facts are absent",
+	"apache.version":    "Apache version from 'apachectl -v' or 'httpd -v', e.g. 2.4.57",
+	"apache.modules":    "loaded module names from 'apachectl -M', e.g. proxy_module, http2_module",
+	"apache.http2":      "true when http2_module is loaded and a Protocols directive contains h2 or h2c",
+	"php.installed":     "true when the php binary exists; false means the other php.* facts are absent",
+	"php.version":       "PHP version from 'php -v', e.g. 8.2.7",
+	"php.sapi":          "SAPIs installed on disk (not necessarily running), sorted; exact values: cli, php-fpm, apache2handler",
+	"php.ini":           "map of php.ini setting to its value (string, empty when unset) from 'php -i' for exactly these keys: allow_url_include, allow_url_fopen, disable_functions, expose_php, open_basedir, cgi.fix_pathinfo; reflects the CLI configuration, which may differ from php-fpm or Apache",
+	"openssl.version":   "OpenSSL version from 'openssl version', e.g. 3.0.13",
+	"docker.installed":  "true when the Docker socket exists; false means the other docker.* facts are absent",
+	"docker.version":    "Docker engine version from the Docker API",
+	"docker.containers": "running containers (at most 500), each a map with name, image, image_id, ports (list of strings like 0.0.0.0:8080->80/tcp for published ports or 80/tcp), and privileged (bool; absent when inspect failed)",
+	"runc.version":      "runc version from 'runc --version', e.g. 1.1.12",
+	"sudo.version":      "sudo version from 'sudo -V', e.g. 1.9.13p3",
 }
 
 // rulesService adapts the rule engine to the web UI (validation is a package func).

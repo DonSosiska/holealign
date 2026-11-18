@@ -114,7 +114,7 @@ func TestDraftHappyPath(t *testing.T) {
 			t.Errorf("rule file lacks %q:\n%s", s, y)
 		}
 	}
-	for _, s := range []string{"## Rule for CVE-2099-0100", "| CISA KEV | yes |", "### Test cases", "root login on", "set `status: reviewed` after checking",
+	for _, s := range []string{"## Rule for `` CVE-2099-0100 ``", "| CISA KEV | yes |", "### Test cases", "root login on", "set `status: reviewed` after checking",
 		"The conditions match the advisory", "No `file.match` request reads a sensitive path", "https://example.org/advisory/1"} {
 		if !strings.Contains(res.PRBody, s) {
 			t.Errorf("PR body lacks %q:\n%s", s, res.PRBody)

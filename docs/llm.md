@@ -97,7 +97,9 @@ Sent, in one request per draft:
   names and types of sibling packages (up to 50), PURL, fixed versions, severity, CVSS, EPSS, KEV
   flag, fix state, and the host's distribution name (for example "Debian GNU/Linux 12").
 - **Advisory text** from OSV for the vulnerability (up to 12 000 characters).
-- **Static prompt:** the fact catalog (names, types, descriptions), the CEL environment and three
+- **Static prompt:** the fact catalog (names, types, descriptions; every fact has a description
+  taken from `docs/contracts.md` section 3, and the `agent.*` facts are left out because they
+  describe the agent, not exploitability), the CEL environment and three
   example rules.
 
 **Never sent:** host facts, configuration file contents, `file.match` results, hostnames, IP

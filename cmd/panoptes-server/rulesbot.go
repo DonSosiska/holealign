@@ -119,7 +119,7 @@ func rulesDraft(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	if fs.NArg() != 0 || (*cand == "") == (*candFile == "") {
-		return errors.New("usage: rules draft (-candidate <json> | -candidate-file <file> -index N) -rules <dir> -tests <dir> [-out-rules dir] [-out-tests dir] [-provider p -model m -base-url u] [-max-attempts 2]")
+		return errors.New("usage: rules draft (-candidate <json> | -candidate-file <file> -index N) -rules <dir> -tests <dir> [-out-rules dir] [-out-tests dir] [-provider p -model m -base-url u] [-osv-url u] [-max-attempts 2]")
 	}
 	c, err := readCandidate(*cand, *candFile, *index)
 	if err != nil {
@@ -146,7 +146,7 @@ func rulesDraft(args []string, stdout, stderr io.Writer) error {
 		*provider = "anthropic"
 	}
 	if *provider == "" || *provider == "none" {
-		return errors.New("no LLM provider: set -provider (or PANOPTES_LLM_PROVIDER) and the API key")
+		return errors.New("no LLM provider: set -provider (or PANOPTES_LLM_PROVIDER); an API key is optional when the Anthropic SDK finds workload identity federation credentials")
 	}
 	if *model == "" && *provider == "anthropic" {
 		*model = "claude-sonnet-5-5"

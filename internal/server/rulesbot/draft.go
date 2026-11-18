@@ -84,6 +84,9 @@ func Draft(ctx context.Context, o DraftOptions) (*DraftResult, error) {
 			return nil, fmt.Errorf("%w: %s", ErrIDExists, id)
 		}
 	}
+	// A candidate file is not trusted either: only aliases of this very vulnerability reach rule.vulns.
+	c.Aliases = FilterAliases(c.Vuln, c.Ecosystem, c.Aliases, log)
+	o.Candidate = c
 	in := llm.RepoInput{Vuln: c.Vuln, Aliases: c.Aliases, Package: c.Package, Binaries: c.BinaryPackages, Type: c.Type,
 		Ecosystem: c.Ecosystem, Severity: c.Severity, CVSS: c.CVSS, EPSS: c.EPSS, KEV: c.KEV, RuleID: id}
 

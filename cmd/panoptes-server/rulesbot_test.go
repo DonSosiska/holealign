@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -12,7 +13,51 @@ import (
 
 	"github.com/DonSosiska/panoptes/internal/server/config"
 	"github.com/DonSosiska/panoptes/internal/server/llm"
+	"github.com/DonSosiska/panoptes/internal/server/rules"
 )
+
+func TestFactCatalogDescriptions(t *testing.T) {
+	cat := factCatalog()
+	if len(cat) < 30 {
+		t.Fatalf("catalog has %d facts", len(cat))
+	}
+	for _, f := range cat {
+		if strings.HasPrefix(f.Name, "agent.") {
+			t.Errorf("%s must not be offered to the drafter", f.Name)
+		}
+		if strings.TrimSpace(f.Description) == "" {
+			t.Errorf("fact %s has no description", f.Name)
+		}
+	}
+	for n := range factDescriptions {
+		if _, ok := rules.FactTypeOf(n); !ok {
+			t.Errorf("description for %s, which is not a catalog fact", n)
+		}
+	}
+}
+
+func TestRulesUsageListsEveryFlag(t *testing.T) {
+	for _, cmd := range []string{"candidates", "draft"} {
+		var out, errb bytes.Buffer
+		rulesCmd("", []string{cmd, "-h"}, &out, &errb)
+		n := 0
+		for _, l := range strings.Split(errb.String(), "\n") {
+			l = strings.TrimSpace(l)
+			if !strings.HasPrefix(l, "-") {
+				continue
+			}
+			n++
+			name, _, _ := strings.Cut(l[1:], " ")
+			start := strings.Index(rulesUsage, "  "+cmd+" ")
+			if !strings.Contains(rulesUsage[start:], "-"+name) {
+				t.Errorf("usage of %s lacks -%s", cmd, name)
+			}
+		}
+		if n < 8 {
+			t.Errorf("%s: parsed only %d flags from %q", cmd, n, errb.String())
+		}
+	}
+}
 
 type cliProv struct{ reply string }
 
@@ -43,7 +88,7 @@ func TestRulesDraftCLI(t *testing.T) {
 		"-out-rules", filepath.Join(dir, "r"), "-out-tests", filepath.Join(dir, "t"), "-provider", "openai-compatible",
 		"-model", "m", "-base-url", "http://x", "-osv-url", osv.URL}
 	code, out, errOut := runCLI(t, "", args...)
-	if code != 0 || !strings.Contains(out, "## Rule for CVE-2099-0100") || got.Model != "m" || got.Provider != "openai-compatible" {
+	if code != 0 || !strings.Contains(out, "## Rule for `` CVE-2099-0100 ``") || got.Model != "m" || got.Provider != "openai-compatible" {
 		t.Fatalf("draft: %d %q %q %+v", code, out, errOut, got)
 	}
 	for _, p := range []string{"r/CVE-2099-0100-openssh.yaml", "t/CVE-2099-0100-openssh.yaml"} {
