@@ -32,7 +32,7 @@ sibling packages seen on your hosts.
 | Provider | `llm.provider` | Notes |
 |---|---|---|
 | none (default) | `none` | No drafting. Only shipped and hand-written rules apply, and `unknown_critical` alerts are not delayed. |
-| Anthropic | `anthropic` | Uses the Anthropic API with your key. `llm.model` defaults to `claude-sonnet-5-5`. `llm.base_url` optionally overrides the endpoint. |
+| Anthropic | `anthropic` | Uses the Anthropic API. `llm.model` defaults to `claude-sonnet-5-5`. `llm.base_url` optionally overrides the endpoint. The key is read from the variable named by `llm.api_key_env`; see [Keyless authentication](#keyless-authentication). |
 | OpenAI-compatible | `openai-compatible` | Any server with `POST <base_url>/chat/completions` and JSON output mode: Ollama, vLLM, OpenRouter, LiteLLM. `llm.base_url` is required (for example `http://ollama:11434/v1`). The key is optional, sent as a Bearer token. |
 
 Secrets come from the environment, never from `server.yaml`. In `.env` or `server.env`:
@@ -69,6 +69,18 @@ All keys: [configuration.md](configuration.md#llm). At start the server logs
 `LLM drafter enabled` with the provider and limit, or `LLM drafter disabled` with the reason. The
 server warns when `llm.base_url` is plain `http://` to a non-loopback host.
 
+### Keyless authentication
+
+The Anthropic provider does not require `PANOPTES_LLM_API_KEY`. When the variable named by `llm.api_key_env`
+is unset or empty the server creates the SDK client without an explicit key and the SDK falls back to its
+own credential discovery from the environment (for example `ANTHROPIC_API_KEY`, or workload identity
+federation through `ANTHROPIC_FEDERATION_RULE_ID`, `ANTHROPIC_ORGANIZATION_ID`,
+`ANTHROPIC_SERVICE_ACCOUNT_ID` and `ANTHROPIC_IDENTITY_TOKEN_FILE`). The project exercises this only in the
+rules repository's bot, which stores no API key at all: its workflow exchanges a short-lived GitHub OIDC
+token for Anthropic credentials, see [rules-feed.md](rules-feed.md#repository-bot) and the
+[bot setup](https://github.com/DonSosiska/panoptes-rules/blob/main/docs/bot-setup.md). For a long-running
+server, a dedicated key with a provider-side spend limit remains the documented setup.
+
 Provider details: the Anthropic provider asks for medium effort and, for the `claude-sonnet-5-5`
 and `claude-opus-5-5` models, uses the beta endpoint with server-side fallback so a refusal is
 re-served by another model in the same call. The OpenAI-compatible provider sends
@@ -98,7 +110,7 @@ Sent, in one request per draft:
   flag, fix state, and the host's distribution name (for example "Debian GNU/Linux 12").
 - **Advisory text** from OSV for the vulnerability (up to 12 000 characters).
 - **Static prompt:** the fact catalog (names, types, descriptions; every fact has a description
-  taken from `docs/contracts.md` section 3, and the `agent.*` facts are left out because they
+  taken from [contracts.md](contracts.md#3-fact-catalog) section 3, and the `agent.*` facts are left out because they
   describe the agent, not exploitability), the CEL environment and three
   example rules.
 
@@ -136,7 +148,21 @@ treated as hostile. The model's output is treated as hostile too.
 **Effect.**
 
 - A draft cannot lower a verdict and cannot make a fact-independent claim of exploitability: the
-  [draft guard](rules.md#how-verdicts-work) turns both into `conditions_unknown`.
+  [draft guard](rules.md#how-verdicts-are-decided) turns both into `conditions_unknown`.
+- **Draft reasons are fixed strings.** The evaluation reason of a draft is one of
+  `LLM draft suggests not exploitable (unreviewed); conditions not verified`,
+  `LLM draft: condition does not depend on host facts`, or the engine's own reason (facts and values)
+  prefixed with `LLM draft (unreviewed): `. No text the model wrote (explanation, title, literals) is ever
+  put into a reason, and the notifier replaces any reason starting with `LLM draft` by a fixed string, so
+  draft text is never relayed to Matrix.
+- **Grounding is checked against realistic values.** Before a draft may report `exploitable`, the server
+  evaluates its condition against synthetic hosts in which each fact it reads takes realistic values (known
+  sets for enumerable facts such as `os.libc` and `os.id`, version-like values for version facts, common
+  service and module names for open-ended ones, present and absent keys for maps). If the result never
+  changes, the condition does not depend on the host however it is written (`facts["os.id"] != "zzz-never"`,
+  `size(l) >= 0`, `true || ...`), and the draft stays `conditions_unknown`. A literal only counts as a
+  candidate value when it is itself realistic for that fact. The safe direction wins: a legitimate draft that
+  needs a value outside the pools stays `conditions_unknown` until a human approves it.
 - The web UI shows the LLM's text shortened and as plain text, in a box labelled unreviewed. Matrix
   alerts for draft rules show a warning, a fixed reason (`LLM draft ... (unreviewed); conditions not verified`)
   and a server-generated fix command, never the LLM's explanation, keys or literals.
@@ -154,4 +180,13 @@ costs calls and produces `failed` drafts rather than wrong rules.
 - Local (Ollama, vLLM): pick a model with good instruction following and JSON mode support, and
   expect more validator retries from small models. Keep it on a trusted network; plain `http://` to
   a non-loopback host triggers a warning.
-- Whatever you use, every draft needs the same human review.
+- Whatever you use, every draft needs the same human review. Drafts are AI-assisted: the validator shows a
+  rule is well-formed and cannot lower a verdict, not that it is correct. Compare the conditions and the
+  package selectors with the advisory before approving ([rules.md](rules.md#review-workflow-for-llm-drafts)).
+
+## The same drafter in the rules repository
+
+The rules repository's bot uses the same prompt, sanitising and validation through
+`panoptes-server rules draft`, with a variant that also writes the test cases, and opens pull requests
+instead of storing drafts in a database. Its pull request bodies show everything the model wrote as inert
+code, and a human must set `status: reviewed`. See [rules-feed.md](rules-feed.md#repository-bot).

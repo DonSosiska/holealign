@@ -12,9 +12,11 @@ Server stores only a SHA-256 hash of agent keys and enrollment tokens.
 | Method & path | Body → Response | Notes |
 |---|---|---|
 | `POST /api/v1/enroll` | `EnrollRequest` → `EnrollResponse` | `machine_id` must match `^[0-9a-f]{32,64}$` (agents send a sha256 hex) else 400; labels ≤ 32 entries matching `^[a-z0-9][a-z0-9._-]{0,63}$` else 400; hostname truncated to 253 chars, control, format (zero-width) and bidi characters stripped. 401 on unknown/revoked/expired token; 403 when the token's `max_hosts` is reached. **409** `{"error":"host exists; previous key required (admin: panoptes-server host allow-reenroll <host>)"}` when the `machine_id` is already enrolled and the request carries neither `Authorization: Bearer <current agent key of that host>` nor an admin `allow-reenroll` flag (cleared on use). A permitted re-enroll reuses the host record and rotates the key; it keeps the host's `token_name`, labels and `labels_locked` unless the new token itself carries labels (then the token's labels apply, its `max_hosts` is checked and the host moves to it). The admin permission (`reenroll_allowed_until`) expires (default 1 h). 429 only for **invalid** requests (unknown token, bad body/machine_id/labels): 10/min per client, where a client is an IPv4 address or an IPv6 /64; requests with a valid token are never counted against it (separate cap of 600/min per client). Bodies declaring `Content-Length` > 1 MiB get 413 before reading. |
-| `POST /api/v1/checkin` | `CheckinRequest` → `CheckinResponse` | Every 5 min (default); per host a token bucket: burst 3, one token refilled per 20 s (else 429 + `Retry-After`). Updates labels, OS, facts, `last_checkin`. Labels sent here are ignored for hosts enrolled with a token that has labels. Facts after merge: ≤ 1000 keys, ≤ 1 MiB JSON, each value ≤ 64 KiB, else 413. |
+| `POST /api/v1/checkin` | `CheckinRequest` → `CheckinResponse` | Every 5 min (default); per host a token bucket: burst 3, one token refilled per 20 s (else 429 + `Retry-After`). Updates labels, OS, facts, `last_checkin`. Labels sent here are ignored for hosts enrolled with a token that has labels. Facts after merge: ≤ 1000 keys, ≤ 1 MiB JSON, each value ≤ 64 KiB, else 413. The request body is limited to 8 MiB (413). `facts_complete: true` replaces the stored facts, `false` merges a diff in which a JSON `null` deletes a fact; an absent `labels` list keeps the stored labels. The response carries `fact_requests` (always a list), `want_inventory`, `want_full_facts` (a diff on the host's first check-in) and `next_checkin_seconds`, which the current server always leaves at 0 (the agent's own interval applies). |
 | `POST /api/v1/inventory` | `InventoryPayload` (gzip, `Content-Encoding: gzip`) → `202` | Max body 64 MiB decompressed (413; a `Content-Length` above it is refused before reading). Every target SBOM must be a CycloneDX JSON document: top-level `"bomFormat":"CycloneDX"` (exact, case-sensitive); keys that equal `components`/`bomFormat` only case-insensitively anywhere in the document are rejected; ≤ 50 000 components (nested ones counted); the matcher enforces the same package cap after decoding. Targets are validated **one by one**: a target that is invalid (unknown kind, empty name, `name` > 512 bytes, `image_id` > 128, > 200 containers or a container name > 256, not CycloneDX, duplicate) or oversized is **skipped**, the valid targets are stored and the response is `202 {"status":"accepted","skipped":[{"kind","name","reason"}]}` (`skipped` omitted when empty; repeated for an identical re-upload). Only payload-level errors (no/oversized `hash`, > 1000 targets, bad JSON/gzip) are 400/413, and `415` (with the `skipped` list) when no target is a CycloneDX document. The previous findings of a skipped target are kept (not resolved) and the skip is reported to the health loop (`pipeline_error`). A host whose uploads keep failing validation gets 429 (6 invalid uploads/min, checked before the body is read). Before the body is read every inventory request (identical-hash and over-limit ones included) is charged to a cheap per-host attempt bucket (`limits.inventory_attempt_burst` 6, refilled at `limits.inventory_attempts_per_minute` 10; 429 + `Retry-After`). At most one inventory decode runs per host at a time (a second concurrent upload gets 429 + `Retry-After`), and server-wide at most `limits.inventory_concurrent_decodes` (4) bodies are decoded at once; when all slots are taken the response is `503` + `Retry-After` (no queueing). The agent retries 429/503 later. Per host a token bucket: burst 3, one token refilled per 5 min (429 + `Retry-After` = seconds until the next token; the agent retries later). An inventory whose `hash` equals the stored one is answered `202` before the limiter, spends no token and does not re-match. Otherwise the server replaces all targets of the host and re-runs matching asynchronously. |
-| `GET /healthz` | → `200 ok` | No auth. |
+| `GET /healthz` | → `200 ok` | No auth. Served on the agent and the admin listener. |
+
+A readable per-endpoint description with field tables is in [api.md](api.md); this section is normative. Other methods on these paths are answered by the router with 405 and every other path on the agent listener is 404.
 
 Any request failing Bearer authentication counts against a per-client limit (30/min, then 429); valid agents are never throttled by it. The per-client limiter maps (IPv4 address / IPv6 /64) are bounded LRUs: under key pressure the oldest idle entry is evicted, a new client is never denied for lack of space.
 
@@ -172,11 +174,11 @@ sets `<x>.installed = false` and omits the other `<x>.*` facts.
 | `apache.modules` | list<string> | `apachectl -M` (e.g. `proxy_module`) |
 | `apache.http2` | bool | `http2_module` loaded and `Protocols` contains `h2` or `h2c` |
 | `php.installed`, `php.version` | bool, string | `php -v` |
-| `php.sapi` | list<string> | php-fpm / apache2handler / cli present |
+| `php.sapi` | list<string> | subset of `cli`, `php-fpm`, `apache2handler`, sorted: `cli` when `php -v` ran, `php-fpm` when `/usr/sbin/php-fpm*` or `/usr/local/sbin/php-fpm*` exists, `apache2handler` when a `libphp*.so` exists in the Apache module directories. **Installed on disk, not necessarily running.** |
 | `php.ini` | map<string,string> | `php -i` for: `allow_url_include`, `allow_url_fopen`, `disable_functions`, `expose_php`, `open_basedir`, `cgi.fix_pathinfo` |
 | `openssl.version` | string | `openssl version` |
 | `docker.installed`, `docker.version` | bool, string | Docker API `/version` |
-| `docker.containers` | list<map{name,image,image_id,ports(list<string>),privileged(bool)}> | Docker API `/containers/json` + inspect |
+| `docker.containers` | list<map{name,image,image_id,ports(list<string>),privileged(bool)}> | Docker API `/containers/json` + inspect; at most 500 running containers; `privileged` absent when inspect failed |
 | `runc.version` | string | `runc --version` |
 | `sudo.version` | string | `sudo -V` |
 | `agent.inventory_error` | string | last inventory scan error (truncated to 200 chars); absent when the last scan succeeded |
@@ -237,7 +239,7 @@ each rule's source (`builtin`, `feed:<seq>`, `db`; `Engine.Sources()`). Rule ids
 `^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`.
 
 **Rule tests.** `tests/<rule-id>.yaml` is a YAML list of cases
-`{name, finding: {vuln, package, source, type, version, severity, kev}, facts: {...}, host: {os_id, os_version_id, arch, labels}, want: <verdict>}`;
+`{name, finding: {vuln, package, source, type, version, severity, kev, target_kind}, facts: {...}, host: {os_id, os_version_id, arch, labels}, want: <verdict>}` (unknown keys are errors; `want` is one of `exploitable`, `affected_not_exploitable`, `conditions_unknown`, `not_affected`; every key is documented in [rules.md](rules.md#test-case-reference));
 `rules.RunTests(rules, tests)` evaluates them with the real Engine (the rule under test must be the one that
 matches). The shipped rules' tests live in `rules-tests/`.
 
@@ -252,7 +254,7 @@ matches). The shipped rules' tests live in `rules-tests/`.
 - Acceptance (atomic, any failure rejects the whole bundle, the installed bundle stays): pointer <= 64 KiB,
   https (or file://), no redirects; `seq` greater than the installed one (lower is logged and ignored);
   tarball <= 10 MiB with the pointer's sha256; signature by a key in `rules.feed.trusted_keys`; strict in-memory
-  extraction (only the three name patterns, regular files, <= 5000 entries of <= 256 KiB, every file listed with
+  extraction (only the three name patterns, regular files, <= 5000 entries of <= 256 KiB and <= 64 MiB expanded in total, `catalog` <= 1000 names, every file listed with
   a matching sha256, nothing unlisted, `index.json` `seq` equal to the pointer's); every rule parses, passes
   `Validate` and is `reviewed`; the bundle's tests pass. The accepted bundle is persisted in
   `data_dir/rules-feed/` and re-verified at start. kv keys: `rulesfeed.seq`, `rulesfeed.updated_at`,
@@ -311,9 +313,33 @@ any host data (a `facts` entry, a `fact_requests` entry, any `facts[...]` refere
 **never** evaluated for a finding whose `target_kind` is `container_image`: the result is `conditions_unknown`,
 reason `rule evaluates host facts; not applicable to container image targets`, before the missing-facts check and
 before any expression runs. The same verdict results when the finding's target kind is not listed in `targets`.
-Listing `container_image` does not lift this: it only matters for rules that read no host data (for example a pure
-`pkg.*` / `version_lt` rule), which are evaluated normally for the kinds they list. Such a result is never
-`affected_not_exploitable`, `not_affected` or `exploitable`. Rule test cases may set `finding.target_kind`.
+Such a result is never `affected_not_exploitable`, `not_affected` or `exploitable`. Listing `container_image` does
+not lift this. A rule that reads no host data (a pure `pkg.*` / `version_lt` rule) is not subject to this check at all:
+the engine evaluates it for every target kind, and `targets` has no effect on it (the field is validated and stored).
+Rule test cases may set `finding.target_kind`.
+
+### Rule schema
+A rule is a YAML (or JSON) object with exactly these keys; unknown keys are errors. Validation (`rules.Validate`)
+reports every problem at once.
+
+| Key | Type | Required | Constraint |
+|---|---|---|---|
+| `id` | string | yes | `^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$` |
+| `vulns` | list<string> | yes | at least one; entries non-empty |
+| `title`, `explanation` | string | yes | non-empty |
+| `packages` | list<selector> | yes | 1 to 50 selectors; a selector has exactly one of `name` (`path.Match` glob over the binary package name) and `source` (exact source package name, none of `*?[]\`), plus optional `type` |
+| `facts` | list<string> | no | catalog names, or `file.match:` names declared in `fact_requests`; every fact an expression reads must be listed (or be a `fact_requests` name) |
+| `targets` | list<string> | no | `host`, `container_image`; no duplicates |
+| `fact_requests` | list | no | at most 5; `collector: file.match`; `params.path` and `params.pattern` required; policy in the `fact_requests` paragraph below |
+| `exploitable_if` | CEL string | yes | compiles, returns bool |
+| `not_affected_if` | CEL string | no | compiles, returns bool |
+| `fix.upgrade`, `fix.mitigation` | string | no | |
+| `status` | string | yes | `reviewed`, `draft`, `rejected` |
+| `source` | string | yes | non-empty; `builtin`, `user` or `llm:<model>` by convention |
+| `references` | list<string> | no | |
+
+The rule as JSON is at most 32 KiB. Expressions must not index `facts` with a non-literal key, and every read
+of a fact must name a catalog fact (or a requested `file.match:*` name).
 
 ### Matching a rule to a finding
 A rule applies when `finding.vuln_id` or any of `finding.aliases` is in `rule.vulns`, AND a
@@ -345,10 +371,13 @@ CEL optional types are enabled (`cel.OptionalTypes()`), so rules can write
 The legacy spelling `m.?["k"]` is rejected by `Validate` (use `m[?"key"]`). Facts must be read as `facts["literal"]`. Expressions must return bool. Evaluation cost limit 10 000; timeout 50 ms.
 
 ### Verdict algorithm (per finding)
-1. Find the applicable rule (DB overrides file). None → `conditions_unknown`, reason "no rule".
-2. Any fact in `rule.facts` (or requested `file.match:*` name) absent → `conditions_unknown`, reason lists missing facts.
+1. Find the applicable rule (layers: DB over feed over built-in; see above). None → `conditions_unknown`, reason "no rule".
+   A rule that reads host data and a finding in a container image: `conditions_unknown` (see Rule targets).
+2. Any fact in `rule.facts` (an absent key or a JSON `null` counts as absent) (or requested `file.match:*` name) absent → `conditions_unknown`, reason lists missing facts.
 3. `not_affected_if` set and true → `affected_not_exploitable`.
-4. `exploitable_if` true → `exploitable`, else `affected_not_exploitable`.
+4. `exploitable_if` true → `exploitable`, else `affected_not_exploitable`. The engine never produces `not_affected`
+   (the verdict exists in the model, the UI and the test format, but a true `not_affected_if` yields
+   `affected_not_exploitable`).
 5. Expression error → `conditions_unknown`, reason contains the error.
 6. Draft guard (applied to the result of steps 3-4; only when `status` is `draft`). A draft never lowers a verdict:
    - Any outcome other than `exploitable` (that is `affected_not_exploitable`, from `not_affected_if` or
