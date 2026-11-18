@@ -319,7 +319,7 @@ is still subject to the `rules-release` approval. The workflow calls Anthropic t
 federation, so no API key is stored anywhere. Setup:
 <https://github.com/DonSosiska/panoptes-rules/blob/main/docs/bot-setup.md>.
 
-Two `panoptes-server` commands do the work. Neither needs a server configuration or database, and neither
+Three `panoptes-server` commands do the work (the third, `rules eval`, is a measurement tool and not part of the workflow). Neither needs a server configuration or database, and neither
 sends host data anywhere (there is none): only advisory and candidate fields go to OSV, KEV, EPSS and the
 LLM provider.
 
@@ -395,7 +395,10 @@ and tests: few-shot examples and ID collision); `-out-rules`, `-out-tests` (defa
 `-tests`); `-provider`, `-model`, `-base-url` (defaults from `PANOPTES_LLM_PROVIDER`,
 `PANOPTES_LLM_MODEL`, `PANOPTES_LLM_BASE_URL`; key from `PANOPTES_LLM_API_KEY` or
 `ANTHROPIC_API_KEY`; provider `anthropic` is assumed when only a key is set); `-max-attempts`
-(default 2); `-osv-url`.
+(default 2); `-osv-url`; `-effort low|medium|high|xhigh|max` (default `PANOPTES_LLM_EFFORT`, else `medium`). A
+summary line `usage: model=... calls=N in=... out=... cache_read=... cache_write=... est_usd=...` goes to
+stderr after the run (see [llm.md](llm.md#prompt-caching-usage-and-effort)); stdout and the exit codes are
+unchanged. `rules candidates` makes no LLM call and has no `-effort`.
 
 Keyless authentication. When neither `PANOPTES_LLM_API_KEY` nor `ANTHROPIC_API_KEY` is set, the
 Anthropic SDK looks for workload identity federation credentials in the environment:
@@ -436,3 +439,65 @@ A reviewer checks the pull request and sets `status: reviewed`; CI validates the
 
 Exit codes: 0 success; 1 other error (usage, provider or network error); 2 no valid draft or the
 model refused (nothing written); 3 a rule with that ID already exists.
+
+### `rules eval`
+
+Measures how well a model drafts rules, against human-reviewed rules and their tests, to decide whether a
+cheaper model is good enough. **It makes real LLM calls and spends real money** (see below).
+
+```sh
+panoptes-server rules eval -rules rules -tests tests \
+  -variants claude-sonnet-5-5@medium,claude-haiku-5-5@medium,claude-haiku-5-5@high \
+  -runs 3 -out report.json > summary.md
+```
+
+Usage: `rules eval -rules <dir> -tests <dir> [-ids a,b] [-variants model[@effort],...] [-runs 3] [-max-attempts 2] [-concurrency 2] [-out report.json] [-provider p] [-model m] [-base-url u] [-osv-url u] [-effort e]`
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `-rules`, `-tests` | required | the reference rules and tests, for example a `panoptes-rules` checkout |
+| `-ids` | every rule with `status: reviewed` that has tests | comma-separated rule IDs |
+| `-variants` | one variant: `-model` / `PANOPTES_LLM_MODEL`, else `claude-sonnet-5-5` | comma-separated `model[@effort]`; without `@effort`, `-effort` applies |
+| `-runs` | `3` | drafts per rule and variant (a model is not deterministic) |
+| `-max-attempts` | `2` | attempts per draft, as in `rules draft` |
+| `-concurrency` | `2` | drafts in flight; raise it with care, rate limits apply |
+| `-out` | | JSON report with every run |
+| `-provider`, `-base-url`, `-osv-url`, `-effort` | as in `rules draft` | the key comes from `PANOPTES_LLM_API_KEY` or `ANTHROPIC_API_KEY` |
+
+For every reference rule, variant and run the command builds a candidate from the rule (vuln: the first
+`CVE-*` in `vulns`, else the first ID; its other vulns are aliases; package: the `source` of the `deb`
+selector if there is one, else its `name` without `*`; type `deb`, ecosystem `Debian:12`; severity, KEV
+and EPSS are left empty; a rule with only `apk` selectors uses `apk`), fetches the advisory from OSV once
+per vulnerability, and runs the same draft pipeline as `rules draft` (validation, the draft's own tests,
+retries). The reference rule is removed from the rules passed to the pipeline, so it is neither a
+few-shot example nor an ID collision, and nothing is written to `-rules` or `-tests`.
+
+A successful draft is then scored against the reference rule's test cases: each case is evaluated with
+the drafted rule (status forced to `reviewed`, as rule tests are) and its verdict compared with the case's
+`want`. A case counts only when the drafted rule matches its finding (same package selector and type,
+for example `deb` cases); the others are *skipped*. A case without `source` whose package the reference
+rule selects by name gets the candidate's source package.
+
+| Metric | Meaning |
+|---|---|
+| success | the pipeline produced a valid rule with passing own tests within the attempts |
+| agreement | matched / compared reference cases of one draft, averaged over successful drafts with at least one compared case |
+| unsafe | compared cases where the reference wants `exploitable` or `conditions_unknown` and the draft says `affected_not_exploitable` or `not_affected` (the dangerous direction; drafts never lower verdicts at runtime, but a reviewer may trust one) |
+| missed exploitable | compared cases where the reference wants `exploitable` and the draft does not |
+| attempts, tokens | LLM calls per run and input + output + cache tokens per run, means over all runs |
+| est. USD per success | the estimated cost of all runs (failed ones included) divided by the number of successful drafts |
+
+Output: a Markdown summary on stdout (one table per variant with a row per rule, then a table comparing
+the variants: success rate, mean agreement, unsafe, missed exploitable, USD per success, total USD) and,
+with `-out`, a JSON report with every run (success, attempts, refusal, capped error text, wall time,
+usage, estimated USD, score). Costs are estimated from list prices ([llm.md](llm.md#prompt-caching-usage-and-effort));
+`n/a` means a model without a price. The exit code is 0 even when drafts fail, because this is a
+measurement; it is non-zero only for usage errors and when no LLM call returned at all (the summary is
+still printed).
+
+Cost. Every run is one to `-max-attempts` LLM calls with a prompt of roughly 10-15k input tokens (the
+system prompt is cached after the first call within five minutes) and a few thousand output tokens. As a
+rough guide that is a few cents per Sonnet 5.5 draft and a fraction of a cent per Haiku 5.5 draft, so
+20 rules x 3 runs x 3 variants (180 drafts) costs of the order of ten dollars, most of it the Sonnet
+variant. Start with `-ids` of two or three rules and `-runs 1`, read the `usage:` figures, then scale up.
+The estimate in the report is the authority on your own prompts.

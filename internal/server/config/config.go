@@ -232,6 +232,24 @@ type LLM struct {
 	BaseURL    string `yaml:"base_url"`
 	APIKeyEnv  string `yaml:"api_key_env"`
 	DailyLimit int    `yaml:"daily_limit"`
+	// Effort is the reasoning effort of the anthropic provider: low, medium, high, xhigh or max.
+	Effort string `yaml:"effort"`
+}
+
+// LLMEfforts lists the valid llm.effort values.
+var LLMEfforts = []string{"low", "medium", "high", "xhigh", "max"}
+
+// ValidEffort reports whether e is a valid effort value (empty means the default, medium).
+func ValidEffort(e string) bool {
+	if e == "" {
+		return true
+	}
+	for _, v := range LLMEfforts {
+		if v == e {
+			return true
+		}
+	}
+	return false
 }
 
 // Admin configures the initial web admin user.
@@ -260,6 +278,7 @@ func Default() Config {
 			Model:      "claude-sonnet-5-5",
 			APIKeyEnv:  "PANOPTES_LLM_API_KEY",
 			DailyLimit: 50,
+			Effort:     "medium",
 		},
 		Admin: Admin{InitialPasswordEnv: "PANOPTES_ADMIN_PASSWORD"},
 		LocalAgent: LocalAgent{
@@ -314,6 +333,9 @@ func load(path string, lookup func(string) (string, bool)) (*Config, error) {
 }
 
 func (c *Config) validate() error {
+	if !ValidEffort(c.LLM.Effort) {
+		return fmt.Errorf("llm.effort must be one of %s", strings.Join(LLMEfforts, ", "))
+	}
 	if c.Feeds.Interval <= 0 {
 		return errors.New("feeds.interval must be positive")
 	}

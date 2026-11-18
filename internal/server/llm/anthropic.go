@@ -16,6 +16,7 @@ import (
 type anthropicProvider struct {
 	client anthropic.Client
 	model  string
+	effort string // low|medium|high|xhigh|max
 }
 
 func newAnthropic(cfg config.LLM) *anthropicProvider {
@@ -28,7 +29,11 @@ func newAnthropic(cfg config.LLM) *anthropicProvider {
 	if cfg.BaseURL != "" {
 		opts = append(opts, option.WithBaseURL(cfg.BaseURL))
 	}
-	return &anthropicProvider{client: anthropic.NewClient(opts...), model: cfg.Model}
+	effort := cfg.Effort
+	if effort == "" {
+		effort = "medium"
+	}
+	return &anthropicProvider{client: anthropic.NewClient(opts...), model: cfg.Model, effort: effort}
 }
 
 func (p *anthropicProvider) Name() string { return "anthropic:" + p.model }
@@ -50,16 +55,19 @@ func (p *anthropicProvider) Complete(ctx context.Context, system, user string) (
 		msg, err = p.client.Beta.Messages.New(ctx, anthropic.BetaMessageNewParams{
 			Model:     p.model,
 			MaxTokens: 16000,
-			System:    []anthropic.BetaTextBlockParam{{Text: system}},
+			// The system prompt is the cached prefix: it must stay byte-identical across calls.
+			System: []anthropic.BetaTextBlockParam{{Text: system, CacheControl: anthropic.NewBetaCacheControlEphemeralParam()}},
 			Messages: []anthropic.BetaMessageParam{
 				anthropic.NewBetaUserMessage(anthropic.NewBetaTextBlock(user)),
 			},
-			OutputConfig: anthropic.BetaOutputConfigParam{Effort: anthropic.BetaOutputConfigEffortMedium},
+			OutputConfig: anthropic.BetaOutputConfigParam{Effort: anthropic.BetaOutputConfigEffort(p.effort)},
 			Betas:        []anthropic.AnthropicBeta{anthropic.AnthropicBetaServerSideFallback2026_07_01},
 			Fallbacks:    anthropic.BetaFallbacksParamOfDefault(),
 		})
 		if err == nil {
 			stop = string(msg.StopReason)
+			reportUsage(ctx, Usage{Model: p.model, InputTokens: msg.Usage.InputTokens, OutputTokens: msg.Usage.OutputTokens,
+				CacheReadTokens: msg.Usage.CacheReadInputTokens, CacheWriteTokens: msg.Usage.CacheCreationInputTokens})
 			for _, b := range msg.Content {
 				if b.Type == "text" {
 					text.WriteString(b.Text)
@@ -71,14 +79,16 @@ func (p *anthropicProvider) Complete(ctx context.Context, system, user string) (
 		msg, err = p.client.Messages.New(ctx, anthropic.MessageNewParams{
 			Model:     p.model,
 			MaxTokens: 16000,
-			System:    []anthropic.TextBlockParam{{Text: system}},
+			System:    []anthropic.TextBlockParam{{Text: system, CacheControl: anthropic.NewCacheControlEphemeralParam()}},
 			Messages: []anthropic.MessageParam{
 				anthropic.NewUserMessage(anthropic.NewTextBlock(user)),
 			},
-			OutputConfig: anthropic.OutputConfigParam{Effort: anthropic.OutputConfigEffortMedium},
+			OutputConfig: anthropic.OutputConfigParam{Effort: anthropic.OutputConfigEffort(p.effort)},
 		})
 		if err == nil {
 			stop = string(msg.StopReason)
+			reportUsage(ctx, Usage{Model: p.model, InputTokens: msg.Usage.InputTokens, OutputTokens: msg.Usage.OutputTokens,
+				CacheReadTokens: msg.Usage.CacheReadInputTokens, CacheWriteTokens: msg.Usage.CacheCreationInputTokens})
 			for _, b := range msg.Content {
 				if b.Type == "text" {
 					text.WriteString(b.Text)

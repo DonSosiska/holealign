@@ -31,9 +31,13 @@ const rulesUsage = `usage: panoptes-server rules <command>
                                         list CVEs worth a rule that the repository does not cover (JSON)
   draft  (-candidate <json> | -candidate-file <file> -index N) -rules <dir> -tests <dir>
          [-out-rules <dir>] [-out-tests <dir>] [-provider <p>] [-model <m>] [-base-url <url>]
-         [-osv-url <url>] [-max-attempts N]
+         [-osv-url <url>] [-max-attempts N] [-effort low|medium|high|xhigh|max]
                                         draft a rule and tests with an LLM; prints a PR body
                                         (exit 2: no valid draft, 3: rule ID exists)
+  eval   -rules <dir> -tests <dir> [-ids <a,b>] [-variants <model[@effort],...>] [-runs N] [-max-attempts N]
+         [-concurrency N] [-out <report.json>] [-provider <p>] [-model <m>] [-base-url <url>] [-osv-url <url>] [-effort <e>]
+                                        draft reference rules with several models and score them against
+                                        the reference tests (spends real money; prints a markdown summary)
 `
 
 // rulesCmd implements "panoptes-server rules ...". keygen, build, sign and verify need neither the
@@ -57,6 +61,8 @@ func rulesCmd(cfgPath string, args []string, stdout, stderr io.Writer) int {
 		err = rulesCandidates(args[1:], stdout, stderr)
 	case "draft":
 		err = rulesDraft(args[1:], stdout, stderr)
+	case "eval":
+		err = rulesEval(args[1:], stdout, stderr)
 	case "import":
 		err = rulesImport(cfgPath, args[1:], stdout, stderr)
 	case "status":

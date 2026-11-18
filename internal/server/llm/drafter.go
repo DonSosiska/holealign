@@ -308,9 +308,14 @@ func (d *Drafter) handle(ctx context.Context, f model.Finding) {
 		if !d.takeCall(ctx, now, log) {
 			return
 		}
-		cctx, cancel := context.WithTimeout(ctx, completeTimeout)
+		var usage Usage
+		var gotUsage bool
+		cctx, cancel := context.WithTimeout(WithUsageSink(ctx, func(u Usage) { usage, gotUsage = u, true }), completeTimeout)
 		reply, err := d.d.Provider.Complete(cctx, system, prompt)
 		cancel()
+		if err == nil && gotUsage {
+			logUsage(log, usage, attempt+1)
+		}
 		if err != nil {
 			if errors.Is(err, ErrRefused) {
 				log.Warn("llm: model refused")
@@ -565,4 +570,16 @@ func escapeGlob(name string) string {
 		b.WriteRune(r)
 	}
 	return b.String()
+}
+
+// logUsage writes one INFO line for a completed draft attempt.
+func logUsage(log *slog.Logger, u Usage, attempt int) {
+	args := []any{"model", u.Model, "attempt", attempt, "input_tokens", u.InputTokens, "output_tokens", u.OutputTokens,
+		"cache_read_tokens", u.CacheReadTokens, "cache_write_tokens", u.CacheWriteTokens}
+	if usd, ok := EstimateUSD(u); ok {
+		args = append(args, "est_usd", fmt.Sprintf("%.4f", usd))
+	} else {
+		args = append(args, "est_usd", "unknown")
+	}
+	log.Info("llm: draft attempt completed", args...)
 }

@@ -37,7 +37,7 @@ func TestFactCatalogDescriptions(t *testing.T) {
 }
 
 func TestRulesUsageListsEveryFlag(t *testing.T) {
-	for _, cmd := range []string{"candidates", "draft"} {
+	for _, cmd := range []string{"candidates", "draft", "eval"} {
 		var out, errb bytes.Buffer
 		rulesCmd("", []string{cmd, "-h"}, &out, &errb)
 		n := 0
