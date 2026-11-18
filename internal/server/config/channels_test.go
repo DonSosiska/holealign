@@ -156,3 +156,52 @@ notify: {default: ["webhook:siem"], ops: ["webhook:lab"]}
 		t.Errorf("error = %v", err)
 	}
 }
+
+func TestEmailConfig(t *testing.T) {
+	cfg, err := loadYAMLEnv(t, `
+email:
+  smtp:
+    host: smtp.example.com
+    username: alerts
+    from: "Holealign <alerts@example.com>"
+  allowed_domains: [example.com, example.org]
+notify: {default: ["email:ops@example.com"], routes: [{label: prod, to: ["email:sec@example.org"]}]}
+`, map[string]string{"HOLEALIGN_EMAIL_SMTP_PORT": "465", "HOLEALIGN_EMAIL_SMTP_TLS": "implicit"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Channels()["email"] || cfg.Email.SMTP.Port != 465 || cfg.Email.SMTP.TLS != "implicit" || cfg.Email.SMTP.PasswordEnv != "HOLEALIGN_SMTP_PASSWORD" {
+		t.Errorf("email = %+v", cfg.Email)
+	}
+	// defaults
+	cfg, err = loadYAML(t, `email: {smtp: {host: smtp.example.com, from: "a@example.com"}}`)
+	if err != nil || cfg.Email.SMTP.Port != 587 || cfg.Email.SMTP.TLS != "starttls" {
+		t.Errorf("defaults: %v %+v", err, cfg)
+	}
+	for name, y := range map[string]string{
+		"not configured":    `notify: {default: ["email:ops@example.com"]}`,
+		"no from":           `email: {smtp: {host: smtp.example.com}}`,
+		"bad from":          `email: {smtp: {host: smtp.example.com, from: "nope"}}`,
+		"plain tls":         `email: {smtp: {host: smtp.example.com, from: "a@example.com", tls: none}}`,
+		"empty tls":         `email: {smtp: {host: smtp.example.com, from: "a@example.com", tls: ""}}`,
+		"bad port":          `email: {smtp: {host: smtp.example.com, from: "a@example.com", port: 0}}`,
+		"port too large":    `email: {smtp: {host: smtp.example.com, from: "a@example.com", port: 70000}}`,
+		"bad host":          `email: {smtp: {host: "smtp example.com", from: "a@example.com"}}`,
+		"password env bad":  `email: {smtp: {host: smtp.example.com, from: "a@example.com", password_env: PATH}}`,
+		"password env dup":  `email: {smtp: {host: smtp.example.com, from: "a@example.com", password_env: HOLEALIGN_ADMIN_PASSWORD}}`,
+		"domain upper":      `email: {smtp: {host: smtp.example.com, from: "a@example.com"}, allowed_domains: [Example.com]}`,
+		"domain bad":        `email: {smtp: {host: smtp.example.com, from: "a@example.com"}, allowed_domains: ["a b"]}`,
+		"domain not listed": `email: {smtp: {host: smtp.example.com, from: "a@example.com"}, allowed_domains: [example.com]}` + "\n" + `notify: {default: ["email:ops@evil.example"]}`,
+		"subdomain":         `email: {smtp: {host: smtp.example.com, from: "a@example.com"}, allowed_domains: [example.com]}` + "\n" + `notify: {default: ["email:ops@sub.example.com"]}`,
+		"display name dest": `email: {smtp: {host: smtp.example.com, from: "a@example.com"}}` + "\n" + `notify: {default: ["email:Ops <ops@example.com>"]}`,
+		"settings w/o host": `email: {allowed_domains: [example.com]}`,
+	} {
+		if _, err := loadYAML(t, y); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	_, err = loadYAML(t, `email: {smtp: {host: smtp.example.com, from: "a@example.com"}, allowed_domains: [example.com]}`+"\n"+`notify: {default: ["email:ops@evil.example"]}`)
+	if err == nil || !strings.Contains(err.Error(), "email.allowed_domains") {
+		t.Errorf("error should name the key: %v", err)
+	}
+}

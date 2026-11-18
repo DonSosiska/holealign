@@ -63,6 +63,7 @@ type Config struct {
 	Discord  Discord  `yaml:"discord"`
 	Teams    Teams    `yaml:"teams"`
 	Webhook  Webhook  `yaml:"webhook"`
+	Email    Email    `yaml:"email"`
 
 	deprecated []string // deprecated keys in use, reported by Warnings
 
@@ -293,6 +294,7 @@ func Default() Config {
 			Effort:     "medium",
 		},
 		Admin: Admin{InitialPasswordEnv: "HOLEALIGN_ADMIN_PASSWORD"},
+		Email: Email{SMTP: EmailSMTP{Port: 587, TLS: "starttls", PasswordEnv: "HOLEALIGN_SMTP_PASSWORD"}},
 		LocalAgent: LocalAgent{
 			Source:               LocalSourceAuto,
 			CollectorSocket:      "/run/holealign/collector.sock",
@@ -385,6 +387,7 @@ func (c *Config) validate() error {
 		{"telegram.bot_token_env", c.Telegram.BotTokenEnv},
 		{"llm.api_key_env", c.LLM.APIKeyEnv},
 		{"admin.initial_password_env", c.Admin.InitialPasswordEnv},
+		{"email.smtp.password_env", c.Email.SMTP.PasswordEnv},
 	}
 	for _, name := range sortedKeys(c.Discord.Webhooks) {
 		secretEnvs = append(secretEnvs, struct{ key, val string }{"discord.webhooks." + name + ".url_env", c.DiscordURLEnv(name)})

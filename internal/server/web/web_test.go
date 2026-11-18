@@ -106,6 +106,8 @@ func newEnv(t *testing.T, withRules bool) *env {
 	cfg.Discord.Webhooks = map[string]config.DiscordWebhook{"ops": {}}
 	cfg.Teams.Webhooks = map[string]config.TeamsWebhook{"ops": {}}
 	cfg.Webhook.Endpoints = map[string]config.WebhookEndpoint{"siem": {URL: "https://siem.example.org/h"}}
+	cfg.Email.SMTP.Host, cfg.Email.SMTP.From = "smtp.example.com", "alerts@example.com"
+	cfg.Email.AllowedDomains = []string{"example.com"}
 	d := Deps{Store: st, Pipeline: e.trig, Config: &cfg, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	if withRules {
 		d.Rules = e.rules
@@ -641,7 +643,7 @@ func TestMatrixRoutes(t *testing.T) {
 	c := e.session("admin")
 	for _, bad := range []string{"prod = room:server", "prod = !noserver", "prod", "= !a:b", "prod = ", "prod = !a:b\nprod = !c:d",
 		"prod = slack:#general", "prod = slack:c0123456789", "prod = telegram:@chan", "prod = telegram:-100123/0",
-		"prod = signal:123", "prod = webhook:https://evil.example/x", "prod = discord:https://discord.com/api/webhooks/1/x", "prod = teams:https://x.logic.azure.com/y", "prod = webhook:unknown", "prod = email:a@b", "prod = https://hooks.slack.com/services/T0/B0/x", "prod = slack:C0123456789 extra"} {
+		"prod = signal:123", "prod = webhook:https://evil.example/x", "prod = discord:https://discord.com/api/webhooks/1/x", "prod = teams:https://x.logic.azure.com/y", "prod = webhook:unknown", "prod = email:a@b", "prod = email:a@evil.example", "prod = email:Ops <a@example.com>", "prod = https://hooks.slack.com/services/T0/B0/x", "prod = slack:C0123456789 extra"} {
 		w := e.post("/settings/matrix", url.Values{"routes": {bad}}, c)
 		if w.Code != 422 {
 			t.Errorf("%q: want 422 got %d", bad, w.Code)
@@ -650,7 +652,7 @@ func TestMatrixRoutes(t *testing.T) {
 	if _, err := e.st.GetSetting(context.Background(), matrixSettingKey); err == nil {
 		t.Fatal("invalid routes persisted")
 	}
-	w := e.post("/settings/matrix", url.Values{"routes": {"prod = !x:y, !z:y\n# comment\n\ndev = !d:y, slack:C0123456789, telegram:-1001234567890/5"}}, c)
+	w := e.post("/settings/matrix", url.Values{"routes": {"prod = !x:y, !z:y\n# comment\n\ndev = !d:y, slack:C0123456789, telegram:-1001234567890/5, discord:ops, teams:ops, webhook:siem, email:ops@example.com"}}, c)
 	if w.Code != 303 {
 		t.Fatalf("save: %d", w.Code)
 	}
@@ -662,7 +664,7 @@ func TestMatrixRoutes(t *testing.T) {
 		Label string   `json:"label"`
 		To    []string `json:"to"`
 	}
-	if err := json.Unmarshal(raw, &got); err != nil || len(got) != 2 || got[0].Label != "prod" || len(got[0].To) != 2 || got[1].To[0] != "!d:y" || len(got[1].To) != 3 {
+	if err := json.Unmarshal(raw, &got); err != nil || len(got) != 2 || got[0].Label != "prod" || len(got[0].To) != 2 || got[1].To[0] != "!d:y" || len(got[1].To) != 7 {
 		t.Fatalf("stored %s (%v)", raw, err)
 	}
 	if !strings.Contains(e.do("GET", "/settings", nil, c).Body.String(), "prod = !x:y, !z:y") {

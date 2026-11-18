@@ -557,6 +557,8 @@ func testValid(d string) error {
 	c.Discord.Webhooks = map[string]config.DiscordWebhook{"ops": {}}
 	c.Teams.Webhooks = map[string]config.TeamsWebhook{"ops": {}}
 	c.Webhook.Endpoints = map[string]config.WebhookEndpoint{"siem": {URL: "https://siem.example.org/h"}}
+	c.Email.SMTP.Host, c.Email.SMTP.From = "smtp.example.com", "alerts@example.com"
+	c.Email.AllowedDomains = []string{"example.com"}
 	return c.ValidateDestination(d)
 }
 

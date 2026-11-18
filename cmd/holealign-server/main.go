@@ -317,6 +317,22 @@ func wire(cfg *config.Config, st store.Store, log *slog.Logger, trig *lateTrigge
 			log.Info("webhook channel enabled", "endpoints", len(eps))
 		}
 	}
+	if cfg.Email.SMTP.Host != "" {
+		sc := cfg.Email.SMTP
+		var pass string
+		if sc.Username != "" {
+			pass = os.Getenv(sc.PasswordEnv)
+		}
+		if ch, err := notify.NewEmailChannel(notify.SMTPConfig{
+			Host: sc.Host, Port: sc.Port, Username: sc.Username, Password: pass, TLS: sc.TLS, From: sc.From,
+			AllowedDomains: cfg.Email.AllowedDomains,
+		}); err != nil {
+			log.Error("email channel disabled", "env", sc.PasswordEnv, "err", err)
+		} else {
+			channels = append(channels, ch)
+			log.Info("email channel enabled", "host", sc.Host, "port", sc.Port, "tls", sc.TLS)
+		}
+	}
 	if len(channels) > 0 {
 		ncfg := notify.Config{
 			Default: cfg.Notify.Default,

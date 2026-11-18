@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -92,6 +93,25 @@ type WebhookEndpoint struct {
 	AllowHTTP bool              `yaml:"allow_http"`
 }
 
+// Email configures the email channel. The destination is "email:<address>". TLS is mandatory.
+type Email struct {
+	SMTP EmailSMTP `yaml:"smtp"`
+	// AllowedDomains, when not empty, limits the recipients (and so what an admin can route to in the
+	// web UI) to addresses in these domains.
+	AllowedDomains []string `yaml:"allowed_domains"`
+}
+
+// EmailSMTP is the SMTP server the email channel sends through. Enabled when Host is set. The
+// password is read from the environment variable PasswordEnv.
+type EmailSMTP struct {
+	Host        string `yaml:"host"`
+	Port        int    `yaml:"port"` // default 587
+	Username    string `yaml:"username"`
+	PasswordEnv string `yaml:"password_env"` // default HOLEALIGN_SMTP_PASSWORD
+	TLS         string `yaml:"tls"`          // "starttls" (default) or "implicit"; plain text is not supported
+	From        string `yaml:"from"`         // "alerts@example.com" or "Holealign <alerts@example.com>"
+}
+
 // Channels reports which notification channels are configured, by destination scheme.
 func (c *Config) Channels() map[string]bool {
 	return map[string]bool{
@@ -101,6 +121,7 @@ func (c *Config) Channels() map[string]bool {
 		"discord":  len(c.Discord.Webhooks) > 0,
 		"teams":    len(c.Teams.Webhooks) > 0,
 		"webhook":  len(c.Webhook.Endpoints) > 0,
+		"email":    c.Email.SMTP.Host != "",
 	}
 }
 
@@ -154,6 +175,10 @@ func (c *Config) ValidateDestination(dest string) error {
 		return fmt.Errorf("%q uses the %s channel, which is not configured (%s)", dest, scheme, channelHint(scheme))
 	}
 	switch scheme {
+	case "email":
+		if len(c.Email.AllowedDomains) > 0 && !slices.Contains(c.Email.AllowedDomains, notify.MailboxDomain(target)) {
+			return fmt.Errorf("%q: domain %q is not in email.allowed_domains (%s)", dest, notify.MailboxDomain(target), strings.Join(c.Email.AllowedDomains, ", "))
+		}
 	case "webhook":
 		if _, ok := c.Webhook.Endpoints[target]; !ok {
 			return fmt.Errorf("%q: no endpoint named %q under webhook.endpoints (configured: %s)", dest, target, mapKeys(c.Webhook.Endpoints))
@@ -216,6 +241,8 @@ func channelHint(scheme string) string {
 		return "add a webhook under teams.webhooks"
 	case "webhook":
 		return "add an endpoint under webhook.endpoints"
+	case "email":
+		return "set email.smtp.host"
 	default:
 		return "set matrix.homeserver"
 	}
@@ -278,6 +305,9 @@ func (c *Config) validateDiscord() error {
 			return fmt.Errorf("teams.webhooks.%s: %w", name, err)
 		}
 	}
+	if err := c.Email.validate(); err != nil {
+		return err
+	}
 	for _, name := range sortedKeys(c.Webhook.Endpoints) {
 		ep := c.Webhook.Endpoints[name]
 		if err := notify.ValidName(name); err != nil {
@@ -312,6 +342,41 @@ func (c *Config) validateEnvURLs(lookup func(string) (string, bool)) error {
 				return fmt.Errorf("teams.webhooks.%s.url_env (%s): %w", name, env, err)
 			}
 		}
+	}
+	return nil
+}
+
+// validate checks the email section; nothing is checked while no SMTP host is set.
+func (e *Email) validate() error {
+	for i, d := range e.AllowedDomains {
+		if err := notify.ValidMailDomain(d); err != nil {
+			return fmt.Errorf("email.allowed_domains[%d] %q: %w", i, d, err)
+		}
+	}
+	s := e.SMTP
+	if s.Host == "" {
+		if len(e.AllowedDomains) > 0 || s.Username != "" || s.From != "" {
+			return fmt.Errorf("email.smtp.host is not set but other email settings are")
+		}
+		return nil
+	}
+	if err := notify.ValidSMTPHost(s.Host); err != nil {
+		return fmt.Errorf("email.smtp.host: %w", err)
+	}
+	if s.Port < 1 || s.Port > 65535 {
+		return fmt.Errorf("email.smtp.port %d must be 1-65535", s.Port)
+	}
+	if s.TLS != notify.TLSStartTLS && s.TLS != notify.TLSImplicit {
+		return fmt.Errorf("email.smtp.tls %q must be %q or %q (plain text is not supported)", s.TLS, notify.TLSStartTLS, notify.TLSImplicit)
+	}
+	if s.Username != "" && s.PasswordEnv == "" {
+		return errors.New("email.smtp.password_env must be set when email.smtp.username is")
+	}
+	if strings.ContainsAny(s.Username, "\r\n\x00") {
+		return errors.New("email.smtp.username contains control characters")
+	}
+	if _, err := notify.ParseSender(s.From); err != nil {
+		return fmt.Errorf("email.smtp.from: %w", err)
 	}
 	return nil
 }
