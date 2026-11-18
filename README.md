@@ -61,10 +61,10 @@ approves it.
   [docs/rules-feed.md](docs/rules-feed.md).
 - Optional LLM rule drafting (Anthropic or any OpenAI-compatible endpoint such as Ollama):
   [docs/llm.md](docs/llm.md).
-- Matrix/Element alerts routed by host label, with dedup, grouping and burst summaries:
+- Matrix, Slack, Telegram, Discord, Teams, signed webhook and email alerts routed by host label, with dedup, grouping and burst summaries:
   [docs/notifications.md](docs/notifications.md).
 - Admin web UI: hosts, findings grouped per CVE with "needs attention" and "background" tiers,
-  rule review, enrollment tokens, Matrix routes, users: [docs/user-guide.md](docs/user-guide.md).
+  rule review, enrollment tokens, notification routes, users: [docs/user-guide.md](docs/user-guide.md).
 - Health alerts: silent agents, stale vulnerability feed, failing pipeline.
 - Agentless mode: the server monitors its own host: [docs/installation.md](docs/installation.md#agentless-mode).
 - Signed releases: cosign signatures, SBOMs, build provenance.

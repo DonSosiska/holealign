@@ -3,21 +3,22 @@
 <h1>Settings</h1>
 
 <section class="panel" id="matrix">
-<h2>Matrix routes</h2>
-<p class="muted">Findings from hosts carrying a label are sent to the listed rooms. Homeserver:
-{{if .MatrixConfig}}configured{{else}}<strong>not configured</strong> (set <code>matrix.homeserver</code> in server.yaml){{end}}.</p>
+<h2>Notification routes</h2>
+<p class="muted">Findings from hosts carrying a label are sent to the listed destinations. Configured channels:
+{{range .Channels}}<code>{{.}}</code> {{else}}<strong>none</strong> (configure a channel in server.yaml, see docs/notifications.md){{end}}.</p>
 {{if .MatrixError}}<div class="flash err" role="alert">{{.MatrixError}}</div>{{end}}
 <form method="post" action="/settings/matrix" class="stack">
   <input type="hidden" name="csrf" value="{{.CSRF}}">
-  <label>Routes, one per line: <code>label = !room:server, !other:server</code>
+  <label>Routes, one per line: <code>label = !room:server, slack:C0123456789, telegram:-1001234567890</code>
   <textarea name="routes" rows="6" spellcheck="false" class="code-edit">{{.RoutesText}}</textarea></label>
   <label>Your password <input type="password" name="current_password" autocomplete="current-password" required></label>
   <div><button type="submit" class="primary">Save routes</button></div>
 </form>
 <h3>From server.yaml (read-only)</h3>
 <dl class="kv">
-  <dt>Default rooms</dt><dd>{{range .CfgRooms}}<span class="mono small">{{.}}</span> {{else}}<span class="muted">none</span>{{end}}</dd>
-  {{range .CfgRoutes}}<dt>{{.Label}}</dt><dd>{{range .Rooms}}<span class="mono small">{{.}}</span> {{end}}</dd>{{end}}
+  <dt>Default</dt><dd>{{range .CfgDefault}}<span class="mono small">{{.}}</span> {{else}}<span class="muted">none</span>{{end}}</dd>
+  <dt>Ops</dt><dd>{{range .CfgOps}}<span class="mono small">{{.}}</span> {{else}}<span class="muted">none (default is used)</span>{{end}}</dd>
+  {{range .CfgRoutes}}<dt>{{.Label}}</dt><dd>{{range .To}}<span class="mono small">{{.}}</span> {{end}}</dd>{{end}}
 </dl>
 </section>
 

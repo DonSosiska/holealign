@@ -28,7 +28,7 @@ func opensshEvents(host string) []model.Event {
 
 func TestOpensshGroupedIntoOneMessage(t *testing.T) {
 	hs := newFakeHS(t, nil)
-	m := newTestMatrix(t, hs, Config{DefaultRooms: []string{"!r:example.org"}}, nil)
+	m := newTestMatrix(t, hs, Config{Default: []string{"!r:example.org"}}, nil)
 	if err := m.Notify(context.Background(), opensshEvents("web01")); err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +56,7 @@ func TestOpensshGroupedIntoOneMessage(t *testing.T) {
 
 func TestDifferentHostsSeparateMessages(t *testing.T) {
 	hs := newFakeHS(t, nil)
-	m := newTestMatrix(t, hs, Config{DefaultRooms: []string{"!r:example.org"}}, nil)
+	m := newTestMatrix(t, hs, Config{Default: []string{"!r:example.org"}}, nil)
 	events := append(opensshEvents("web01"), opensshEvents("web02")...)
 	if err := m.Notify(context.Background(), events); err != nil {
 		t.Fatal(err)
@@ -72,7 +72,7 @@ func TestDifferentHostsSeparateMessages(t *testing.T) {
 
 func TestDifferentTargetsSeparateMessages(t *testing.T) {
 	hs := newFakeHS(t, nil)
-	m := newTestMatrix(t, hs, Config{DefaultRooms: []string{"!r:example.org"}}, nil)
+	m := newTestMatrix(t, hs, Config{Default: []string{"!r:example.org"}}, nil)
 	host := pkgEvent("CVE-1", "web01", "nginx", "1.24")
 	image := pkgEvent("CVE-1", "web01", "nginx", "1.24")
 	image.Finding.Target = "nginx:1.25"
@@ -87,7 +87,7 @@ func TestDifferentTargetsSeparateMessages(t *testing.T) {
 
 func TestResolvedGrouped(t *testing.T) {
 	hs := newFakeHS(t, nil)
-	m := newTestMatrix(t, hs, Config{DefaultRooms: []string{"!r:example.org"}}, nil)
+	m := newTestMatrix(t, hs, Config{Default: []string{"!r:example.org"}}, nil)
 	var events []model.Event
 	for _, p := range []string{"nginx", "nginx-common"} {
 		ev := pkgEvent("CVE-2024-9", "web01", p, "1.24.0")
@@ -114,7 +114,7 @@ func TestResolvedGrouped(t *testing.T) {
 func TestBurstCountsGroupsNotEvents(t *testing.T) {
 	// 15 groups of 2 events each: 30 events, but at the threshold, so no summary.
 	hs := newFakeHS(t, nil)
-	m := newTestMatrix(t, hs, Config{DefaultRooms: []string{"!r:example.org"}}, nil)
+	m := newTestMatrix(t, hs, Config{Default: []string{"!r:example.org"}}, nil)
 	var events []model.Event
 	for i := range burstThreshold {
 		vuln := fmt.Sprintf("CVE-%d", i)
@@ -129,7 +129,7 @@ func TestBurstCountsGroupsNotEvents(t *testing.T) {
 
 	// 16 groups of 2 events: above the threshold, so burst mode applies.
 	hs2 := newFakeHS(t, nil)
-	m2 := newTestMatrix(t, hs2, Config{DefaultRooms: []string{"!r:example.org"}}, nil)
+	m2 := newTestMatrix(t, hs2, Config{Default: []string{"!r:example.org"}}, nil)
 	events = nil
 	for i := range burstThreshold + 1 {
 		vuln := fmt.Sprintf("CVE-%d", i)

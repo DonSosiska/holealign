@@ -109,12 +109,12 @@ Details of the feed and its CLI: [rules-feed.md](rules-feed.md).
 
 | Symptom | Cause and fix |
 |---|---|
-| No Matrix messages at all | Look for `matrix notifier enabled` in the log. Without `matrix.homeserver` it is off. Check the dashboard banner "Alert delivery problems" for the status. |
+| No alerts at all | Look for `matrix channel enabled`, `slack channel enabled`, `telegram channel enabled`, `discord channel enabled`, `teams channel enabled`, `webhook channel enabled` or `email channel enabled` in the log (`... channel disabled` names the reason). Without `matrix.homeserver` Matrix is off; Slack and Telegram need `slack.token_env` or `telegram.bot_token_env` and the variable set; Discord, Teams and the webhook need an entry in `discord.webhooks`, `teams.webhooks` or `webhook.endpoints` with its URL or secret variable set, and email needs `email.smtp.host`. Check the dashboard banner "Alert delivery problems" for the status. |
 | Status 401 / 403 | Token invalid, or the bot has not joined the room or cannot send. |
 | Status 404 | Wrong room ID (use `!id:server`, not an alias) or the room was deleted. |
 | Status 429 | Homeserver rate limit; retried with its `retry_after`. |
 | Status 0 | The homeserver is unreachable from the server. |
-| A finding was not announced | `affected_not_exploitable` is silent. `CHECK` (unknown and KEV or Critical) is delayed 2 h when an LLM is configured. Alerts already sent are not repeated (dedup). No label route and no `default_rooms`: it is reported as a delivery problem. |
+| A finding was not announced | `affected_not_exploitable` is silent. `CHECK` (unknown and KEV or Critical) is delayed 2 h when an LLM is configured. Alerts already sent are not repeated (dedup). No label route and no `notify.default`: it is reported as a delivery problem. |
 | Alerts go to the wrong room | A host goes to the union of the rooms of **all** its labels; see [notifications.md](notifications.md#routing). |
 
 More: [notifications.md](notifications.md#delivery-problems).

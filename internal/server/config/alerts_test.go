@@ -26,6 +26,7 @@ func TestAlertsAndListenerDefaultsAndEnv(t *testing.T) {
 		"HOLEALIGN_ALERTS_AGENT_SILENT_AFTER": "0",
 		"HOLEALIGN_ALERTS_FEED_STALE_AFTER":   "72h",
 		"HOLEALIGN_ALERTS_OPS_ROOMS":          "!a:x, !b:x",
+		"HOLEALIGN_MATRIX_HOMESERVER":         "https://matrix.example.org",
 		"HOLEALIGN_ADMIN_LISTEN":              "0.0.0.0:8081",
 		"HOLEALIGN_TRUSTED_PROXIES":           "10.0.0.0/8,192.168.1.1",
 	}
@@ -33,7 +34,7 @@ func TestAlertsAndListenerDefaultsAndEnv(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Alerts.AgentSilentAfter != 0 || cfg.Alerts.FeedStaleAfter != 72*time.Hour || len(cfg.Alerts.OpsRooms) != 2 ||
+	if cfg.Alerts.AgentSilentAfter != 0 || cfg.Alerts.FeedStaleAfter != 72*time.Hour || len(cfg.Alerts.OpsRooms) != 2 || len(cfg.Notify.Ops) != 2 ||
 		cfg.AdminListen != "0.0.0.0:8081" || len(cfg.TrustedProxies) != 2 {
 		t.Fatalf("env overrides: %+v", cfg)
 	}

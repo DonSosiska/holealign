@@ -76,7 +76,7 @@ SHA-256 hashes, and passwords as bcrypt hashes. Back up the database and your co
 
 | What | Where | Needed for |
 |---|---|---|
-| `holealign.db` | `<data_dir>` | hosts and agent key hashes, findings, user and LLM rules, tokens, users, Matrix routes edited in the UI, notification dedup state |
+| `holealign.db` | `<data_dir>` | hosts and agent key hashes, findings, user and LLM rules, tokens, users, notification routes edited in the UI, notification dedup state |
 | `server.yaml`, `server.env` | `/etc/holealign/` (or `deploy/.env`) | settings and secrets |
 | TLS certificate and key, CA file | wherever you keep them | agent API and admin listeners; agents need the CA file or pins |
 | agent hosts | nothing | agents keep their key in `state_dir`; they can be reinstalled |

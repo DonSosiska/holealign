@@ -19,8 +19,9 @@ const KVNotifyErrors = "health.notify_errors"
 // maxNotifyProblems is how many distinct problems are kept.
 const maxNotifyProblems = 20
 
-// NotifyProblem is one entry of KVNotifyErrors. Status 0 is a network error; an empty Room means
-// no Matrix room was resolved for the event.
+// NotifyProblem is one entry of KVNotifyErrors. Room holds the destination ("!id:server",
+// "slack:C...", "telegram:..."; the JSON key stays "room" for stored rows). Status 0 is a network
+// error; an empty Room means no destination was resolved for the event.
 type NotifyProblem struct {
 	At        time.Time `json:"at"`
 	Room      string    `json:"room"`
@@ -30,7 +31,7 @@ type NotifyProblem struct {
 }
 
 // NewProblemRecorder returns a callback for notify.Config.OnDeliveryProblem that stores the last
-// maxNotifyProblems distinct problems (room, status, kind) in the kv table with cleaned values.
+// maxNotifyProblems distinct problems (destination, status, kind) in the kv table with cleaned values.
 func NewProblemRecorder(st store.Store, log *slog.Logger) func(room string, status int, kind model.EventKind, permanent bool) {
 	if log == nil {
 		log = slog.Default()

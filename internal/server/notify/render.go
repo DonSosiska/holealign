@@ -5,7 +5,6 @@ import (
 	"html"
 	"net/url"
 	"regexp"
-	"slices"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -13,16 +12,12 @@ import (
 	"github.com/DonSosiska/holealign/internal/model"
 )
 
-// lineSet collects a message as parallel plain-text and HTML lines.
-// Callers must escape every untrusted value in the html argument themselves.
+// lineSet collects the lines of a Message.
 type lineSet struct {
-	plain, html []string
+	lines []Line
 }
 
-func (l *lineSet) add(plain, h string) {
-	l.plain = append(l.plain, plain)
-	l.html = append(l.html, h)
-}
+func (l *lineSet) add(spans ...Span) { l.lines = append(l.lines, Line(spans)) }
 
 const (
 	maxFieldRunes = 300     // every untrusted field is cut to this many runes
@@ -142,54 +137,8 @@ func cutBytes(s string, max int) string {
 	return s
 }
 
-// render joins the lines; whole lines are dropped (never cut mid-tag) once either body would
-// exceed maxBodyBytes, and a truncation note is appended. The limit applies to the bodies as sent,
-// i.e. after HTML escaping, and also holds on the fallback path for one huge line.
-func (l *lineSet) render() (string, string) {
-	const budget = maxBodyBytes - 64 // room for the truncation note
-	pl, hl := 0, 0
-	keep := 0
-	for i := range l.plain {
-		p, h := len(l.plain[i])+1, len(l.html[i])+len("<br>")
-		if pl+p > budget || hl+h > budget {
-			break
-		}
-		pl, hl = pl+p, hl+h
-		keep = i + 1
-	}
-	plain, formatted := l.plain[:keep], l.html[:keep]
-	if keep < len(l.plain) {
-		if keep == 0 { // a single huge line: fall back to escaped truncated plain text
-			t := fitEscaped(l.plain[0], budget)
-			plain, formatted = []string{t}, []string{esc(t)}
-		}
-		plain = append(slices.Clone(plain), truncatedNote)
-		formatted = append(slices.Clone(formatted), truncatedNote)
-	}
-	p, h := strings.Join(plain, "\n"), strings.Join(formatted, "<br>")
-	if len(p) > maxBodyBytes || len(h) > maxBodyBytes { // cannot happen with the accounting above; never send more
-		t := fitEscaped(p, budget)
-		p, h = t+truncatedNote, esc(t)+truncatedNote
-	}
-	return p, h
-}
-
-// fitEscaped cuts s so that both s and its HTML-escaped form are at most max bytes.
-func fitEscaped(s string, max int) string {
-	t := cutBytes(s, max)
-	for len(esc(t)) > max && len(t) > 0 {
-		t = cutBytes(t, len(t)*3/4)
-	}
-	return t
-}
-
 // esc HTML-escapes a value that comes from a host, finding or rule.
 func esc(s string) string { return html.EscapeString(s) }
-
-// renderEvent renders a single event; it is renderGroup of one.
-func renderEvent(ev model.Event) (plain, formatted string) {
-	return renderGroup([]model.Event{ev})
-}
 
 // distinct returns the non-empty values of vals in first-seen order without duplicates.
 func distinct(vals []string) []string {
@@ -206,213 +155,6 @@ func distinct(vals []string) []string {
 		out = append(out, v)
 	}
 	return out
-}
-
-// renderGroup returns the plain-text body and the HTML formatted_body for a group of events
-// that share kind, host, vulnerability and target. Values are merged as described in the
-// package documentation: packages listed, severity maxima, deduplicated reasons and fixes.
-func renderGroup(raw []model.Event) (string, string) {
-	extraEvents := 0
-	if len(raw) > maxGroupEvents {
-		extraEvents = len(raw) - maxGroupEvents
-		raw = raw[:maxGroupEvents]
-	}
-	evs := make([]model.Event, len(raw))
-	moreFixes := make([]int, len(raw))
-	for i, ev := range raw {
-		moreFixes[i] = max(0, len(ev.Finding.FixedVersions)-maxFixedVersions)
-		evs[i] = sanitize(ev)
-	}
-	g := group{evs: evs}
-	first := g.first()
-	if first.Kind.IsHealth() {
-		return renderHealth(first)
-	}
-	f := first.Finding
-	host := first.Host.Hostname
-	var l lineSet
-
-	if first.Kind == model.EventResolved {
-		var plain, h []string
-		for _, ev := range evs {
-			p := ev.Finding.PackageName + " " + ev.Finding.PackageVer + ": now " + string(ev.Finding.Verdict)
-			plain = append(plain, p)
-			h = append(h, esc(ev.Finding.PackageName)+" "+esc(ev.Finding.PackageVer)+": now "+esc(string(ev.Finding.Verdict)))
-		}
-		l.add("✅ RESOLVED: "+f.VulnID+" on "+host,
-			"✅ <b>RESOLVED: "+esc(f.VulnID)+" on "+esc(host)+"</b>")
-		l.add(strings.Join(distinct(plain), "; "), strings.Join(distinct(h), "; "))
-		return l.render()
-	}
-
-	switch first.Kind {
-	case model.EventUnknownCritical:
-		l.add("🟠 CHECK: "+f.VulnID+" on "+host,
-			"🟠 <b>CHECK: "+esc(f.VulnID)+" on "+esc(host)+"</b>")
-	case model.EventExploitable:
-		l.add("🔴 EXPLOITABLE: "+f.VulnID+" on "+host,
-			"🔴 <b>EXPLOITABLE: "+esc(f.VulnID)+" on "+esc(host)+"</b>")
-	default:
-		l.add("ℹ️ "+string(first.Kind)+": "+f.VulnID+" on "+host,
-			"ℹ️ <b>"+esc(string(first.Kind))+": "+esc(f.VulnID)+" on "+esc(host)+"</b>")
-	}
-
-	// Packages with their fix availability, deduplicated.
-	var pkgPlain, pkgHTML []string
-	for i, ev := range evs {
-		name := ev.Finding.PackageName + " " + ev.Finding.PackageVer
-		if len(ev.Finding.FixedVersions) > 0 {
-			fixed := strings.Join(ev.Finding.FixedVersions, ", ")
-			if moreFixes[i] > 0 {
-				fixed += fmt.Sprintf(", +%d more", moreFixes[i])
-			}
-			pkgPlain = append(pkgPlain, name+" → fixed in "+fixed)
-			pkgHTML = append(pkgHTML, esc(name)+" → fixed in "+esc(fixed))
-		} else {
-			pkgPlain = append(pkgPlain, name+" → no fix yet")
-			pkgHTML = append(pkgHTML, esc(name)+" → no fix yet")
-		}
-	}
-	pkgPlain, pkgHTML = distinct(pkgPlain), distinct(pkgHTML)
-	if len(pkgPlain) == 1 {
-		l.add("Package: "+pkgPlain[0], "Package: "+pkgHTML[0])
-	} else {
-		l.add("Packages: "+capJoin(pkgPlain, "; "), "Packages: "+capJoin(pkgHTML, "; "))
-	}
-
-	if extraEvents > 0 {
-		n := fmt.Sprintf("…and %d more events for this vulnerability not listed", extraEvents)
-		l.add(n, esc(n))
-	}
-
-	// Target.
-	if f.TargetKind == model.TargetContainerImage {
-		l.add("Target: image "+f.Target, "Target: image "+esc(f.Target))
-	} else {
-		l.add("Target: host", "Target: host")
-	}
-
-	// Severity, CVSS, EPSS, KEV: maxima over the group.
-	var sevP, sevH []string
-	if sev := g.maxSeverity(); sev != "" {
-		sevP = append(sevP, "Severity "+sev)
-		sevH = append(sevH, "Severity "+esc(sev))
-	}
-	if cvss := g.maxCVSS(); cvss > 0 {
-		s := fmt.Sprintf("CVSS %.1f", cvss)
-		sevP, sevH = append(sevP, s), append(sevH, s)
-	}
-	if epss := g.maxEPSS(); epss > 0 {
-		s := fmt.Sprintf("EPSS %.1f%%", epss*100)
-		sevP, sevH = append(sevP, s), append(sevH, s)
-	}
-	if g.anyKEV() {
-		sevP = append(sevP, "🚨 KEV")
-		sevH = append(sevH, "🚨 <b>KEV</b>")
-	}
-	if len(sevP) > 0 {
-		l.add(strings.Join(sevP, " · "), strings.Join(sevH, " · "))
-	}
-
-	// Why it matters, one line per distinct reason.
-	var reasons []string
-	for _, ev := range evs {
-		r := ev.Finding.VerdictReason
-		if isDraft(ev) {
-			r = draftSafeReason(r)
-		}
-		reasons = append(reasons, r)
-	}
-	label := "Why: "
-	if first.Kind == model.EventUnknownCritical {
-		label = "Conditions not verified: "
-	}
-	for _, r := range distinct(reasons)[:min(len(distinct(reasons)), maxListItems)] {
-		l.add(label+r, label+esc(r))
-	}
-
-	// Rules, one line per distinct rule.
-	var rules []string
-	for _, ev := range evs {
-		if ev.Rule == nil || isDraft(ev) { // never relay LLM-drafted rule text
-			continue
-		}
-		text := ev.Rule.Title
-		if ev.Rule.Explanation != "" {
-			text += " — " + ev.Rule.Explanation
-		}
-		rules = append(rules, text)
-	}
-	for _, r := range distinct(rules) {
-		l.add("Rule: "+r, "Rule: "+esc(r))
-	}
-	for _, ev := range evs {
-		if isDraft(ev) {
-			const w = "⚠️ unreviewed LLM draft — review the rule in the web UI before acting"
-			l.add(w, "⚠️ <b>"+esc(w[len("⚠️ "):])+"</b>")
-			break
-		}
-	}
-
-	// Fix commands (distinct), falling back to rule upgrade advice.
-	var cmds []string
-	for _, ev := range evs {
-		cmds = append(cmds, ev.FixCmd)
-	}
-	if cmds = distinct(cmds); len(cmds) > 0 {
-		for _, c := range cmds {
-			l.add("Fix: "+c, "Fix: <code>"+esc(c)+"</code>")
-		}
-	} else {
-		var upgrades []string
-		for _, ev := range evs {
-			if ev.Rule != nil && !isDraft(ev) {
-				upgrades = append(upgrades, ev.Rule.Fix.Upgrade)
-			}
-		}
-		for _, u := range distinct(upgrades) {
-			l.add("Fix: "+u, "Fix: "+esc(u))
-		}
-	}
-
-	// Mitigations, deduplicated.
-	var mitigations []string
-	for _, ev := range evs {
-		if ev.Rule != nil && !isDraft(ev) { // reviewed rules only; always plain text, never <code>
-			mitigations = append(mitigations, ev.Rule.Fix.Mitigation)
-		}
-	}
-	for _, m := range distinct(mitigations) {
-		l.add("Mitigation: "+m, "Mitigation: "+esc(m))
-	}
-
-	// Link to the first event's finding.
-	if first.WebURL != "" && isHTTP(first.WebURL) {
-		l.add("Details: "+first.WebURL, `Details: <a href="`+esc(first.WebURL)+`">`+esc(first.WebURL)+`</a>`)
-	}
-	return l.render()
-}
-
-// renderSummary builds the burst summary for the groups that were not sent individually.
-// findingsLink may be empty.
-func renderSummary(rest []group, findingsLink string) message {
-	var l lineSet
-	header := fmt.Sprintf("…and %d more findings", len(rest))
-	l.add(header, esc(header))
-	for i, g := range rest {
-		if i == summaryMaxLines {
-			more := fmt.Sprintf("…and %d more not listed", len(rest)-summaryMaxLines)
-			l.add(more, esc(more))
-			break
-		}
-		item := cl(g.first().Finding.VulnID) + "@" + cl(g.first().Host.Hostname)
-		l.add("• "+item, "• "+esc(item))
-	}
-	if findingsLink != "" {
-		l.add("All findings: "+findingsLink, `All findings: <a href="`+esc(findingsLink)+`">`+esc(findingsLink)+`</a>`)
-	}
-	plain, h := l.render()
-	return message{MsgType: "m.text", Body: plain, Format: "org.matrix.custom.html", FormattedBody: h}
 }
 
 // findingsURL derives "<public base>/findings" from an event's WebURL, where the base is
@@ -440,74 +182,4 @@ func findingsURL(webURL string) string {
 func isHTTP(raw string) bool {
 	u, err := url.Parse(raw)
 	return err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != ""
-}
-
-// renderHealth renders feed, pipeline and agent silence events. ev must be sanitized.
-func renderHealth(ev model.Event) (string, string) {
-	host := ev.Host.Hostname
-	if host == "" {
-		host = "(unnamed host)"
-	}
-	icon, label, subject := "ℹ️", string(ev.Kind), host
-	detail := ev.Detail
-	switch ev.Kind {
-	case model.EventAgentSilent:
-		icon, label = "🔇", "AGENT SILENT"
-		if ev.Host.ID == "" { // aggregated: the detail names the hosts
-			subject = ""
-		}
-		if detail == "" && !ev.Host.LastCheckin.IsZero() {
-			detail = "no check-in (last: " + ev.Host.LastCheckin.UTC().Format("2006-01-02 15:04 UTC") + ")"
-		}
-	case model.EventAgentBack:
-		icon, label = "🔊", "AGENT BACK"
-		if ev.Host.ID == "" {
-			subject = ""
-		}
-		if detail == "" {
-			detail = "checking in again"
-		}
-	case model.EventFeedStale:
-		icon, label, subject = "🟣", "FEED STALE", ""
-	case model.EventFeedOK:
-		icon, label, subject = "✅", "FEED OK", ""
-		if detail == "" {
-			detail = "vulnerability DB is up to date again"
-		}
-	case model.EventPipelineError:
-		icon, label = "⚠️", "PIPELINE ERROR"
-		if ev.Host.ID == "" {
-			subject = ""
-		}
-	}
-	lines := strings.Split(detail, "\n")
-	head := icon + " " + label + ":"
-	if subject != "" {
-		head += " " + subject
-	}
-	headHTML := icon + " <b>" + esc(label) + ":"
-	if subject != "" {
-		headHTML += " " + esc(subject)
-	}
-	headHTML += "</b>"
-	first := strings.TrimSpace(lines[0])
-	var l lineSet
-	if first != "" {
-		sep := " — "
-		if subject == "" {
-			sep = " "
-		}
-		l.add(head+sep+first, headHTML+esc(sep)+esc(first))
-	} else {
-		l.add(head, headHTML)
-	}
-	for _, line := range lines[1:] {
-		if strings.TrimSpace(line) != "" {
-			l.add(line, esc(line))
-		}
-	}
-	if ev.WebURL != "" && isHTTP(ev.WebURL) {
-		l.add("Details: "+ev.WebURL, `Details: <a href="`+esc(ev.WebURL)+`">`+esc(ev.WebURL)+`</a>`)
-	}
-	return l.render()
 }

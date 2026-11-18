@@ -432,15 +432,23 @@ rule changes, the server (re)computes findings for affected hosts:
    Dedup key `(host_id, target, package_name, vuln_id, kind)`; never send the same key twice in a row.
    Delivery is per event: `Notifier.Notify` may return a `*notify.DeliveryError{Failed []int}` (indexes into the
    events passed in); the pipeline records every other event as delivered and retries only the failed ones.
-   A permanent 4xx from Matrix (other than 429) is logged at ERROR; for `resolved`, `agent_back`, `feed_ok` and
+   A permanent failure of a channel (Matrix HTTP 4xx other than 429; Slack `ok:false` with `channel_not_found`, `not_in_channel`, `invalid_auth`, ...; Telegram 400/401/403) is logged at ERROR; for `resolved`, `agent_back`, `feed_ok` and
    `pipeline_error` events it is recorded as delivered (not retried forever). For `exploitable`, `unknown_critical`,
    `agent_silent` and `feed_stale` events a permanent failure is reported as failed (retried on later runs) and
-   surfaced through `notify.Config.OnDeliveryProblem(room, status, kind, permanent)` (wired to kv `health.notify_errors`,
-   the last 20 distinct problems, shown as a dashboard banner). "No room resolved for an event" is an error reported the
-   same way (not a silent success). A given (room, status) is logged / reported at most once per 10 min, and a retried
-   event is not posted again to rooms it already reached.
+   surfaced through `notify.Config.OnDeliveryProblem(destination, status, kind, permanent)` (wired to kv `health.notify_errors`,
+   the last 20 distinct problems, shown as a dashboard banner). "No destination resolved for an event" (and a destination whose channel is not configured) is an error reported the
+   same way (not a silent success). A given (destination, status) is logged / reported at most once per 10 min, and a retried
+   event is not posted again to destinations it already reached.
+   Destinations are strings `scheme:target` (`slack:C0123456789`, `telegram:-1001234567890/17`); one without a known
+   scheme is a Matrix room (`!id:server`, `#alias:server`). Channels implement `notify.Channel`
+   (`Scheme`, `ValidTarget`, `Send(ctx, target, Message) error`, errors as `*notify.SendError{Status, Permanent,
+   RetryAfter}`); the `Notifier` does grouping, routing, retry with backoff, burst summaries and the partial-delivery
+   memory for all of them. Events are rendered once into a channel-neutral `Message` (lines of text/bold/code/link
+   spans) and formatted per channel.
    Message text: every untrusted field is cut to 300 characters with control characters removed and a zero-width space
-   after every `@` (no `@room` pings); every message carries `"m.mentions": {}`. At most 50 events are rendered per
+   after every `@` (no `@room` pings); every Matrix message carries `"m.mentions": {}`; Slack text escapes `&`, `<`, `>`
+   (mrkdwn, no unfurling) and Telegram text is HTML limited to `b`, `code`, `a` with every value escaped (at most 3900
+   visible characters, link previews off). At most 50 events are rendered per
    group and 5 fixed versions per package ("+N more"); plain and formatted body are each capped at 8 KiB after HTML
    escaping; for draft (unreviewed LLM) rules only a warning and the server-generated fix command are shown.
    Each pipeline run has a 10 min timeout; a panic in any background goroutine is logged and recovered, and a
@@ -479,7 +487,7 @@ rule changes, the server (re)computes findings for affected hosts:
 - `pipeline_error` — 3 consecutive failed pipeline runs for a host, or a poisoned target; once per host per 24 h
   (kv `health.pipeline_alert.<host>`); more than 5 hosts at once are aggregated. Ops rooms.
 
-`Event.ServerLevel()` marks events routed to `alerts.ops_rooms`. Health events are never grouped with each other or
+`Event.ServerLevel()` marks events routed to `notify.ops`. Health events are never grouped with each other or
 with findings and are exempt from burst summarising. The web dashboard shows active feed/pipeline problems from kv
 `health.feed_stale`, `health.pipeline_errors` and `health.notify_errors`.
 
@@ -494,7 +502,7 @@ trusted_proxies: []                   # CIDRs; X-Forwarded-For is honoured only 
 alerts:
   agent_silent_after: 30m             # 0 disables agent_silent / agent_back
   feed_stale_after: 48h               # 0 disables feed_stale / feed_ok
-  ops_rooms: []                       # Matrix rooms for server-level events; empty: matrix.default_rooms
+  ops_rooms: []                       # deprecated alias of notify.ops
 triage:
   epss_threshold: 0.1                 # 0..1; web UI tier: conditions_unknown with EPSS >= this needs attention
 data_dir: /var/lib/holealign           # SQLite DB + Grype DB cache
@@ -511,9 +519,20 @@ rules:
 matrix:
   homeserver: https://matrix.example.com
   access_token_env: HOLEALIGN_MATRIX_TOKEN
-  default_rooms: ["!abc:example.com"]   # used when no label route matches
-  routes:                               # label -> rooms; web UI edits are stored in DB and merged
-    - {label: prod, rooms: ["!prod:example.com"]}
+  # default_rooms / routes[].rooms: deprecated aliases of notify.default / notify.routes[].to
+slack:
+  token_env: HOLEALIGN_SLACK_TOKEN      # bot token xoxb-... (chat:write); empty disables Slack
+telegram:
+  bot_token_env: HOLEALIGN_TELEGRAM_TOKEN   # empty disables Telegram
+discord:  {webhooks: {ops: {url_env: HOLEALIGN_DISCORD_OPS_URL}}}      # destination discord:ops
+teams:    {webhooks: {ops: {url_env: HOLEALIGN_TEAMS_OPS_URL}}}        # destination teams:ops
+webhook:  {endpoints: {siem: {url: "https://siem.example.com/in", secret_env: HOLEALIGN_WEBHOOK_SIEM_SECRET}}}  # webhook:siem
+email:    {smtp: {host: smtp.example.com, port: 587, tls: starttls, from: "alerts@example.com"}}  # email:ops@example.com
+notify:                                 # destinations: "!id:server" (Matrix), "slack:C0123456789", "telegram:-100123/17"
+  default: ["!abc:example.com"]         # used when no label route matches
+  routes:                               # label -> destinations; web UI edits are stored in DB and merged
+    - {label: prod, to: ["!prod:example.com", "slack:C0123456789"]}
+  ops: ["slack:C0987654321"]            # server-level events; empty: default
 llm:
   provider: none                      # none | anthropic | openai-compatible
   model: claude-sonnet-5-5
@@ -544,8 +563,9 @@ local_agent:                          # agentless mode: the server monitors its 
 ```
 
 Validation: with `rules.feed.enabled`, `rules.feed.trusted_keys` must hold at least one valid key and `rules.feed.url`
-must be `https://` or `file://`; `rules.feed.interval` is at least 1m. `*_env` names must match `^HOLEALIGN_[A-Z0-9_]+$` and `matrix.access_token_env`, `llm.api_key_env`,
-`admin.initial_password_env` must be pairwise different; retention/limits must not be negative.
+must be `https://` or `file://`; `rules.feed.interval` is at least 1m. `*_env` names must match `^HOLEALIGN_[A-Z0-9_]+$` and `matrix.access_token_env`, `slack.token_env`, `telegram.bot_token_env`,
+`llm.api_key_env`, `admin.initial_password_env` must be pairwise different; every notify destination must have a known scheme,
+a valid target and a configured channel; retention/limits must not be negative.
 The initial admin password needs ≥ 12 characters and may come from the file named by
 `HOLEALIGN_ADMIN_PASSWORD_FILE`. Startup logs a WARN when `public_url`, `matrix.homeserver` or `llm.base_url`
 use `http://` for a non-loopback host, when the Grype DB is older than 5 days, when `trusted_proxies` has an entry wider

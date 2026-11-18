@@ -41,6 +41,7 @@ func TestDevServer(t *testing.T) {
 		Explanation: "Demo rule.", Status: model.RuleDraft, Source: "llm:demo"}, time.Now())
 
 	cfg := config.Default()
+	cfg.Matrix.Homeserver = "https://matrix.example.org"
 	cfg.PublicURL = "http://" + addr
 	srv, err := New(Deps{Store: st, Config: &cfg, Logger: slog.Default()})
 	if err != nil {

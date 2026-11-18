@@ -14,7 +14,7 @@ Contents: [Logging in](#logging-in) - [Dashboard](#dashboard) - [Hosts](#hosts) 
 Open the UI and sign in. The first user is `admin`, created at first start from
 `HOLEALIGN_ADMIN_PASSWORD` ([installation.md](installation.md#first-admin-user)). Sessions end after one
 hour idle or 12 hours in total. Actions that change something (approve or reject a rule, edit a rule,
-create or revoke a token, add or delete a user, change a password, save Matrix routes) ask for **your
+create or revoke a token, add or delete a user, change a password, save notification routes) ask for **your
 current password** again. Login limits and what to do behind a proxy:
 [troubleshooting.md](troubleshooting.md#web-login). The top bar has Dashboard, Hosts, Findings, Rules
 (with a count of drafts waiting for review), Settings and Log out.
@@ -152,9 +152,11 @@ shortened and as plain text. Approve and reject are recorded in the audit log
 
 ## Settings
 
-- **Matrix routes**: one line per label, `label = !room:server, !other:server`. A host is alerted in
-  the rooms of all its labels; with no matching route it uses `matrix.default_rooms`. Routes from
-  `server.yaml`, default rooms and ops rooms are shown read-only below. Saving needs your password.
+- **Notification routes**: one line per label, `label = !room:server, slack:C0123456789,
+  telegram:-1001234567890`. A host is alerted at the destinations of all its labels; with no matching
+  route it uses `notify.default`. Unknown schemes, malformed targets and unconfigured channels are
+  rejected with an error in the form. Routes from `server.yaml`, default and ops destinations are shown
+  read-only below. Saving needs your password.
   See [notifications.md](notifications.md#routing).
 - **Enrollment tokens**: list with created, last used, hosts used and maximum, expiry, labels and
   status (`active`, `revoked`, `expired`, `exhausted`); a form to create one (name, max hosts, expiry

@@ -185,10 +185,11 @@ func recoverLog(log *slog.Logger, where string) {
 	}
 }
 
-// settingsRoutes reads Matrix routes edited in the web UI (setting "matrix.routes").
+// settingsRoutes reads routes edited in the web UI (setting "matrix.routes"; rows written before
+// notifier channels existed use the key "rooms" and are still read).
 type settingsRoutes struct{ st store.Store }
 
-func (s settingsRoutes) MatrixRoutes(ctx context.Context) ([]notify.Route, error) {
+func (s settingsRoutes) Routes(ctx context.Context) ([]notify.Route, error) {
 	raw, err := s.st.GetSetting(ctx, "matrix.routes")
 	if errors.Is(err, store.ErrNotFound) || len(raw) == 0 {
 		return nil, nil
@@ -196,9 +197,13 @@ func (s settingsRoutes) MatrixRoutes(ctx context.Context) ([]notify.Route, error
 	if err != nil {
 		return nil, err
 	}
-	var routes []notify.Route
-	if err := json.Unmarshal(raw, &routes); err != nil {
+	var stored []config.NotifyRoute
+	if err := json.Unmarshal(raw, &stored); err != nil {
 		return nil, fmt.Errorf("setting matrix.routes: %w", err)
+	}
+	routes := make([]notify.Route, 0, len(stored))
+	for _, r := range stored {
+		routes = append(routes, notify.Route{Label: r.Label, To: r.To})
 	}
 	return routes, nil
 }
@@ -248,25 +253,101 @@ func wire(cfg *config.Config, st store.Store, log *slog.Logger, trig *lateTrigge
 		}
 	}
 
-	// Matrix notifier (optional).
+	// Notification channels (optional): Matrix, Slack, Telegram, Discord, Teams, generic webhooks, email. Each is enabled by its config
+	// section; destinations are routed by notify.default / notify.routes / notify.ops and the
+	// routes edited in the web UI.
+	var channels []notify.Channel
 	if cfg.Matrix.Homeserver != "" {
-		mcfg := notify.Config{
-			Homeserver:   cfg.Matrix.Homeserver,
-			AccessToken:  os.Getenv(cfg.Matrix.AccessTokenEnv),
-			DefaultRooms: cfg.Matrix.DefaultRooms,
-			OpsRooms:     cfg.Alerts.OpsRooms,
+		if ch, err := notify.NewMatrixChannel(cfg.Matrix.Homeserver, os.Getenv(cfg.Matrix.AccessTokenEnv), nil); err != nil {
+			log.Error("matrix channel disabled", "err", err)
+		} else {
+			channels = append(channels, ch)
+			log.Info("matrix channel enabled", "homeserver", cfg.Matrix.Homeserver)
+		}
+	}
+	if cfg.Slack.TokenEnv != "" {
+		if ch, err := notify.NewSlackChannel(os.Getenv(cfg.Slack.TokenEnv), nil); err != nil {
+			log.Error("slack channel disabled", "env", cfg.Slack.TokenEnv, "err", err)
+		} else {
+			channels = append(channels, ch)
+			log.Info("slack channel enabled")
+		}
+	}
+	if cfg.Telegram.BotTokenEnv != "" {
+		if ch, err := notify.NewTelegramChannel(os.Getenv(cfg.Telegram.BotTokenEnv), nil); err != nil {
+			log.Error("telegram channel disabled", "env", cfg.Telegram.BotTokenEnv, "err", err)
+		} else {
+			channels = append(channels, ch)
+			log.Info("telegram channel enabled")
+		}
+	}
+	if len(cfg.Discord.Webhooks) > 0 {
+		hooks := map[string]string{}
+		for name := range cfg.Discord.Webhooks {
+			hooks[name] = os.Getenv(cfg.DiscordURLEnv(name))
+		}
+		if ch, err := notify.NewDiscordChannel(hooks, nil); err != nil {
+			log.Error("discord channel disabled", "err", err)
+		} else {
+			channels = append(channels, ch)
+			log.Info("discord channel enabled", "webhooks", len(hooks))
+		}
+	}
+	if len(cfg.Teams.Webhooks) > 0 {
+		hooks := map[string]notify.TeamsHook{}
+		for name, w := range cfg.Teams.Webhooks {
+			hooks[name] = notify.TeamsHook{URL: os.Getenv(cfg.TeamsURLEnv(name)), AllowAnyHost: w.AllowAnyHost}
+		}
+		if ch, err := notify.NewTeamsChannel(hooks, nil); err != nil {
+			log.Error("teams channel disabled", "err", err)
+		} else {
+			channels = append(channels, ch)
+			log.Info("teams channel enabled", "webhooks", len(hooks))
+		}
+	}
+	if len(cfg.Webhook.Endpoints) > 0 {
+		eps := map[string]notify.WebhookEndpoint{}
+		for name, e := range cfg.Webhook.Endpoints {
+			eps[name] = notify.WebhookEndpoint{URL: e.URL, Secret: os.Getenv(cfg.WebhookSecretEnv(name)), Headers: e.Headers, AllowHTTP: e.AllowHTTP}
+		}
+		if ch, err := notify.NewWebhookChannel(eps, nil); err != nil {
+			log.Error("webhook channel disabled", "err", err)
+		} else {
+			channels = append(channels, ch)
+			log.Info("webhook channel enabled", "endpoints", len(eps))
+		}
+	}
+	if cfg.Email.SMTP.Host != "" {
+		sc := cfg.Email.SMTP
+		var pass string
+		if sc.Username != "" {
+			pass = os.Getenv(sc.PasswordEnv)
+		}
+		if ch, err := notify.NewEmailChannel(notify.SMTPConfig{
+			Host: sc.Host, Port: sc.Port, Username: sc.Username, Password: pass, TLS: sc.TLS, From: sc.From,
+			AllowedDomains: cfg.Email.AllowedDomains,
+		}); err != nil {
+			log.Error("email channel disabled", "env", sc.PasswordEnv, "err", err)
+		} else {
+			channels = append(channels, ch)
+			log.Info("email channel enabled", "host", sc.Host, "port", sc.Port, "tls", sc.TLS)
+		}
+	}
+	if len(channels) > 0 {
+		ncfg := notify.Config{
+			Default: cfg.Notify.Default,
+			Ops:     cfg.Notify.Ops,
 			// delivery problems show up as a banner on the dashboard
 			OnDeliveryProblem: health.NewProblemRecorder(st, log),
 		}
-		for _, r := range cfg.Matrix.Routes {
-			mcfg.Routes = append(mcfg.Routes, notify.Route{Label: r.Label, Rooms: r.Rooms})
+		for _, r := range cfg.Notify.Routes {
+			ncfg.Routes = append(ncfg.Routes, notify.Route{Label: r.Label, To: r.To})
 		}
-		m, err := notify.NewMatrix(mcfg, settingsRoutes{st}, nil)
+		n, err := notify.New(ncfg, settingsRoutes{st}, channels...)
 		if err != nil {
-			log.Error("matrix notifier disabled", "err", err)
+			log.Error("notifier disabled", "err", err)
 		} else {
-			comp.Notifier = m
-			log.Info("matrix notifier enabled", "homeserver", cfg.Matrix.Homeserver)
+			comp.Notifier = n
 		}
 	}
 	// LLM rule drafter (optional): drafts rules for High/Critical/KEV findings without one.
@@ -383,6 +464,9 @@ func serve(cfg *config.Config) error {
 	slog.SetDefault(log)
 	for _, w := range cfg.Warnings() {
 		log.Warn("insecure configuration: " + w)
+	}
+	if d := cfg.Deprecated(); d != "" {
+		log.Warn(d)
 	}
 	if err := os.MkdirAll(cfg.DataDir, 0o750); err != nil {
 		return fmt.Errorf("create data_dir: %w", err)

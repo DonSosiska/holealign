@@ -20,18 +20,20 @@ const matrixSettingKey = "matrix.routes"
 const (
 	maxRoutesBytes   = 16 << 10
 	maxRoutes        = 200
-	maxRoomsPerRoute = 20
+	maxRoomsPerRoute = 20 // destinations per route
 	maxRoomIDLen     = 255
 )
 
 var nameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._@-]{0,63}$`)
 
-// parseMatrixRoutes parses lines of the form "label = !room:server, !room2:server".
-func parseMatrixRoutes(text string) ([]config.MatrixRoute, error) {
+// parseRoutes parses lines of the form "label = dest, dest, ..." where a destination is
+// "scheme:target" or a bare Matrix room ID (!room:server). valid checks one destination (syntax and
+// that its channel is configured); it is the same check config load applies.
+func parseRoutes(text string, valid func(dest string) error) ([]config.NotifyRoute, error) {
 	if len(text) > maxRoutesBytes {
 		return nil, fmt.Errorf("routes text is too long (max %d KiB)", maxRoutesBytes>>10)
 	}
-	routes := []config.MatrixRoute{}
+	routes := []config.NotifyRoute{}
 	seen := map[string]bool{}
 	for i, line := range strings.Split(text, "\n") {
 		line = strings.TrimSpace(line)
@@ -41,7 +43,7 @@ func parseMatrixRoutes(text string) ([]config.MatrixRoute, error) {
 		label, rest, ok := strings.Cut(line, "=")
 		label = strings.TrimSpace(label)
 		if !ok || label == "" {
-			return nil, fmt.Errorf("line %d: expected \"label = !room:server, ...\"", i+1)
+			return nil, fmt.Errorf("line %d: expected \"label = destination, destination\" (e.g. prod = !room:server, slack:C0123456789)", i+1)
 		}
 		if err := api.ValidateLabels([]string{label}); err != nil {
 			return nil, fmt.Errorf("line %d: %s", i+1, clip(err.Error(), 200))
@@ -53,40 +55,40 @@ func parseMatrixRoutes(text string) ([]config.MatrixRoute, error) {
 			return nil, fmt.Errorf("line %d: label %q is listed twice", i+1, label)
 		}
 		seen[label] = true
-		var rooms []string
-		for _, rm := range strings.Split(rest, ",") {
-			rm = strings.TrimSpace(rm)
-			if rm == "" {
+		var dests []string
+		for _, d := range strings.Split(rest, ",") {
+			d = strings.TrimSpace(d)
+			if d == "" {
 				continue
 			}
-			if len(rm) > maxRoomIDLen {
-				return nil, fmt.Errorf("line %d: a room ID is longer than %d characters", i+1, maxRoomIDLen)
+			if len(d) > maxRoomIDLen {
+				return nil, fmt.Errorf("line %d: a destination is longer than %d characters", i+1, maxRoomIDLen)
 			}
-			if !strings.HasPrefix(rm, "!") || !strings.Contains(rm, ":") || strings.ContainsAny(rm, " \t\r") {
-				return nil, fmt.Errorf("line %d: %q is not a Matrix room ID (expected !id:server)", i+1, rm)
+			if err := valid(d); err != nil {
+				return nil, fmt.Errorf("line %d: %s", i+1, clip(err.Error(), 300))
 			}
-			rooms = append(rooms, rm)
+			dests = append(dests, d)
 		}
-		if len(rooms) > maxRoomsPerRoute {
-			return nil, fmt.Errorf("line %d: label %q has more than %d rooms", i+1, label, maxRoomsPerRoute)
+		if len(dests) > maxRoomsPerRoute {
+			return nil, fmt.Errorf("line %d: label %q has more than %d destinations", i+1, label, maxRoomsPerRoute)
 		}
-		if len(rooms) == 0 {
-			return nil, fmt.Errorf("line %d: no rooms given for label %q", i+1, label)
+		if len(dests) == 0 {
+			return nil, fmt.Errorf("line %d: no destinations given for label %q", i+1, label)
 		}
-		routes = append(routes, config.MatrixRoute{Label: label, Rooms: rooms})
+		routes = append(routes, config.NotifyRoute{Label: label, To: dests})
 	}
 	return routes, nil
 }
 
-func routesText(rs []config.MatrixRoute) string {
+func routesText(rs []config.NotifyRoute) string {
 	var b strings.Builder
 	for _, r := range rs {
-		b.WriteString(r.Label + " = " + strings.Join(r.Rooms, ", ") + "\n")
+		b.WriteString(r.Label + " = " + strings.Join(r.To, ", ") + "\n")
 	}
 	return b.String()
 }
 
-func (s *Server) storedRoutes(r *http.Request) []config.MatrixRoute {
+func (s *Server) storedRoutes(r *http.Request) []config.NotifyRoute {
 	raw, err := s.d.Store.GetSetting(r.Context(), matrixSettingKey)
 	if err != nil {
 		if !errors.Is(err, store.ErrNotFound) {
@@ -94,7 +96,7 @@ func (s *Server) storedRoutes(r *http.Request) []config.MatrixRoute {
 		}
 		return nil
 	}
-	var rs []config.MatrixRoute
+	var rs []config.NotifyRoute
 	if err := json.Unmarshal(raw, &rs); err != nil {
 		s.log.Error("web: decode matrix routes", "err", err)
 		return nil
@@ -117,17 +119,29 @@ func (s *Server) renderSettings(w http.ResponseWriter, r *http.Request, sess *se
 	}
 	data := map[string]any{
 		"Tokens": tokens, "Users": users, "Me": sess.Username,
-		"RoutesText":   routesText(s.storedRoutes(r)),
-		"CfgRoutes":    s.cfg.Matrix.Routes,
-		"CfgRooms":     s.cfg.Matrix.DefaultRooms,
-		"MatrixConfig": s.cfg.Matrix.Homeserver != "",
-		"LLM":          s.cfg.LLM,
-		"PublicURL":    s.cfg.PublicURL,
+		"RoutesText": routesText(s.storedRoutes(r)),
+		"CfgRoutes":  s.cfg.Notify.Routes,
+		"CfgDefault": s.cfg.Notify.Default,
+		"CfgOps":     s.cfg.Notify.Ops,
+		"Channels":   s.channelNames(),
+		"LLM":        s.cfg.LLM,
+		"PublicURL":  s.cfg.PublicURL,
 	}
 	for k, v := range extra {
 		data[k] = v
 	}
 	s.render(w, r, sess, status, "settings", data)
+}
+
+// channelNames lists the configured notification channels for the settings page.
+func (s *Server) channelNames() []string {
+	var out []string
+	for _, name := range []string{"matrix", "slack", "telegram", "discord", "teams", "webhook", "email"} {
+		if s.cfg.Channels()[name] {
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request, sess *session) {
@@ -139,7 +153,7 @@ func (s *Server) handleMatrixSave(w http.ResponseWriter, r *http.Request, sess *
 		return
 	}
 	text := r.PostFormValue("routes")
-	routes, err := parseMatrixRoutes(text)
+	routes, err := parseRoutes(text, s.cfg.ValidateDestination)
 	if err != nil {
 		s.renderSettings(w, r, sess, http.StatusUnprocessableEntity, map[string]any{"MatrixError": err.Error(), "RoutesText": text})
 		return

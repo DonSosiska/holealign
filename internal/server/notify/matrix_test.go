@@ -89,15 +89,15 @@ func (f *fakeHS) roomCounts() map[string]int {
 	return counts
 }
 
-func newTestMatrix(t *testing.T, hs *fakeHS, cfg Config, routes RouteSource) *Matrix {
+func newTestMatrix(t *testing.T, hs *fakeHS, cfg Config, routes RouteSource) *Notifier {
 	t.Helper()
-	cfg.Homeserver = hs.srv.URL
-	if cfg.AccessToken == "" {
-		cfg.AccessToken = "secret-token"
-	}
-	m, err := NewMatrix(cfg, routes, hs.srv.Client())
+	ch, err := NewMatrixChannel(hs.srv.URL, "secret-token", hs.srv.Client())
 	if err != nil {
-		t.Fatalf("NewMatrix: %v", err)
+		t.Fatalf("NewMatrixChannel: %v", err)
+	}
+	m, err := New(cfg, routes, ch)
+	if err != nil {
+		t.Fatalf("New: %v", err)
 	}
 	m.backoff = time.Millisecond // keep retry tests fast
 	return m
@@ -109,7 +109,7 @@ type staticRoutes struct {
 	err    error
 }
 
-func (s staticRoutes) MatrixRoutes(context.Context) ([]Route, error) { return s.routes, s.err }
+func (s staticRoutes) Routes(context.Context) ([]Route, error) { return s.routes, s.err }
 
 func testEvent(kind model.EventKind, vuln, host string, labels ...string) model.Event {
 	return model.Event{
@@ -127,26 +127,28 @@ func testEvent(kind model.EventKind, vuln, host string, labels ...string) model.
 }
 
 func TestNewMatrixValidation(t *testing.T) {
-	ok := Config{Homeserver: "https://matrix.example.com", AccessToken: "t"}
-	if _, err := NewMatrix(ok, nil, nil); err != nil {
+	if _, err := NewMatrixChannel("https://matrix.example.com", "t", nil); err != nil {
 		t.Fatalf("valid config rejected: %v", err)
 	}
-	cases := map[string]Config{
-		"empty homeserver": {AccessToken: "t"},
-		"bad scheme":       {Homeserver: "ftp://matrix.example.com", AccessToken: "t"},
-		"no host":          {Homeserver: "https://", AccessToken: "t"},
-		"empty token":      {Homeserver: "https://matrix.example.com"},
+	cases := map[string][2]string{
+		"empty homeserver": {"", "t"},
+		"bad scheme":       {"ftp://matrix.example.com", "t"},
+		"no host":          {"https://", "t"},
+		"empty token":      {"https://matrix.example.com", ""},
 	}
-	for name, cfg := range cases {
-		if _, err := NewMatrix(cfg, nil, nil); err == nil {
+	for name, c := range cases {
+		if _, err := NewMatrixChannel(c[0], c[1], nil); err == nil {
 			t.Errorf("%s: expected error", name)
 		}
+	}
+	if _, err := New(Config{}, nil); err == nil {
+		t.Error("New without channels accepted")
 	}
 }
 
 func TestDeliveryPathAuthAndBody(t *testing.T) {
 	hs := newFakeHS(t, nil)
-	m := newTestMatrix(t, hs, Config{DefaultRooms: []string{"!room:example.org"}}, nil)
+	m := newTestMatrix(t, hs, Config{Default: []string{"!room:example.org"}}, nil)
 
 	ev := testEvent(model.EventExploitable, "CVE-2024-1", "web01")
 	if err := m.Notify(context.Background(), []model.Event{ev}); err != nil {
@@ -187,7 +189,11 @@ func TestRoomIDIsPathEscaped(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
-	m, err := NewMatrix(Config{Homeserver: srv.URL, AccessToken: "t", DefaultRooms: []string{"!room:example.org"}}, nil, srv.Client())
+	ch, err := NewMatrixChannel(srv.URL, "t", srv.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := New(Config{Default: []string{"!room:example.org"}}, nil, ch)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,11 +208,11 @@ func TestRoomIDIsPathEscaped(t *testing.T) {
 
 func TestTxnIDUnique(t *testing.T) {
 	hs := newFakeHS(t, nil)
-	m := newTestMatrix(t, hs, Config{DefaultRooms: []string{"!r:example.org"}}, nil)
+	m := newTestMatrix(t, hs, Config{Default: []string{"!r:example.org"}}, nil)
 
 	seen := map[string]bool{}
 	for range 1000 {
-		id := m.newTxnID()
+		id := m.newID()
 		if seen[id] {
 			t.Fatalf("duplicate txnId %q", id)
 		}
@@ -236,7 +242,7 @@ func TestRetry429HonoursRetryAfter(t *testing.T) {
 		}
 		return http.StatusOK, `{}`
 	})
-	m := newTestMatrix(t, hs, Config{DefaultRooms: []string{"!r:example.org"}}, nil)
+	m := newTestMatrix(t, hs, Config{Default: []string{"!r:example.org"}}, nil)
 
 	start := time.Now()
 	if err := m.Notify(context.Background(), []model.Event{testEvent(model.EventExploitable, "CVE-1", "h")}); err != nil {
@@ -255,10 +261,10 @@ func TestRetry429HonoursRetryAfter(t *testing.T) {
 }
 
 func TestRetryAfterCapped(t *testing.T) {
-	if got := retryAfter([]byte(`{"retry_after_ms": 90000000}`)); got != maxRetryWait {
+	if got := min(matrixRetryAfter([]byte(`{"retry_after_ms": 90000000}`)), maxRetryWait); got != maxRetryWait {
 		t.Errorf("retryAfter cap = %v, want %v", got, maxRetryWait)
 	}
-	if got := retryAfter([]byte(`not json`)); got != 0 {
+	if got := matrixRetryAfter([]byte(`not json`)); got != 0 {
 		t.Errorf("retryAfter on bad body = %v, want 0", got)
 	}
 }
@@ -270,7 +276,7 @@ func TestRetry5xxThenSuccess(t *testing.T) {
 		}
 		return http.StatusOK, `{}`
 	})
-	m := newTestMatrix(t, hs, Config{DefaultRooms: []string{"!r:example.org"}}, nil)
+	m := newTestMatrix(t, hs, Config{Default: []string{"!r:example.org"}}, nil)
 	if err := m.Notify(context.Background(), []model.Event{testEvent(model.EventExploitable, "CVE-1", "h")}); err != nil {
 		t.Fatalf("Notify: %v", err)
 	}
@@ -283,7 +289,7 @@ func TestNoRetryOn4xx(t *testing.T) {
 	hs := newFakeHS(t, func(int, recorded) (int, string) {
 		return http.StatusForbidden, `{"errcode":"M_FORBIDDEN"}`
 	})
-	m := newTestMatrix(t, hs, Config{DefaultRooms: []string{"!r:example.org"}}, nil)
+	m := newTestMatrix(t, hs, Config{Default: []string{"!r:example.org"}}, nil)
 	err := m.Notify(context.Background(), []model.Event{testEvent(model.EventExploitable, "CVE-1", "h")})
 	if err == nil || !strings.Contains(err.Error(), "403") {
 		t.Fatalf("err = %v, want a 403 error", err)
@@ -297,7 +303,7 @@ func TestGivesUpAfterMaxAttempts(t *testing.T) {
 	hs := newFakeHS(t, func(int, recorded) (int, string) {
 		return http.StatusInternalServerError, `{}`
 	})
-	m := newTestMatrix(t, hs, Config{DefaultRooms: []string{"!r:example.org"}}, nil)
+	m := newTestMatrix(t, hs, Config{Default: []string{"!r:example.org"}}, nil)
 	err := m.Notify(context.Background(), []model.Event{testEvent(model.EventExploitable, "CVE-1", "h")})
 	if err == nil {
 		t.Fatal("expected error after exhausting retries")
@@ -311,7 +317,7 @@ func TestContextCancelDuringBackoff(t *testing.T) {
 	hs := newFakeHS(t, func(int, recorded) (int, string) {
 		return http.StatusBadGateway, `{}`
 	})
-	m := newTestMatrix(t, hs, Config{DefaultRooms: []string{"!r:example.org"}}, nil)
+	m := newTestMatrix(t, hs, Config{Default: []string{"!r:example.org"}}, nil)
 	m.backoff = time.Hour // the first retry would wait forever without cancellation
 
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
@@ -328,7 +334,7 @@ func TestContextCancelDuringBackoff(t *testing.T) {
 
 func TestContextAlreadyCancelled(t *testing.T) {
 	hs := newFakeHS(t, nil)
-	m := newTestMatrix(t, hs, Config{DefaultRooms: []string{"!r:example.org"}}, nil)
+	m := newTestMatrix(t, hs, Config{Default: []string{"!r:example.org"}}, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	err := m.Notify(ctx, []model.Event{testEvent(model.EventExploitable, "CVE-1", "h")})
@@ -348,11 +354,11 @@ func TestRouting(t *testing.T) {
 		shared = "!shared:example.org"
 	)
 	cfg := Config{
-		DefaultRooms: []string{deflt},
+		Default: []string{deflt},
 		Routes: []Route{
-			{Label: "prod", Rooms: []string{prod}},
-			{Label: "web", Rooms: []string{web}},
-			{Label: "edge", Rooms: []string{prod, shared}},
+			{Label: "prod", To: []string{prod}},
+			{Label: "web", To: []string{web}},
+			{Label: "edge", To: []string{prod, shared}},
 		},
 	}
 	cases := []struct {
@@ -384,14 +390,14 @@ func TestRouting(t *testing.T) {
 
 func TestNoRoomIsAnError(t *testing.T) {
 	hs := newFakeHS(t, nil)
-	m := newTestMatrix(t, hs, Config{Routes: []Route{{Label: "prod", Rooms: []string{"!p:x"}}}}, nil)
+	m := newTestMatrix(t, hs, Config{Routes: []Route{{Label: "prod", To: []string{"!p:x"}}}}, nil)
 	err := m.Notify(context.Background(), []model.Event{
 		testEvent(model.EventExploitable, "CVE-1", "h", "dev"),
 		testEvent(model.EventResolved, "CVE-2", "h", "dev"),
 	})
 	var de *DeliveryError
-	if !errors.As(err, &de) || !strings.Contains(err.Error(), "no Matrix room") {
-		t.Fatalf("Notify: %v, want a DeliveryError naming the missing room", err)
+	if !errors.As(err, &de) || !strings.Contains(err.Error(), "no notification destination") {
+		t.Fatalf("Notify: %v, want a DeliveryError naming the missing destination", err)
 	}
 	if len(de.Failed) != 1 || de.Failed[0] != 0 {
 		t.Errorf("Failed = %v, want only the exploitable event [0]", de.Failed)
@@ -404,12 +410,12 @@ func TestNoRoomIsAnError(t *testing.T) {
 func TestDBRoutesMerged(t *testing.T) {
 	hs := newFakeHS(t, nil)
 	db := staticRoutes{routes: []Route{
-		{Label: "prod", Rooms: []string{"!db:example.org", "!cfg:example.org"}},
-		{Label: "db-only", Rooms: []string{"!dbonly:example.org"}},
+		{Label: "prod", To: []string{"!db:example.org", "!cfg:example.org"}},
+		{Label: "db-only", To: []string{"!dbonly:example.org"}},
 	}}
 	cfg := Config{
-		DefaultRooms: []string{"!default:example.org"},
-		Routes:       []Route{{Label: "prod", Rooms: []string{"!cfg:example.org"}}},
+		Default: []string{"!default:example.org"},
+		Routes:  []Route{{Label: "prod", To: []string{"!cfg:example.org"}}},
 	}
 	m := newTestMatrix(t, hs, cfg, db)
 
@@ -429,7 +435,7 @@ func TestDBRoutesMerged(t *testing.T) {
 
 func TestDBRouteErrorStillDeliversConfigRoutes(t *testing.T) {
 	hs := newFakeHS(t, nil)
-	m := newTestMatrix(t, hs, Config{Routes: []Route{{Label: "prod", Rooms: []string{"!p:example.org"}}}},
+	m := newTestMatrix(t, hs, Config{Routes: []Route{{Label: "prod", To: []string{"!p:example.org"}}}},
 		staticRoutes{err: errors.New("db down")})
 	err := m.Notify(context.Background(), []model.Event{testEvent(model.EventExploitable, "CVE-1", "h", "prod")})
 	if err == nil || !strings.Contains(err.Error(), "db down") {
@@ -449,8 +455,8 @@ func TestRoomFailureDoesNotStopOtherRooms(t *testing.T) {
 		return http.StatusOK, `{}`
 	})
 	cfg := Config{Routes: []Route{
-		{Label: "a", Rooms: []string{bad}},
-		{Label: "b", Rooms: []string{good}},
+		{Label: "a", To: []string{bad}},
+		{Label: "b", To: []string{good}},
 	}}
 	m := newTestMatrix(t, hs, cfg, nil)
 	events := []model.Event{testEvent(model.EventExploitable, "CVE-1", "h", "a", "b")}
@@ -468,7 +474,7 @@ func TestRoomFailureDoesNotStopOtherRooms(t *testing.T) {
 
 func TestBurstSummary(t *testing.T) {
 	hs := newFakeHS(t, nil)
-	m := newTestMatrix(t, hs, Config{DefaultRooms: []string{"!r:example.org"}}, nil)
+	m := newTestMatrix(t, hs, Config{Default: []string{"!r:example.org"}}, nil)
 
 	// 12 exploitable (CVSS = index) and 8 unknown_critical; index 19 is KEV.
 	var events []model.Event
@@ -522,7 +528,7 @@ func TestBurstSummary(t *testing.T) {
 
 func TestBurstAtThresholdIsNotSummarised(t *testing.T) {
 	hs := newFakeHS(t, nil)
-	m := newTestMatrix(t, hs, Config{DefaultRooms: []string{"!r:example.org"}}, nil)
+	m := newTestMatrix(t, hs, Config{Default: []string{"!r:example.org"}}, nil)
 	var events []model.Event
 	for i := range burstThreshold {
 		events = append(events, testEvent(model.EventExploitable, fmt.Sprintf("CVE-%d", i), "h"))

@@ -109,7 +109,8 @@ Check the key against
 ## 5. Get a Matrix alert
 
 You need a bot account, its access token, and a room the bot has joined; the steps are in
-[notifications.md](notifications.md#matrix-setup). Then:
+[notifications.md](notifications.md#matrix) (Slack and Telegram work the same way, see
+[Slack](notifications.md#slack) and [Telegram](notifications.md#telegram)). Then:
 
 ```sh
 echo 'HOLEALIGN_MATRIX_TOKEN=syt_...' | sudo tee -a /etc/holealign/server.env >/dev/null
@@ -119,12 +120,13 @@ echo 'HOLEALIGN_MATRIX_TOKEN=syt_...' | sudo tee -a /etc/holealign/server.env >/
 # /etc/holealign/server.yaml
 matrix:
   homeserver: https://matrix.example.com
-  default_rooms: ["!yourroom:matrix.example.com"]   # internal room ID, not an alias
+notify:
+  default: ["!yourroom:matrix.example.com"]   # internal room ID, not an alias
 ```
 
 ```sh
 sudo systemctl restart holealign-server
-journalctl -u holealign-server | grep 'matrix notifier'    # "matrix notifier enabled"
+journalctl -u holealign-server | grep 'matrix channel'    # "matrix channel enabled"
 ```
 
 Alerts are sent for `exploitable` findings and for unknown findings that are in KEV or Critical. A

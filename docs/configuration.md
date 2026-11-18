@@ -55,7 +55,7 @@ default, then the file, then the environment (an empty variable is ignored).
 | `feeds.update` | bool | `true` | `HOLEALIGN_FEEDS_UPDATE` | `false` disables all network updates (air-gapped, tests). |
 | `alerts.agent_silent_after` | duration | `30m` | `HOLEALIGN_ALERTS_AGENT_SILENT_AFTER` | Alert when a host has not checked in for this long. `0` disables `agent_silent` / `agent_back`. |
 | `alerts.feed_stale_after` | duration | `48h` | `HOLEALIGN_ALERTS_FEED_STALE_AFTER` | Alert when the vulnerability DB is older than this or refreshing keeps failing. `0` disables `feed_stale` / `feed_ok`. |
-| `alerts.ops_rooms` | list of room IDs | `[]` | `HOLEALIGN_ALERTS_OPS_ROOMS` | Matrix rooms for server-level events (feed, pipeline, mass silence). Empty: `matrix.default_rooms`. |
+| `alerts.ops_rooms` | list of room IDs | `[]` | `HOLEALIGN_ALERTS_OPS_ROOMS` | **Deprecated** alias of `notify.ops` (merged into it at load; one startup warning). |
 
 ### Rules feed
 
@@ -95,14 +95,82 @@ With environment variables only: `HOLEALIGN_RULES_FEED_ENABLED=true`,
 |---|---|---|---|---|
 | `triage.epss_threshold` | float 0..1 | `0.1` | `HOLEALIGN_TRIAGE_EPSS_THRESHOLD` | A `conditions_unknown` finding with EPSS at or above this value goes to the web UI's "needs attention" tier (see [Reading the dashboard](rules.md#reading-the-dashboard-attention-vs-background)). Display only: alerts are not affected. |
 
-### Matrix
+### Notifications
+
+How alerts are routed and which channels exist: [notifications.md](notifications.md). A destination is
+`scheme:target`: a Matrix room `!id:server` (the form without a scheme), `slack:C0123456789`,
+`telegram:-1001234567890[/topic]`, `discord:<name>`, `teams:<name>`, `webhook:<name>` or
+`email:<address>` (the three named schemes refer to entries of this file, never to URLs). Every destination is checked when the config loads (known scheme,
+valid target, channel configured), otherwise the server does not start.
 
 | Key | Type | Default | Environment | Description |
 |---|---|---|---|---|
-| `matrix.homeserver` | string (URL) | empty | `HOLEALIGN_MATRIX_HOMESERVER` | Homeserver base URL. Empty disables Matrix. |
+| `notify.default` | list of destinations | `[]` | `HOLEALIGN_NOTIFY_DEFAULT` | Used when no label route matches a host. |
+| `notify.routes` | list of `{label, to}` | `[]` | not overridable | Label to destinations (`to` is a list). Merged with the routes edited in the web UI (same label: destinations combined). |
+| `notify.ops` | list of destinations | `[]` | `HOLEALIGN_NOTIFY_OPS` | Server-level events (feed, pipeline, mass silence). Empty: `notify.default`. |
+
+#### Matrix
+
+| Key | Type | Default | Environment | Description |
+|---|---|---|---|---|
+| `matrix.homeserver` | string (URL) | empty | `HOLEALIGN_MATRIX_HOMESERVER` | Homeserver base URL. Empty disables Matrix (and Matrix destinations are rejected). |
 | `matrix.access_token_env` | string | `HOLEALIGN_MATRIX_TOKEN` | `HOLEALIGN_MATRIX_ACCESS_TOKEN_ENV` | Name of the environment variable that holds the bot's access token. |
-| `matrix.default_rooms` | list of room IDs | `[]` | `HOLEALIGN_MATRIX_DEFAULT_ROOMS` | Rooms used when no label route matches. Room IDs look like `!abc:example.com` (not aliases). |
-| `matrix.routes` | list of `{label, rooms}` | `[]` | not overridable | Label to rooms. Merged with the routes edited in the web UI. |
+| `matrix.default_rooms` | list of room IDs | `[]` | `HOLEALIGN_MATRIX_DEFAULT_ROOMS` | **Deprecated** alias of `notify.default`. |
+| `matrix.routes` | list of `{label, rooms}` | `[]` | not overridable | **Deprecated** alias of `notify.routes` (`rooms` is `to`). |
+
+#### Slack
+
+| Key | Type | Default | Environment | Description |
+|---|---|---|---|---|
+| `slack.token_env` | string | empty | `HOLEALIGN_SLACK_TOKEN_ENV` | Name of the environment variable that holds the bot token (`xoxb-...`, scope `chat:write`). Setting it enables Slack; conventional value `HOLEALIGN_SLACK_TOKEN`. The API address (`https://slack.com/api`) is fixed. |
+
+#### Telegram
+
+| Key | Type | Default | Environment | Description |
+|---|---|---|---|---|
+| `telegram.bot_token_env` | string | empty | `HOLEALIGN_TELEGRAM_BOT_TOKEN_ENV` | Name of the environment variable that holds the bot token (`123456:AA...`). Setting it enables Telegram; conventional value `HOLEALIGN_TELEGRAM_TOKEN`. The API address (`https://api.telegram.org`) is fixed. |
+
+#### Discord
+
+| Key | Type | Default | Environment | Description |
+|---|---|---|---|---|
+| `discord.webhooks.<name>` | map of name to webhook | empty | not overridable | Each entry is one Discord webhook, addressed as `discord:<name>`. Names are 1-32 characters of `a-z 0-9 _ -`. Any entry enables the channel. |
+| `discord.webhooks.<name>.url_env` | string | `HOLEALIGN_DISCORD_<NAME>_URL` | not overridable | Name of the environment variable that holds the webhook URL (`https://discord.com/api/webhooks/<id>/<token>`, host `discord.com` or `discordapp.com`). The URL is the secret; it is checked when the server starts. `<NAME>` is the upper-case name with `-` as `_`. |
+
+#### Microsoft Teams
+
+| Key | Type | Default | Environment | Description |
+|---|---|---|---|---|
+| `teams.webhooks.<name>` | map of name to webhook | empty | not overridable | Each entry is one Teams Workflows webhook ("When a Teams webhook request is received"), addressed as `teams:<name>`. Any entry enables the channel. |
+| `teams.webhooks.<name>.url_env` | string | `HOLEALIGN_TEAMS_<NAME>_URL` | not overridable | Name of the environment variable that holds the workflow URL. It must be `https` and its host must end with `.logic.azure.com`, `.powerplatform.com` or `.environment.api.powerplatform.com`. |
+| `teams.webhooks.<name>.allow_any_host` | bool | `false` | not overridable | Accept any `https` host for this webhook (a proxy, a test endpoint). Logged as a warning at startup. |
+
+#### Generic webhook
+
+| Key | Type | Default | Environment | Description |
+|---|---|---|---|---|
+| `webhook.endpoints.<name>` | map of name to endpoint | empty | not overridable | Each entry is one signed webhook, addressed as `webhook:<name>`. Any entry enables the channel. |
+| `webhook.endpoints.<name>.url` | string (URL) | required | not overridable | Where to POST. `https` unless `allow_http`; may point anywhere (it comes from this file only, so it is the operator's responsibility). No user info, no fragment. |
+| `webhook.endpoints.<name>.secret_env` | string | `HOLEALIGN_WEBHOOK_<NAME>_SECRET` | not overridable | Name of the environment variable that holds the HMAC-SHA256 signing key (at least 16 bytes). |
+| `webhook.endpoints.<name>.headers` | map of string | `{}` | not overridable | Extra request headers (for example `Authorization`). At most 16; printable ASCII values; `Content-Type`, `Host`, framing headers and `X-Holealign-*` cannot be set. The values are secrets that live in this file. |
+| `webhook.endpoints.<name>.allow_http` | bool | `false` | not overridable | Allow a plain `http` URL. Logged as a warning at startup. |
+
+The payload and signature are described in [notifications.md](notifications.md#generic-signed-webhook).
+
+#### Email
+
+| Key | Type | Default | Environment | Description |
+|---|---|---|---|---|
+| `email.smtp.host` | string | empty | `HOLEALIGN_EMAIL_SMTP_HOST` | SMTP server (name or IP). Setting it enables email. |
+| `email.smtp.port` | int | `587` | `HOLEALIGN_EMAIL_SMTP_PORT` | SMTP port (587 for `starttls`, 465 for `implicit`). |
+| `email.smtp.username` | string | empty | `HOLEALIGN_EMAIL_SMTP_USERNAME` | Login name. Empty: no authentication. |
+| `email.smtp.password_env` | string | `HOLEALIGN_SMTP_PASSWORD` | `HOLEALIGN_EMAIL_SMTP_PASSWORD_ENV` | Name of the environment variable that holds the password (used only with `username`). |
+| `email.smtp.tls` | `starttls` or `implicit` | `starttls` | `HOLEALIGN_EMAIL_SMTP_TLS` | How the connection is encrypted. Plain text is not supported and there is no downgrade; the server certificate is always verified. |
+| `email.smtp.from` | string | empty (required) | `HOLEALIGN_EMAIL_SMTP_FROM` | Sender: `alerts@example.com` or `Holealign <alerts@example.com>`. |
+| `email.allowed_domains` | list of domains | `[]` | `HOLEALIGN_EMAIL_ALLOWED_DOMAINS` | When set, only recipients in these exact (lower case) domains are valid destinations, which limits what a web UI admin can route to. |
+
+The deprecated keys are still accepted: they are merged into the `notify.*` keys (duplicates dropped)
+and one WARN at startup names the ones in use.
 
 ### LLM
 
@@ -128,8 +196,20 @@ The server refuses to start when:
 - `feeds.interval` is not positive, `data_dir` is empty, or `alerts.*_after` is negative;
 - only one of `tls_cert`/`tls_key` (or `admin_tls_cert`/`admin_tls_key`) is set, or `trusted_proxies`
   contains something that is not an IP or CIDR;
-- a `*_env` name does not match `^HOLEALIGN_[A-Z0-9_]+$`, or `matrix.access_token_env`,
-  `llm.api_key_env` and `admin.initial_password_env` are not pairwise different;
+- a `*_env` name does not match `^HOLEALIGN_[A-Z0-9_]+$`, or `matrix.access_token_env`, `slack.token_env`,
+  `telegram.bot_token_env`, `llm.api_key_env`, `admin.initial_password_env`, `email.smtp.password_env` and every
+  `discord.webhooks.<name>.url_env`, `teams.webhooks.<name>.url_env` and `webhook.endpoints.<name>.secret_env` are not
+  pairwise different;
+- a webhook or endpoint name is not 1-32 characters of `a-z 0-9 _ -`; a Discord or Teams URL found in the
+  environment is not valid for that service (wrong scheme, host or path; the message names the key and variable,
+  never the URL); a `webhook.endpoints.<name>.url` is missing, not `https` (without `allow_http`), or has user info;
+  a webhook header is invalid or reserved;
+- `email.smtp.host` is set with an invalid `port`, a `tls` other than `starttls`/`implicit`, or a missing or invalid
+  `from`, or `email.allowed_domains` has an invalid entry;
+- a destination in `notify.default`, `notify.ops` or `notify.routes[].to` has an unknown scheme or a malformed
+  target, or uses a channel that is not configured (`slack:...` without `slack.token_env`, a Matrix room
+  without `matrix.homeserver`), names a webhook that does not exist (`teams:other`), has an email address outside
+  `email.allowed_domains`, or a route lists no destination;
 - `rules.feed.enabled` is set without a valid `rules.feed.trusted_keys` entry, `rules.feed.url` is not `https://` or
   `file://`, or `rules.feed.interval` is below `1m`;
 - `retention.*` or `limits.*` is negative, or `triage.epss_threshold` is outside 0..1;
@@ -137,7 +217,8 @@ The server refuses to start when:
 
 Warnings logged at start (non-fatal): `http://` `public_url`, `matrix.homeserver` or `llm.base_url` on a
 non-loopback host; broad `trusted_proxies`; a non-loopback `admin_listen` without admin TLS; a
-non-loopback `listen` with neither `tls_cert` nor `trusted_proxies`; a single shared port.
+non-loopback `listen` with neither `tls_cert` nor `trusted_proxies`; a single shared port; `teams.webhooks.<name>.allow_any_host`
+or `webhook.endpoints.<name>.allow_http` in use.
 
 ## Environment variables
 
@@ -146,6 +227,12 @@ non-loopback `listen` with neither `tls_cert` nor `trusted_proxies`; a single sh
 | `HOLEALIGN_CONFIG` | server | Path to `server.yaml`. |
 | `HOLEALIGN_<SECTION>_<KEY>` | server | Overrides any scalar or string-list key (table above). Empty values are ignored. Top-level keys: `HOLEALIGN_<KEY>`. |
 | `HOLEALIGN_MATRIX_TOKEN` | server | Matrix access token (the variable named by `matrix.access_token_env`). |
+| `HOLEALIGN_SLACK_TOKEN` | server | Slack bot token (the variable named by `slack.token_env`). |
+| `HOLEALIGN_TELEGRAM_TOKEN` | server | Telegram bot token (the variable named by `telegram.bot_token_env`). |
+| `HOLEALIGN_DISCORD_<NAME>_URL` | server | Discord webhook URL of the webhook `<name>` (the variable named by its `url_env`). |
+| `HOLEALIGN_TEAMS_<NAME>_URL` | server | Teams workflow URL of the webhook `<name>` (the variable named by its `url_env`). |
+| `HOLEALIGN_WEBHOOK_<NAME>_SECRET` | server | Signing key of the generic webhook endpoint `<name>` (the variable named by its `secret_env`). |
+| `HOLEALIGN_SMTP_PASSWORD` | server | SMTP password (the variable named by `email.smtp.password_env`). |
 | `HOLEALIGN_LLM_API_KEY` | server | LLM API key (the variable named by `llm.api_key_env`). |
 | `HOLEALIGN_ADMIN_PASSWORD` | server | Initial password of `admin` (the variable named by `admin.initial_password_env`). |
 | `HOLEALIGN_ADMIN_PASSWORD_FILE` | server | File holding the initial password; takes precedence over the variable. |
@@ -153,7 +240,7 @@ non-loopback `listen` with neither `tls_cert` nor `trusted_proxies`; a single sh
 | `HOLEALIGN_ENROLL_TOKEN`, `HOLEALIGN_REPO` | `install.sh` | Enrollment token; GitHub `owner/name` to download from. |
 
 The agent has no environment overrides for its keys. Environment overrides cannot set
-`matrix.routes` (a list of objects); use the file or the web UI.
+`notify.routes` and `matrix.routes` (lists of objects); use the file or the web UI.
 
 ## Local agent (agentless mode)
 

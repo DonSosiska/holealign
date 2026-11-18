@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/DonSosiska/holealign/internal/model"
+	"github.com/DonSosiska/holealign/internal/server/config"
 )
 
 type httptestResp = httptest.ResponseRecorder
@@ -548,30 +549,43 @@ func TestOriginAndHostPinnedToPublicURL(t *testing.T) {
 
 // --- matrix routes caps -------------------------------------------------------------------------
 
+// testValid is the production destination check with all channels configured.
+func testValid(d string) error {
+	c := config.Default()
+	c.Matrix.Homeserver = "https://m"
+	c.Slack.TokenEnv, c.Telegram.BotTokenEnv = "HOLEALIGN_SLACK_TOKEN", "HOLEALIGN_TELEGRAM_TOKEN"
+	c.Discord.Webhooks = map[string]config.DiscordWebhook{"ops": {}}
+	c.Teams.Webhooks = map[string]config.TeamsWebhook{"ops": {}}
+	c.Webhook.Endpoints = map[string]config.WebhookEndpoint{"siem": {URL: "https://siem.example.org/h"}}
+	c.Email.SMTP.Host, c.Email.SMTP.From = "smtp.example.com", "alerts@example.com"
+	c.Email.AllowedDomains = []string{"example.com"}
+	return c.ValidateDestination(d)
+}
+
 func TestMatrixRoutesCaps(t *testing.T) {
-	if _, err := parseMatrixRoutes("prod = " + strings.Repeat("!a:b,", 4000)); err == nil {
+	if _, err := parseRoutes("prod = "+strings.Repeat("!a:b,", 4000), testValid); err == nil {
 		t.Error("16 KiB cap not enforced")
 	}
 	var b strings.Builder
 	for i := 0; i < maxRoutes+1; i++ {
 		fmt.Fprintf(&b, "l%d = !r:s\n", i)
 	}
-	if _, err := parseMatrixRoutes(b.String()); err == nil {
+	if _, err := parseRoutes(b.String(), testValid); err == nil {
 		t.Error("route count cap not enforced")
 	}
 	rooms := make([]string, maxRoomsPerRoute+1)
 	for i := range rooms {
 		rooms[i] = fmt.Sprintf("!r%d:s", i)
 	}
-	if _, err := parseMatrixRoutes("prod = " + strings.Join(rooms, ", ")); err == nil {
+	if _, err := parseRoutes("prod = "+strings.Join(rooms, ", "), testValid); err == nil {
 		t.Error("rooms-per-route cap not enforced")
 	}
 	for _, bad := range []string{"Prod = !a:b", "pr od = !a:b", "<x> = !a:b", strings.Repeat("a", 80) + " = !a:b"} {
-		if _, err := parseMatrixRoutes(bad); err == nil {
+		if _, err := parseRoutes(bad, testValid); err == nil {
 			t.Errorf("label %q accepted", bad)
 		}
 	}
-	if rs, err := parseMatrixRoutes("prod = !a:b, !c:d\n# c\nweb.eu = !x:y"); err != nil || len(rs) != 2 {
+	if rs, err := parseRoutes("prod = !a:b, !c:d\n# c\nweb.eu = !x:y, slack:C0123456789", testValid); err != nil || len(rs) != 2 {
 		t.Errorf("valid routes: %v %v", rs, err)
 	}
 }

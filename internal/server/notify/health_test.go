@@ -62,8 +62,8 @@ func TestRenderAggregatedSilence(t *testing.T) {
 func TestHealthRouting(t *testing.T) {
 	hs := newFakeHS(t, nil)
 	m := newTestMatrix(t, hs, Config{
-		DefaultRooms: []string{"!def:x"}, OpsRooms: []string{"!ops:x"},
-		Routes: []Route{{Label: "prod", Rooms: []string{"!prod:x"}}},
+		Default: []string{"!def:x"}, Ops: []string{"!ops:x"},
+		Routes: []Route{{Label: "prod", To: []string{"!prod:x"}}},
 	}, nil)
 	evs := []model.Event{
 		hostEv(model.EventAgentSilent, "web1", "h1", []string{"prod"}, "d"),
@@ -82,7 +82,7 @@ func TestHealthRouting(t *testing.T) {
 
 func TestOpsRoomsFallBackToDefault(t *testing.T) {
 	hs := newFakeHS(t, nil)
-	m := newTestMatrix(t, hs, Config{DefaultRooms: []string{"!def:x"}}, nil)
+	m := newTestMatrix(t, hs, Config{Default: []string{"!def:x"}}, nil)
 	if err := m.Notify(context.Background(), []model.Event{{Kind: model.EventFeedOK}}); err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +93,7 @@ func TestOpsRoomsFallBackToDefault(t *testing.T) {
 
 func TestHealthEventsNotMergedNorBursted(t *testing.T) {
 	hs := newFakeHS(t, nil)
-	m := newTestMatrix(t, hs, Config{DefaultRooms: []string{"!r:x"}}, nil)
+	m := newTestMatrix(t, hs, Config{Default: []string{"!r:x"}}, nil)
 	var evs []model.Event
 	for i := 0; i < 40; i++ { // enough findings to trigger burst mode
 		evs = append(evs, model.Event{Kind: model.EventExploitable, Host: model.Host{ID: "h", Hostname: "h"},
