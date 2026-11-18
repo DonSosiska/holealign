@@ -8,3 +8,4 @@ bin/
 /holealign-agent
 /cmd/holealign-server/holealign-server
 /cmd/holealign-agent/holealign-agent
+/dist/

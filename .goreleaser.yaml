@@ -178,7 +178,7 @@ docker_manifests:
   # "latest" moves on every release, so it is only published for final semver
   # releases (no prerelease suffix such as -rc1). Prereleases skip it.
   - name_template: "ghcr.io/donsosiska/holealign-server:latest"
-    skip: "{{ if .Prerelease }}true{{ end }}"
+    skip_push: auto   # auto: not pushed for a prerelease tag
     image_templates:
       - "ghcr.io/donsosiska/holealign-server:{{ .Version }}-amd64"
       - "ghcr.io/donsosiska/holealign-server:{{ .Version }}-arm64"
