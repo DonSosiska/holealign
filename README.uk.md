@@ -9,20 +9,35 @@ Panoptes знаходить вразливості на Linux-хостах і в
 конфігурації саме цього хоста**. Агенти на ваших хостах надсилають на центральний сервер перелік
 програмного забезпечення (SBOM) і набір фактів про конфігурацію. Сервер зіставляє вразливості через
 Grype (разом із даними CISA KEV та EPSS), перевіряє CEL-правила на фактах і сповіщає кімнати
-Matrix/Element, обрані за мітками хостів. Правила, яких ще немає, може чернеткою написати LLM; чернетка
-залишається неактивною, доки її не перевірить людина. Це один бінарний файл і один файл SQLite, без
-зовнішньої бази даних.
+Matrix/Element, обрані за мітками хостів. Це один бінарний файл і один файл SQLite, без зовнішньої бази
+даних.
 
 Документація англійською; ця сторінка є перекладом [README.md](README.md). Якщо переклад і оригінал
 розходяться, діє англійський текст.
 
-## Чим це відрізняється від сканерів, що дивляться лише на версії
+## Проблема
 
-Сканер, що дивиться лише на версії, позначає кожну збірку OpenSSH із вразливого діапазону. Panoptes
-додатково читає сам хост. regreSSHion (CVE-2024-6387) експлуатований лише в системах із glibc, де
-`LoginGraceTime` не дорівнює `0`. На хості з musl або з `LoginGraceTime 0` знахідку записано як
+Сканер, що порівнює версії пакетів із даними про вразливості, видає сотні знахідок на хост, і більшість
+із них неможливо експлуатувати там, де вони працюють: вразлива функція вимкнена, порт не відкритий,
+інша libc. Команди або тонуть у списку, або перестають його читати, і єдина важлива знахідка губиться
+серед решти.
+
+## Чим Panoptes відрізняється
+
+Panoptes додатково читає сам хост. regreSSHion (CVE-2024-6387) експлуатований лише в системах із glibc,
+де `LoginGraceTime` не дорівнює `0`. На хості з musl або з `LoginGraceTime 0` знахідку записано як
 `affected_not_exploitable`, і нікого не будять сповіщенням. Коли Panoptes не може визначити (немає
-правила або бракує факту), вердикт `conditions_unknown`, а ніколи не «безпечно».
+правила або бракує факту), вердикт `conditions_unknown`, а ніколи не «безпечно». Правила, яких ще немає,
+може чернеткою написати LLM; чернетка залишається неактивною й ніколи не знижує вердикт, доки її не
+схвалить людина.
+
+```
+ хост: збирач (root, без мережі) -> відправник -- HTTPS, лише вихідні --> сервер
+                                                                           |
+        SBOM (Syft)  +  факти (sshd -T, nginx -T, sysctl, сокети, ...)     |
+                                                                           v
+   Grype + KEV + EPSS  ->  правила (CEL) на фактах цього хоста  ->  вердикт  ->  вебінтерфейс + Matrix
+```
 
 | Вердикт | Значення |
 |---|---|
@@ -43,17 +58,15 @@ Matrix/Element, обрані за мітками хостів. Правила, �
   контейнери Docker та обмежені читання `file.match`. Каталог: [docs/rules.md](docs/rules.md#fact-catalog).
 - CEL-правила, вісім постачаються разом із системою. Вердикти та захист від чернеток:
   [docs/rules.md](docs/rules.md).
-- Необов'язкова підписана центральна стрічка правил: правила пишуться й тестуються один раз в окремому
-  репозиторії, пакуються в підписаний ed25519 пакет, і кожен сервер завантажує його, як базу Grype
-  (пріоритет вбудовані < стрічка < локальні, атомарна перевірка, імпорт без мережі):
+- Необов'язкова підписана центральна стрічка правил (ed25519, атомарна перевірка, імпорт без мережі):
   [docs/rules-feed.md](docs/rules-feed.md).
 - Необов'язкове створення чернеток правил через LLM (Anthropic або будь-яка OpenAI-сумісна точка доступу,
   наприклад Ollama): [docs/llm.md](docs/llm.md).
 - Сповіщення в Matrix/Element, що маршрутизуються за мітками хостів, із дедуплікацією, групуванням і
   зведеннями при сплесках: [docs/notifications.md](docs/notifications.md).
 - Вебінтерфейс адміністратора: хости, знахідки, згруповані за CVE, з розподілом на «потребує уваги» та
-  «фон» ([docs/rules.md](docs/rules.md#reading-the-dashboard-attention-vs-background)), перевірка правил,
-  токени реєстрації, маршрути Matrix, користувачі.
+  «фон», перевірка правил, токени реєстрації, маршрути Matrix, користувачі:
+  [docs/user-guide.md](docs/user-guide.md).
 - Сповіщення про стан системи: мовчазні агенти, застаріла база вразливостей, збій конвеєра.
 - Режим без агента (сервер стежить за власним хостом): [docs/installation.md](docs/installation.md#agentless-mode).
 - Підписані релізи: підписи cosign, SBOM, походження збірки (provenance).
@@ -92,125 +105,46 @@ Matrix/Element, обрані за мітками хостів. Правила, �
 
 ## Швидкий старт
 
-Близько п'яти хвилин. Для реального розгортання спершу прочитайте [docs/installation.md](docs/installation.md)
-і [контрольний список захисту](docs/security-model.md#operator-hardening-checklist).
-
-### 1. Запустіть сервер
+Повний шлях на 15 хвилин (сервер без агента, перші знахідки, сповіщення в Matrix, перший віддалений
+агент) описано в [docs/quickstart.md](docs/quickstart.md). Коротко, щоб спробувати сервер і один агент:
 
 ```sh
 git clone https://github.com/DonSosiska/panoptes.git
 cd panoptes/deploy
-cp server.env.example .env
-# відредагуйте .env: задайте PANOPTES_ADMIN_PASSWORD (щонайменше 12 символів)
+cp server.env.example .env       # задайте PANOPTES_ADMIN_PASSWORD (щонайменше 12 символів)
 docker compose up -d --build
-docker compose logs -f panoptes-server      # дочекайтеся "panoptes-server listening"
-```
-
-Користувача `admin` створюють під час першого запуску з `PANOPTES_ADMIN_PASSWORD` (або з файлу, на який
-вказує `PANOPTES_ADMIN_PASSWORD_FILE`). API агентів слухає `:8080`, адмінка лише на `127.0.0.1:8081`.
-Агенти вимагають `https://`, тому поставте TLS перед портом 8080 (зворотний проксі або власні
-`tls_cert`/`tls_key`): [варіанти TLS](docs/installation.md#tls).
-
-### 2. Створіть токен реєстрації
-
-```sh
 docker compose exec panoptes-server panoptes-server token create first -labels prod,web -max-hosts 5 -expires 72h
 ```
 
-Токен (`pt_...`) показується один раз. Мітки токена є авторитетними: хости, зареєстровані з ним,
-отримують саме ці мітки, які визначають кімнати Matrix для їхніх сповіщень.
-
-### 3. Встановіть агент на хості
-
-На хості, що моніториться, від імені root. Збережіть токен у файл (а не в командний рядок), завантажте
-встановлювач, перегляньте його й запустіть:
+Агенти вимагають `https://`: поставте TLS перед портом 8080 ([варіанти TLS](docs/installation.md#tls)).
+Потім на хості, що моніториться, від імені root візьміть `install.sh` з **тега релізу** (не з `main`),
+прочитайте його й запустіть, передавши токен через файл:
 
 ```sh
-install -m 0600 /dev/null /root/panoptes.token && vi /root/panoptes.token   # вставте токен pt_...
-curl --proto '=https' --tlsv1.2 -fsSLO https://raw.githubusercontent.com/DonSosiska/panoptes/main/deploy/install.sh
+V=X.Y.Z    # версія релізу зі сторінки https://github.com/DonSosiska/panoptes/releases
+curl --proto '=https' --tlsv1.2 -fsSLO https://raw.githubusercontent.com/DonSosiska/panoptes/v$V/deploy/install.sh
 less install.sh
-sh install.sh --server https://panoptes.example.com --token-file /root/panoptes.token
+sudo sh install.sh --version $V --server https://panoptes.example.com --token-file /root/panoptes.token
 ```
 
-Встановлювачу потрібен [cosign](https://docs.sigstore.dev/cosign/system_config/installation/): він
-перевіряє keyless-підпис `checksums.txt` щодо точного workflow релізу й тега, потім контрольну суму
-архіву, і перериває роботу, якщо cosign немає (`--skip-signature-check` це вимикає; не рекомендовано).
-Він встановлює `/usr/bin/panoptes-agent`, створює системного користувача `panoptes`, записує
-`/etc/panoptes/agent.yaml` (`root:panoptes`, 0640) і запускає `panoptes-collector` та `panoptes-agent`.
-Перевірити: `journalctl -u panoptes-agent -f`. Приватний ЦС, прив'язка (pinning) ключа сервера, хости без
-інтернету та всі інші прапорці: [docs/installation.md](docs/installation.md#agents).
-
-Лише для одноразового тесту без TLS використовуйте `--server http://SERVER:8080 --allow-insecure-http`.
-Тоді ключі агентів ідуть мережею відкритим текстом.
-
-### 4. Відкрийте адмінку
-
-Слухач адмінки навмисно прив'язано до loopback. Дістаньтеся до нього через SSH-тунель:
-
-```sh
-ssh -L 8081:127.0.0.1:8081 you@panoptes-docker-host
-```
-
-потім відкрийте <http://127.0.0.1:8081> і увійдіть як `admin`. Хост з'являється після першого check-in;
-знахідки з'являються після першого завантаження інвентаризації (кілька хвилин, довше під час першого
-сканування). Задайте `PANOPTES_PUBLIC_URL` у `.env` як URL, який люди справді відкриватимуть: він
-використовується для посилань у сповіщеннях.
-
-Далі: [сповіщення Matrix](docs/notifications.md), [чернетки від LLM](docs/llm.md) (необов'язково),
-[експлуатація](docs/operations.md).
-
-## Швидкий старт без агента
-
-Сервер може стежити за власним хостом через вбудований локальний агент, тож окреме встановлення агента
-й реєстрація не потрібні. Типово вимкнено.
-
-На хості, де сервер працює з пакета `.deb`/`.rpm` або як бінарний файл під systemd:
-
-```sh
-sudo sh install.sh --collector-only      # встановлює лише збирач від імені root і користувача panoptes
-```
-
-потім у `/etc/panoptes/server.yaml`:
-
-```yaml
-local_agent:
-  enabled: true
-  source: collector        # collector | inprocess | auto (типово auto)
-  labels: [server]
-```
-
-Збирач приймає лише root і користувача `panoptes`, тож сервер має працювати від імені цього користувача,
-а не як динамічний `DynamicUser` systemd. Додайте drop-in через `systemctl edit panoptes-server`:
-
-```ini
-[Service]
-DynamicUser=no
-User=panoptes
-Group=panoptes
-```
-
-потім `systemctl restart panoptes-server`. Така конфігурація зі статичним користувачем ще не перевірена
-на реальному хості (див. коментарі в unit-файлі). У Docker `source: inprocess` сканує контейнер, а не
-хост: натомість використовуйте сокет збирача з хоста. Подробиці, усі ключі `local_agent.*` і застереження:
-[docs/installation.md](docs/installation.md#agentless-mode).
+Встановлювач перевіряє підпис релізу через [cosign](https://docs.sigstore.dev/cosign/system_config/installation/)
+і ставить збирач та агент як служби systemd. Адмінка слухає лише loopback: відкрийте її через SSH-тунель,
+`ssh -L 8081:127.0.0.1:8081 you@docker-host`, за адресою <http://127.0.0.1:8081> і увійдіть як `admin`.
+Щоб стежити за власним хостом сервера без окремого агента, див.
+[режим без агента](docs/installation.md#agentless-mode).
 
 ## Документація
 
-| Документ | Зміст |
-|---|---|
-| [docs/architecture.md](docs/architecture.md) | Компоненти, потік даних, розділення привілеїв, межі довіри, сховище |
-| [docs/installation.md](docs/installation.md) | Встановлення сервера й агента, TLS, усі прапорці `install.sh`, перевірка релізів, оновлення, режим без агента |
-| [docs/configuration.md](docs/configuration.md) | Усі ключі конфігурації сервера й агента, зі значеннями за замовчуванням і змінними середовища |
-| [docs/rules.md](docs/rules.md) | Вердикти, написання правил, середовище CEL, каталог фактів, політика `file.match`, постачувані правила, перевірка чернеток |
-| [docs/rules-feed.md](docs/rules-feed.md) | Підписана центральна стрічка правил: формат пакета, підпис, керування ключами, публікація, імпорт без мережі |
-| [docs/llm.md](docs/llm.md) | Постачальники LLM, контроль витрат, що надсилається, захист від prompt injection |
-| [docs/notifications.md](docs/notifications.md) | Налаштування Matrix, маршрутизація, типи повідомлень, дедуплікація, проблеми доставки |
-| [docs/operations.md](docs/operations.md) | CLI, резервні копії та відновлення, зберігання, сповіщення про стан, ізольоване середовище, усунення несправностей |
-| [docs/security-model.md](docs/security-model.md) | Модель загроз, захисні заходи, контрольний список захисту, відомі обмеження |
-| [docs/development.md](docs/development.md) | Структура репозиторію, збірка, тести, процес релізу |
-| [docs/contracts.md](docs/contracts.md) | Контракти протоколів та інтерфейсів (першоджерело) |
-| [SECURITY.md](SECURITY.md) | Повідомлення про вразливості, підтримувані версії |
-| [CONTRIBUTING.md](CONTRIBUTING.md), [CHANGELOG.md](CHANGELOG.md) | Участь у розробці, нотатки до релізів |
+Усі документи перелічено в [docs/README.md](docs/README.md), згруповано за призначенням:
+
+- Користування: [швидкий старт](docs/quickstart.md), [посібник користувача](docs/user-guide.md),
+  [сповіщення](docs/notifications.md), [FAQ](docs/faq.md), [усунення несправностей](docs/troubleshooting.md).
+- Експлуатація: [встановлення](docs/installation.md), [конфігурація](docs/configuration.md),
+  [операції](docs/operations.md).
+- Написання правил: [правила](docs/rules.md), [стрічка правил](docs/rules-feed.md), [LLM](docs/llm.md).
+- Розробка: [архітектура](docs/architecture.md), [контракти](docs/contracts.md),
+  [розробка](docs/development.md), [CONTRIBUTING.md](CONTRIBUTING.md), [CHANGELOG.md](CHANGELOG.md).
+- Безпека: [модель безпеки](docs/security-model.md), [SECURITY.md](SECURITY.md).
 
 ## Підсумок безпеки
 
@@ -229,13 +163,8 @@ Group=panoptes
 - **Підписані релізи.** Keyless-підписи cosign із точною ідентичністю, SBOM, provenance.
 
 Повна модель і контрольний список оператора: [docs/security-model.md](docs/security-model.md). Про
-вразливості повідомляйте приватно: [SECURITY.md](SECURITY.md).
-
-## Перевірка релізів
-
-Кожен реліз має `checksums.txt` з keyless-підписом cosign, SBOM у форматі SPDX і provenance збірки
-GitHub. `install.sh` перевіряє підпис за вас. Щоб перевірити вручну (cosign, `gh attestation`, образ
-сервера), див. [docs/installation.md](docs/installation.md#verifying-releases).
+вразливості повідомляйте приватно: [SECURITY.md](SECURITY.md). Щоб перевірити реліз вручну (cosign,
+`gh attestation`, образ сервера), див. [docs/installation.md](docs/installation.md#verifying-releases).
 
 ## Пакети та збірка з вихідного коду
 
@@ -253,9 +182,7 @@ Panoptes є **source-available** за ліцензією [PolyForm Noncommercial
 державними установами. Це не ліцензія відкритого коду за визначенням OSI. Сторонні залежності зберігають
 власні ліцензії: [NOTICE](NOTICE).
 
-### Комерційне використання
-
-Ліцензія PolyForm Noncommercial не охоплює комерційного використання, наприклад використання
-комерційною компанією у своїй діяльності. Комерційне використання потребує окремої ліцензії від автора.
-Зв'яжіться з автором через [GitHub](https://github.com/DonSosiska/panoptes) (профіль власника
-репозиторію або GitHub Discussion; не публікуйте конфіденційні подробиці у публічному issue).
+**Комерційне використання** (наприклад, використання комерційною компанією у своїй діяльності) ліцензія
+не охоплює, воно потребує окремої ліцензії. Комерційне ліцензування доступне за запитом: зв'яжіться з
+мейнтейнером через [GitHub](https://github.com/DonSosiska/panoptes) (не публікуйте конфіденційні
+подробиці у публічному issue).

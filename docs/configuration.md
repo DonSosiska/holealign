@@ -17,9 +17,10 @@ otherwise built-in defaults apply (this is how the container image runs). Every 
 **Unknown keys are an error** (a typo stops the server from starting). Secrets never go in this
 file: they come from environment variables.
 
-Value formats: durations are Go durations (`30m`, `6h`); `retention.*` also accepts days (`30d`,
-`1d12h`) and a bare `0`. Lists are YAML lists in the file and comma-separated in environment
-variables.
+Value formats: durations are Go durations (`30m`, `6h`); `retention.*` and `rules.feed.stale_after`
+also accept days (`30d`, `1d12h`) and a bare `0`. Booleans are `true`/`false` (environment: also `1`/`0`).
+Lists are YAML lists in the file and comma-separated in environment variables. Precedence: built-in
+default, then the file, then the environment (an empty variable is ignored).
 
 ### Listeners and TLS
 
@@ -67,6 +68,26 @@ The signed central rules feed ([rules-feed.md](rules-feed.md)). Layers: built-in
 | `rules.feed.interval` | duration | `6h` | `PANOPTES_RULES_FEED_INTERVAL` | Poll period, at least `1m`. |
 | `rules.feed.trusted_keys` | list of base64 | `[]` | `PANOPTES_RULES_FEED_TRUSTED_KEYS` (comma separated) | ed25519 public keys (`panoptes-server rules keygen` prints one). A bundle must be signed by one of them; list two keys while rotating. Enabled with an empty list is a configuration error. |
 | `rules.feed.stale_after` | duration | `7d` | `PANOPTES_RULES_FEED_STALE_AFTER` | `feed_stale` alert ("rules feed ...") when no poll succeeded for this long or the last 3 polls failed. `0` disables; the check is also off when `url` is empty. |
+
+Ready-to-use block for the public feed (published by the
+[panoptes-rules](https://github.com/DonSosiska/panoptes-rules) repository; key_id `75eef42e119d4dda`).
+Compare the key with the canonical copy,
+<https://github.com/DonSosiska/panoptes-rules/blob/main/keys/rules-public.key>, before you trust it:
+
+```yaml
+rules:
+  feed:
+    enabled: true
+    url: https://donsosiska.github.io/panoptes-rules/latest.json
+    interval: 6h
+    trusted_keys:
+      - "UuFW4nYSCwI3xfHhwapVhYrjYhVO6i7yaxOTv9KFCuM="
+    stale_after: 7d
+```
+
+`deploy/server.yaml.example` ships the same block commented out (`enabled: false` is the default).
+With environment variables only: `PANOPTES_RULES_FEED_ENABLED=true`,
+`PANOPTES_RULES_FEED_URL=...`, `PANOPTES_RULES_FEED_TRUSTED_KEYS=<key>`.
 
 ### Triage
 
@@ -130,7 +151,8 @@ non-loopback `listen` with neither `tls_cert` nor `trusted_proxies`; a single sh
 | `PANOPTES_AGENT_CONFIG` | agent | Path to `agent.yaml` (the `-config` flag wins). |
 | `PANOPTES_ENROLL_TOKEN`, `PANOPTES_REPO` | `install.sh` | Enrollment token; GitHub `owner/name` to download from. |
 
-The agent has no environment overrides for its keys.
+The agent has no environment overrides for its keys. Environment overrides cannot set
+`matrix.routes` (a list of objects); use the file or the web UI.
 
 ## Local agent (agentless mode)
 
@@ -156,7 +178,7 @@ Notes:
 - No enrollment token is used. The server creates the host record itself and stores the agent key in
   `<data_dir>/local-agent/credentials.json` (0600). The host shows a "local (built-in)" badge in the web UI.
 - If a host with the same machine ID is already enrolled by a standalone agent, the local agent does not
-  take it over. It logs an ERROR and does not start; see [operations](operations.md#troubleshooting).
+  take it over. It logs an ERROR and does not start; see [operations](troubleshooting.md#local-agent-agentless-mode).
 
 ## Agent configuration
 
@@ -185,7 +207,10 @@ every key not listed as required. Durations are Go durations.
 | `collector_socket` | string (path) | `/run/panoptes/collector.sock` | Unix socket of the collector (absolute path). Unused with `-mode all`. |
 | `collector_user` | string | `panoptes` | User allowed on the socket besides root; its primary group owns the socket. |
 
-Agent command-line flags: [installation.md](installation.md#manual-install).
+The agent validates `server_url`, the timeouts and intervals, `state_dir`, `collector_socket`, the
+pins, `ca_file` and the client certificate pair at start and exits with a `config:` error otherwise.
+Labels are validated by the server at enrollment. Agent command-line flags:
+[installation.md](installation.md#manual-install).
 
 ## Example files
 
