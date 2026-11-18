@@ -217,7 +217,7 @@ func TestRunEvalScoresAndExcludesReference(t *testing.T) {
 	}
 
 	md := rep.Markdown()
-	for _, s := range []string{"## good@medium", "## bad@high", "## Variants compared", "| AAA-ref | 2/2 | 100% | 0 |", "| AAA-ref | 2/2 | 67% | 2 |", "| good@medium | 2 | 100% | 100% | 0 |", "| bad@high | 2 | 100% | 67% | 2 | 2 |"} {
+	for _, s := range []string{"## good@medium", "## bad@high", "## Variants compared", "| AAA-ref | 2/2 | 100% | 0 |", "| AAA-ref | 2/2 | 67% | 2 |", "| good@medium | 2 | 100% | 100% | 100% | 0 |", "| bad@high | 2 | 100% | 67% | 67% | 2 | 2 |"} {
 		if !strings.Contains(md, s) {
 			t.Errorf("markdown lacks %q:\n%s", s, md)
 		}
