@@ -322,8 +322,13 @@ Variables:
 - `host` — `map(string, dyn)`: `hostname`, `labels` (list), `os_id`, `os_version_id`, `kernel`, `arch`
 
 Custom functions:
-- `version_lt(a string, b string) bool`, `version_ge(a, b)` — loose version comparison
-  (numeric segments compared numerically, e.g. `"6.1.10" < "6.10.0"`).
+- `version_lt(a string, b string) bool`, `version_ge(a, b)` — version comparison using the ordering of the
+  finding's package ecosystem (`pkg.type`): `deb` follows dpkg (epoch, upstream, revision; `~` sorts before
+  everything, so `2.4.52~rc1 < 2.4.52` and `1.0-1~bpo12+1 < 1.0-1`, while `1.0.0+dfsg > 1.0.0`), `rpm` follows
+  rpmvercmp (`~` and `^`), `apk` follows apk-tools (`_rc` < release < `_p`, `-rN`). Other types, and versions the
+  ecosystem parser rejects, use a loose comparison (numeric segments compared numerically, e.g.
+  `"6.1.10" < "6.10.0"`, missing segments count as 0). The two-argument form is a macro for the internal
+  three-argument form `version_lt(a, b, pkg.type)`; the signatures rules use are unchanged.
 - `has_module(list, name)` — sugar for `name in list`.
 
 CEL optional types are enabled (`cel.OptionalTypes()`), so rules can write

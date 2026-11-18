@@ -128,7 +128,7 @@ Functions:
 
 | Function | Meaning |
 |---|---|
-| `version_lt(a, b)` / `version_ge(a, b)` | Loose version comparison: numeric segments compared numerically (`"6.1.10" < "6.10.0"`). |
+| `version_lt(a, b)` / `version_ge(a, b)` | Version comparison in the ordering of the finding's package type: dpkg for `deb` (`2.4.52~rc1 < 2.4.52`), rpmvercmp for `rpm`, apk-tools for `apk`; other types use a loose comparison (numeric segments compared numerically, `"6.1.10" < "6.10.0"`). |
 | `has_module(list, name)` | Sugar for `name in list`. |
 
 Optional types are enabled. Use the optional index for map keys that may be missing:
