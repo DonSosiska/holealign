@@ -94,6 +94,9 @@ Nice=10
 IOSchedulingClass=idle
 CPUQuota=50%
 MemoryMax=1G
+# Go runtime threads and the external tools (nginx -T, php -i, ...) all count: a fork bomb from a
+# tool loading attacker-influenced config stays bounded.
+TasksMax=128
 
 [Install]
 WantedBy=multi-user.target

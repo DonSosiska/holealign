@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -309,6 +310,9 @@ func TestCollectSkipsUntrustedTrees(t *testing.T) {
 	}
 }
 
+// recordingMu guards the shared ran slices: collectors run concurrently.
+var recordingMu sync.Mutex
+
 type recordingRunner struct {
 	ran *[]string
 	out map[string]string
@@ -316,7 +320,9 @@ type recordingRunner struct {
 
 func (r recordingRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
 	key := strings.Join(append([]string{name}, args...), " ")
+	recordingMu.Lock()
 	*r.ran = append(*r.ran, key)
+	recordingMu.Unlock()
 	if o, ok := r.out[key]; ok {
 		return []byte(o), nil
 	}

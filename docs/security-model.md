@@ -29,8 +29,8 @@ or advisory text. The architecture is in [architecture.md](architecture.md).
 |---|---|
 | A compromised or malicious **server** tries to run code on hosts | There is no remote command channel. Every command the agent runs is a hard-coded argv, with no shell, a 10 s timeout and capped output. The server can only request `file.match` facts, and those are filtered (name pattern, absolute path, at most 20) and re-checked by the collector's own policy. `next_checkin_seconds` is clamped to 60 s - 1 h; `want_inventory` is honoured at most once per 10 minutes. |
 | A server or network attacker impersonates the **server** | TLS 1.2+ with chain and host name always verified (`InsecureSkipVerify` is never set). Optional `ca_file` makes your CA the only trust root, `server_cert_sha256` pins the leaf key in addition to chain validation, optional mTLS client certificate. Redirects are never followed. `http://` needs `allow_insecure_http` and logs a WARN. |
-| A bug in a **parser** of untrusted local data (configs, package databases, images) | Privilege separation: the root collector has no network (`PrivateNetwork=yes`, `IPAddressDeny=any`, AF_UNIX only); the networked sender is unprivileged and never parses those files. The collector is also resource-limited (CPU, memory, I/O, scan timeouts, a limit on concurrent scans). |
-| Local users plant files so a **root helper** runs attacker content (`nginx -T`, `sshd -T`, `php -i` read config trees) | Before running those tools the collector requires the config trees and every ancestor directory to be root-owned and not group- or world-writable; helper binaries must also have a trusted path. Otherwise the tool is skipped and reported as `agent.skipped`. |
+| A bug in a **parser** of untrusted local data (configs, package databases, images) | Privilege separation: the root collector has no network (`PrivateNetwork=yes`, `IPAddressDeny=any`, AF_UNIX only); the networked sender is unprivileged and never parses those files. The collector is also resource-limited (CPU, memory, I/O, scan timeouts, a limit on concurrent scans, a 2 minute deadline per facts request that is cancelled when the client disconnects, helper commands killed as a whole process group on timeout, `TasksMax=128`). |
+| Local users plant files so a **root helper** runs attacker content (`nginx -T`, `sshd -T`, `php -i` read config trees) | Before running those tools the collector requires the config trees and every ancestor directory to be root-owned and not group- or world-writable; helper binaries must also have a trusted path. Symbolic links are followed and the files below a linked directory are checked too. Otherwise the tool is skipped and reported as `agent.skipped`. Config files are `stat`ed and opened with `O_NONBLOCK`, so a FIFO planted in a user-writable place cannot hang the collector. |
 | **Secret leakage** through `file.match` | Allowed roots only, denylist, strict server-side validation of patterns and paths, world-readable regular files only, symlink-safe open, masking of secret values before the pattern is applied, per-check-in budgets. Only reviewed rules' requests are ever sent to agents. See [rules.md](rules.md#filematch-policy). |
 | **Credential theft** from the server database | Enrollment tokens, agent keys and session tokens are stored only as SHA-256 hashes; passwords as bcrypt. The database is mode 0600 and the server runs with `umask 077`. |
 | A stolen **enrollment token** | Tokens can expire, have a host cap and carry authoritative labels. A token cannot take over an enrolled host: re-enrollment of an existing machine ID needs the host's current key or an administrator's `host allow-reenroll` (time-limited, single use). The agent blanks the token in its config after the first check-in. |
@@ -108,6 +108,13 @@ Do these in a real deployment.
   comments say so. Check `panoptes-agent -print-facts` under the unit's properties, and watch `agent.collector_error`
   and `agent.skipped`. The unit comments list the known risk: `nginx -T` may fail on a read-only file
   system.
+- **Apache includes are not scanned.** Before `apachectl -M` the agent verifies the Apache config
+  roots, but unlike nginx it does not follow `Include`/`IncludeOptional`/`LoadModule` to locations
+  outside those roots. Config that includes files from outside `/etc/apache2`, `/etc/httpd` and the
+  other verified roots is not checked. The nginx scan covers `include`, `load_module`,
+  `*_by_lua_file`, `perl_modules`, `perl_require`, `js_import` and `js_path`; other nginx directives
+  that load files (for example lua `*_by_lua_block` requiring modules from a search path) are not
+  followed.
 - **Rules are only as good as their author.** A wrong `exploitable_if` produces false negatives
   (`affected_not_exploitable`). Missing facts and missing rules fail towards `conditions_unknown`,
   not towards "safe", and drafts cannot lower verdicts, but a reviewed rule can.

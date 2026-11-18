@@ -76,9 +76,9 @@ CA_DEST="/etc/panoptes/ca.pem"
 CONF_DIR="/etc/panoptes"
 CONF_FILE="/etc/panoptes/agent.yaml"
 UNIT_NAME="panoptes-agent"
-UNIT_PATH="/etc/systemd/system/panoptes-agent.service"
+UNIT_DEST="/etc/systemd/system/panoptes-agent.service"
 COLLECTOR_UNIT_NAME="panoptes-collector"
-COLLECTOR_UNIT_PATH="/etc/systemd/system/panoptes-collector.service"
+COLLECTOR_UNIT_DEST="/etc/systemd/system/panoptes-collector.service"
 SVC_USER="panoptes"
 STATE_DIR="/var/lib/panoptes-agent"
 
@@ -94,6 +94,11 @@ log() {
 usage() {
     sed -n '2,52p' "$0" 2>/dev/null | sed 's/^# \{0,1\}//' || true
 }
+
+# Everything below runs inside main(), invoked by the last line of this file: a download that
+# is cut short (curl | sh) then ends in a syntax error instead of running half an installer.
+# The body is deliberately not indented: it contains the unit-file heredocs verbatim.
+main() {
 
 # --- argument parsing -------------------------------------------------------
 
@@ -197,7 +202,7 @@ if [ "$UNINSTALL" -eq 1 ]; then
     log "stopping and disabling $UNIT_NAME and $COLLECTOR_UNIT_NAME"
     systemctl disable --now "$UNIT_NAME" >/dev/null 2>&1 || true
     systemctl disable --now "$COLLECTOR_UNIT_NAME" >/dev/null 2>&1 || true
-    rm -f "$UNIT_PATH" "$COLLECTOR_UNIT_PATH" "$BIN_PATH" "$OLD_BIN_PATH"
+    rm -f "$UNIT_DEST" "$COLLECTOR_UNIT_DEST" "$BIN_PATH" "$OLD_BIN_PATH"
     systemctl daemon-reload || true
     if [ "$FORCE" -eq 1 ]; then
         log "removing $CONF_FILE and $STATE_DIR"
@@ -225,11 +230,6 @@ CONFIG_EXISTS=0
 WRITE_CONFIG=0
 if [ "$CONFIG_EXISTS" -eq 0 ] || [ "$FORCE" -eq 1 ]; then
     WRITE_CONFIG=1
-fi
-# the config holds the enrollment token: readable by root and the service group only
-if [ "$CONFIG_EXISTS" -eq 1 ]; then
-    chown root:"$SVC_USER" "$CONF_FILE"
-    chmod 0640 "$CONF_FILE"
 fi
 
 if [ "$WRITE_CONFIG" -eq 1 ] && [ "$COLLECTOR_ONLY" -eq 0 ]; then
@@ -369,6 +369,15 @@ else
     log "creating system user $SVC_USER"
     useradd --system --no-create-home --shell /usr/sbin/nologin "$SVC_USER" \
         || die "cannot create the system user $SVC_USER"
+    # a freshly created account must pass the same check as a pre-existing one
+    svc_user_ok || svc_user_die
+fi
+
+# the config holds the enrollment token: readable by root and the service group only (the
+# group exists now)
+if [ "$CONFIG_EXISTS" -eq 1 ]; then
+    chown root:"$SVC_USER" "$CONF_FILE"
+    chmod 0640 "$CONF_FILE"
 fi
 
 # --- get the binary ---------------------------------------------------------
@@ -521,6 +530,11 @@ fi
 # --- systemd unit -----------------------------------------------------------
 
 umask 022
+# The units are written to a staging file next to their destination and moved into place with
+# rename(2), so systemd never sees a half-written unit.
+COLLECTOR_UNIT_PATH="$COLLECTOR_UNIT_DEST.new.$$"
+UNIT_PATH="$UNIT_DEST.new.$$"
+trap 'rm -f "$COLLECTOR_UNIT_PATH" "$UNIT_PATH"; rm -rf "${TMP:?}"' EXIT INT TERM
 cat > "$COLLECTOR_UNIT_PATH" <<'EOF'
 [Unit]
 Description=Panoptes collector (root, no network: reads host state, serves it on a unix socket)
@@ -618,10 +632,15 @@ Nice=10
 IOSchedulingClass=idle
 CPUQuota=50%
 MemoryMax=1G
+# Go runtime threads and the external tools (nginx -T, php -i, ...) all count: a fork bomb from a
+# tool loading attacker-influenced config stays bounded.
+TasksMax=128
 
 [Install]
 WantedBy=multi-user.target
 EOF
+chmod 0644 "$COLLECTOR_UNIT_PATH"
+mv -f "$COLLECTOR_UNIT_PATH" "$COLLECTOR_UNIT_DEST"
 if [ "$COLLECTOR_ONLY" -eq 0 ]; then
 cat > "$UNIT_PATH" <<'EOF'
 [Unit]
@@ -684,8 +703,8 @@ MemoryMax=512M
 WantedBy=multi-user.target
 EOF
 chmod 0644 "$UNIT_PATH"
+mv -f "$UNIT_PATH" "$UNIT_DEST"
 fi
-chmod 0644 "$COLLECTOR_UNIT_PATH"
 
 # state from an older (root) install becomes owned by the service user; systemd also does this
 # for StateDirectory=, this keeps a manual run working too
@@ -707,3 +726,7 @@ systemctl restart "$COLLECTOR_UNIT_NAME" "$UNIT_NAME"
 
 log "panoptes-collector (root, no network) and panoptes-agent (user $SVC_USER) are running"
 log "follow the logs with: journalctl -u panoptes-agent -u panoptes-collector -f"
+
+}
+
+main "$@"

@@ -27,10 +27,12 @@ type CommandRunner interface {
 }
 
 const (
-	commandTimeout = 10 * time.Second
-	maxCommandOut  = 4 << 20 // 4 MiB
-	fixedPath      = "/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/sbin:/usr/local/bin"
+	maxCommandOut = 4 << 20 // 4 MiB
+	fixedPath     = "/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/sbin:/usr/local/bin"
 )
+
+// commandTimeout bounds one external command (a variable so tests can shorten it).
+var commandTimeout = 10 * time.Second
 
 var errOutputTooLarge = errors.New("facts: command output exceeds 4 MiB")
 
@@ -48,6 +50,9 @@ func (execRunner) Run(ctx context.Context, name string, args ...string) ([]byte,
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Env = []string{"LC_ALL=C", "PATH=" + fixedPath}
 	cmd.WaitDelay = time.Second
+	// Own process group; on timeout the whole group is killed, so forked helpers (nginx -T
+	// workers, php-fpm children, ...) cannot outlive the request.
+	setProcessGroup(cmd)
 
 	w := &capWriter{max: maxCommandOut}
 	// Same writer for both streams: os/exec serialises writes to a shared writer.
@@ -144,7 +149,7 @@ func (env *Env) readFile(name string) ([]byte, error) {
 	if env.FS == nil {
 		return nil, fs.ErrNotExist
 	}
-	data, err := fs.ReadFile(env.FS, name)
+	data, err := readFileGuarded(env.FS, "/"+name)
 	if err != nil {
 		return nil, err
 	}
