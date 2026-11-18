@@ -35,6 +35,19 @@ First public state of the project. No tagged release yet.
   UI (unknown scheme, malformed target or unconfigured channel is an error). Retry with `Retry-After`,
   burst summaries, partial-delivery memory and delivery-problem banner work per destination for every
   channel. Untrusted text is escaped per channel and mentions are neutralised. API base URLs are constants.
+- Server: four more notification channels, each one file implementing the channel interface.
+  Discord (`discord:<name>`, webhook URL from the environment validated as `https://discord.com|discordapp.com/api/webhooks/<id>/<token>`,
+  markdown and mention syntax escaped, `allowed_mentions` empty, embeds suppressed, 2000 characters).
+  Microsoft Teams (`teams:<name>`, Workflows "When a Teams webhook request is received" with an Adaptive Card;
+  the URL must be https on a Microsoft workflow host unless `allow_any_host`, which logs a warning).
+  Generic signed webhook (`webhook:<name>`, versioned JSON built from the events, header
+  `X-Holealign-Signature: t=<unix>,v1=<HMAC-SHA256 of "<t>.<body>">` and a retry-stable `X-Holealign-Event-Id`;
+  https unless `allow_http`; redirects not followed). Email (`email:<address>`, SMTP with mandatory TLS
+  and certificate verification, multipart text and HTML, header-injection-safe subject, optional
+  `email.allowed_domains`; 4xx replies are retried, 5xx are permanent). Config: `discord.webhooks`,
+  `teams.webhooks`, `webhook.endpoints`, `email.smtp` and `email.allowed_domains`; secrets only from
+  environment variables named in the config (`url_env`, `secret_env`, `password_env`). Destinations of the
+  first three are names, never URLs, so the web UI cannot cause SSRF. See docs/notifications.md.
 - Agent: privilege-separated Linux agent. A root collector with no network access reads host state
   and serves it on a unix socket; an unprivileged sender is the only process that talks to the
   server. `-mode all` keeps the single-process behaviour for `-once`, containers and tests.

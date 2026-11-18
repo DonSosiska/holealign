@@ -1,13 +1,15 @@
-# Notifications (Matrix, Slack, Telegram)
+# Notifications (Matrix, Slack, Telegram, Discord, Teams, webhook, email)
 
-Holealign sends alerts to chat channels: Matrix/Element rooms, Slack channels and Telegram chats.
+Holealign sends alerts to Matrix/Element rooms, Slack channels, Telegram chats, Discord and Microsoft
+Teams channels, a signed generic webhook, and email.
 Findings are routed by the labels of the affected host; server-level events (stale feed, failing
 pipeline, mass silence) go to separate ops destinations. This page is a per-channel setup guide, the
 routing rules, the message types, and the deduplication, grace and burst behaviour, including what you
 see when delivery fails.
 
 Contents: [Destinations](#destinations) - [Matrix](#matrix) - [Slack](#slack) - [Telegram](#telegram) -
-[Routing](#routing) - [Message types](#message-types) -
+[Discord](#discord) - [Microsoft Teams](#microsoft-teams) - [Generic signed webhook](#generic-signed-webhook) -
+[Email](#email) - [Routing](#routing) - [Message types](#message-types) -
 [Deduplication, grace and bursts](#deduplication-grace-and-bursts) -
 [Delivery problems](#delivery-problems)
 
@@ -15,19 +17,29 @@ Contents: [Destinations](#destinations) - [Matrix](#matrix) - [Slack](#slack) - 
 
 A destination is a string `scheme:target`. Everything that routes alerts (`notify.default`,
 `notify.routes[].to`, `notify.ops` and the routes edited in the web UI) takes destinations, and the
-three channels can be mixed freely in one route.
+channels can be mixed freely in one route.
 
 | Channel | Destination | Example |
 |---|---|---|
 | Matrix | `!id:server` (room ID), or `matrix:!id:server`, or an alias `#alias:server` | `!abc123:matrix.example.com` |
 | Slack | `slack:<channel ID>`: `C...` public, `G...` private, `D...` direct message. IDs only, never names. | `slack:C0123456789` |
 | Telegram | `telegram:<chat_id>` or `telegram:<chat_id>/<message_thread_id>` (a topic of a forum group) | `telegram:-1001234567890`, `telegram:-1001234567890/17` |
+| Discord | `discord:<name>`: the name of a webhook in `discord.webhooks` | `discord:ops` |
+| Microsoft Teams | `teams:<name>`: the name of a webhook in `teams.webhooks` | `teams:ops` |
+| Webhook | `webhook:<name>`: the name of an endpoint in `webhook.endpoints` | `webhook:siem` |
+| Email | `email:<address>`: one plain mailbox, no display name | `email:ops@example.com` |
 
 A destination without a known scheme is a Matrix room, so configs and routes written before Slack and
 Telegram existed keep working unchanged. Syntax is checked strictly when the config loads and when
-routes are saved in the web UI: an unknown scheme (`discord:...`), a malformed target
-(`slack:#general`, `telegram:@channel`) or a channel that is not configured (`slack:...` without
-`slack.token_env`) stops the server from starting, or is shown as an error in the form.
+routes are saved in the web UI: an unknown scheme (`signal:...`), a malformed target
+(`slack:#general`, `telegram:@channel`, `discord:https://...`), a name that is not configured
+(`teams:other`), a channel that is not configured (`slack:...` without `slack.token_env`) or an
+email address outside `email.allowed_domains` stops the server from starting, or is shown as an
+error in the form.
+
+Discord, Teams and webhook destinations are **names**, never URLs: the URLs and secrets live in the
+config file and the environment, so a route edit in the web UI cannot make the server call an
+arbitrary address.
 
 Each channel is enabled by its own config section and has its own secret in the environment:
 
@@ -36,9 +48,15 @@ Each channel is enabled by its own config section and has its own secret in the 
 | Matrix | `matrix.homeserver` | `HOLEALIGN_MATRIX_TOKEN` (name set by `matrix.access_token_env`) |
 | Slack | `slack.token_env` | `HOLEALIGN_SLACK_TOKEN` |
 | Telegram | `telegram.bot_token_env` | `HOLEALIGN_TELEGRAM_TOKEN` |
+| Discord | one entry in `discord.webhooks` | the webhook URL: `HOLEALIGN_DISCORD_<NAME>_URL` (`url_env`) |
+| Microsoft Teams | one entry in `teams.webhooks` | the workflow URL: `HOLEALIGN_TEAMS_<NAME>_URL` (`url_env`) |
+| Webhook | one entry in `webhook.endpoints` | the signing key: `HOLEALIGN_WEBHOOK_<NAME>_SECRET` (`secret_env`) |
+| Email | `email.smtp.host` | the SMTP password: `HOLEALIGN_SMTP_PASSWORD` (`email.smtp.password_env`) |
 
 The Slack and Telegram API addresses (`https://slack.com/api`, `https://api.telegram.org`) are fixed in
-the program; neither the config file nor the web UI can point the server at another host.
+the program; neither the config file nor the web UI can point the server at another host. Discord
+and Teams URLs are validated against the services' hosts; the generic webhook may point anywhere, but
+only from the config file.
 
 ```yaml
 # server.yaml: all three channels, mixed routes
@@ -193,6 +211,258 @@ back, feed OK) are sent silently. A message is at most 3,900 visible characters 
 a tag or entity is never split. The token is part of the request URL, so the server never logs
 request URLs or puts them in error messages.
 
+## Discord
+
+Holealign posts to a **Discord webhook**. The destination is a **name** you choose (`discord:ops`);
+the webhook URL, which is the secret, lives only in the server's environment, so nobody who can edit
+routes in the web UI can make the server call a different URL.
+
+1. **Create the webhook.** In Discord open the channel's settings, **Integrations**, **Webhooks**,
+   **New Webhook**, pick the channel and **Copy Webhook URL**
+   (`https://discord.com/api/webhooks/<id>/<token>`). Treat it like a password: anyone who has it can
+   post to that channel.
+2. **Configure the server.** The variable name is yours to choose; the default for a webhook called
+   `ops` is `HOLEALIGN_DISCORD_OPS_URL`.
+
+   ```sh
+   # server.env
+   HOLEALIGN_DISCORD_OPS_URL=https://discord.com/api/webhooks/123456789012345678/AbCd...
+   ```
+
+   ```yaml
+   discord:
+     webhooks:
+       ops:  {url_env: HOLEALIGN_DISCORD_OPS_URL}
+       prod: {url_env: HOLEALIGN_DISCORD_PROD_URL}   # one webhook per channel
+   notify:
+     routes:
+       - {label: prod, to: ["discord:prod"]}
+     ops: ["discord:ops"]
+   ```
+
+3. **Restart** and look for `discord channel enabled`.
+
+Names are 1 to 32 characters of `a-z`, `0-9`, `_` and `-`. The URL is validated when the server starts:
+`https`, host `discord.com` or `discordapp.com`, path `/api/webhooks/<id>/<token>`, no query, no port.
+A malformed URL stops the server from starting (the message names the key and the variable, never
+the URL).
+
+Format: Discord markdown (bold header, inline code for fix commands, links as `<url>` without
+embeds). The request sets `allowed_mentions.parse` to an empty list and the `SUPPRESS_EMBEDS` flag.
+Untrusted text has every markdown character backslash-escaped (`\ * _ ~ ` | > # - [ ] ( )`) and `@`
+and `<` followed by a zero-width space, so `@everyone`, `@here`, `<@id>`, `<@&id>` and `<#id>`
+cannot form. A message is at most 2,000 characters; whole lines are dropped with a note. Rate limits
+(429) are retried after the `retry_after` the API sends. 401, 403, 404 and other 4xx are permanent
+(deleted webhook, wrong URL).
+
+## Microsoft Teams
+
+The classic "Incoming Webhook" connectors of Office 365 are retired. Holealign targets the **Workflows**
+(Power Automate) trigger **When a Teams webhook request is received**, which accepts a message with
+an Adaptive Card attachment. The destination is a name (`teams:ops`); the workflow URL, which carries
+a signature and is the secret, lives in the environment.
+
+1. **Create the workflow.** In Teams open the **Workflows** app (or the channel's **...** menu,
+   **Workflows**) and choose the template **Post to a channel when a webhook request is received**.
+   Pick the team and channel, finish, and copy the **HTTP POST URL** the last step shows (a long URL on
+   `...logic.azure.com` or `...environment.api.powerplatform.com`).
+2. **Configure the server:**
+
+   ```sh
+   # server.env
+   HOLEALIGN_TEAMS_OPS_URL=https://prod-12.westeurope.logic.azure.com:443/workflows/...&sig=...
+   ```
+
+   ```yaml
+   teams:
+     webhooks:
+       ops: {url_env: HOLEALIGN_TEAMS_OPS_URL}
+   notify:
+     ops: ["teams:ops"]
+   ```
+
+3. **Restart** and look for `teams channel enabled`.
+
+The URL must be `https`, without user info, and its host must end with one of `.logic.azure.com`,
+`.powerplatform.com` or `.environment.api.powerplatform.com`. Anything else is rejected at startup,
+unless that webhook sets `allow_any_host: true` (for a proxy or a test endpoint); the server then logs
+a warning at startup.
+
+Format: one message with an Adaptive Card (schema 1.4), one `TextBlock` per line, the headline in
+bold. TextBlocks render a markdown subset, so untrusted text has `\ * _ ` ~ [ ] ( ) < > # | ! - + &`
+backslash-escaped and `@` neutralised; the message has no mention entities, so nothing can ping. The
+card is kept below 25 KB (whole lines are dropped with a note). `202 Accepted` is success; 429 is
+retried after `Retry-After`; 400, 401, 403, 404 and other 4xx are permanent. Note that Workflows
+answer 202 before the post reaches the channel: a flow that later fails shows up in the workflow's run
+history, not in Holealign.
+
+## Generic signed webhook
+
+For everything else (a SIEM, a ticket system, your own receiver): Holealign sends a signed JSON
+document to a URL you configure. The destination is a name (`webhook:siem`).
+
+```yaml
+webhook:
+  endpoints:
+    siem:
+      url: https://siem.example.com/holealign/ingest
+      secret_env: HOLEALIGN_WEBHOOK_SIEM_SECRET     # signing key, at least 16 bytes
+      headers: {Authorization: "Bearer ..."}        # optional extra headers (values live in the config file)
+    lab:
+      url: http://10.0.0.5:8080/hook
+      allow_http: true                               # plain http needs this; logged as a warning
+notify:
+  routes:
+    - {label: prod, to: ["webhook:siem"]}
+```
+
+```sh
+# server.env
+HOLEALIGN_WEBHOOK_SIEM_SECRET=$(openssl rand -hex 32)
+```
+
+The URL must be `https` unless `allow_http: true`, and may point to any host. It comes from the config
+file only, which only the operator edits; deciding what the server may reach is the operator's
+responsibility (the web UI can only pick a configured name). Redirects are not followed and at most
+64 KiB of the response is read. `2xx` is success; `429` and `5xx` are retried (honouring `Retry-After`);
+every other status is permanent. Extra `headers` cannot override `Content-Type`, `Host`, the framing
+headers or `X-Holealign-*`.
+
+**Request.** `POST` with `Content-Type: application/json` and:
+
+| Header | Value |
+|---|---|
+| `X-Holealign-Signature` | `t=<unix seconds>,v1=<hex HMAC-SHA256(secret, "<t>.<raw body>")>` |
+| `X-Holealign-Event-Id` | the message ID; the same value on every retry of one message, use it to deduplicate |
+
+**Body (schema version 1).** Built from the events, not parsed from the rendered text. Fields are only
+added within a version; a change that removes or redefines a field increments `version`.
+
+```json
+{
+  "version": 1,
+  "id": "holealign-1731950000000000000-1-0a1b2c3d4e5f",
+  "kind": "exploitable",
+  "sent_at": "2026-11-18T17:00:00Z",
+  "title": "🔴 EXPLOITABLE: CVE-2024-1 on web01",
+  "text": "🔴 EXPLOITABLE: CVE-2024-1 on web01\nPackage: openssl 3.0.1 → fixed in 3.0.2\n...",
+  "events": [
+    {
+      "kind": "exploitable", "host": "web01", "labels": ["prod", "eu"],
+      "vuln_id": "CVE-2024-1", "aliases": ["GHSA-xxxx-yyyy-zzzz"],
+      "package": "openssl", "version": "3.0.1", "fixed_version": "3.0.2",
+      "verdict": "exploitable", "severity": "High", "cvss": 7.5, "epss": 0.42, "kev": true,
+      "reason": "reachable via nginx", "finding_url": "https://holealign.example/findings/9"
+    }
+  ]
+}
+```
+
+`kind` is the kind of the first event (`exploitable`, `unknown_critical`, `resolved`, `agent_silent`,
+`agent_back`, `feed_stale`, `feed_ok`, `pipeline_error`) or `summary` for a burst summary (then
+`events` is empty and the list is in `text`). `events` has at most 50 entries per message.
+`fixed_version` joins several fixed versions with `, ` (empty if none); for health events `reason`
+carries the detail text. Strings are cleaned of control characters and cut to 300 characters, but
+not escaped: they are data, never markup, and a receiver must not render them as HTML.
+
+**Verifying a delivery.** Recompute the HMAC over the **raw** request body (not a re-serialised
+copy), compare in constant time, and reject timestamps older (or newer) than 5 minutes.
+
+```go
+// Go
+func verify(secret string, header string, body []byte, now time.Time) bool {
+	var ts, sig string
+	for _, p := range strings.Split(header, ",") {
+		if k, v, ok := strings.Cut(strings.TrimSpace(p), "="); ok {
+			switch k {
+			case "t":
+				ts = v
+			case "v1":
+				sig = v
+			}
+		}
+	}
+	t, err := strconv.ParseInt(ts, 10, 64)
+	if err != nil || math.Abs(now.Sub(time.Unix(t, 0)).Seconds()) > 300 {
+		return false
+	}
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(ts + "."))
+	mac.Write(body)
+	want := hex.EncodeToString(mac.Sum(nil))
+	return hmac.Equal([]byte(want), []byte(sig))
+}
+```
+
+```python
+# Python
+import hashlib, hmac, time
+
+def verify(secret: str, header: str, body: bytes) -> bool:
+    parts = dict(p.strip().split("=", 1) for p in header.split(",") if "=" in p)
+    try:
+        t = int(parts["t"])
+    except (KeyError, ValueError):
+        return False
+    if abs(time.time() - t) > 300:
+        return False
+    want = hmac.new(secret.encode(), f"{t}.".encode() + body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(want, parts.get("v1", ""))
+```
+
+Test vector: secret `key`, timestamp `1700000000`, body `body` gives
+`t=1700000000,v1=47b6ce0fca59474308e2921c247cb2493dce6b8101d90ac05bd0c6a37d0e046e`.
+
+Retries repeat the same `X-Holealign-Event-Id` with a fresh timestamp and signature; a receiver that
+must not process a message twice stores the IDs it has seen.
+
+## Email
+
+Holealign sends through an SMTP server you provide, as `multipart/alternative` (plain text and HTML).
+The destination is a single address: `email:ops@example.com`.
+
+```yaml
+email:
+  smtp:
+    host: smtp.example.com
+    port: 587                       # default 587
+    username: alerts@example.com    # optional; without it no login is attempted
+    password_env: HOLEALIGN_SMTP_PASSWORD
+    tls: starttls                   # starttls (default, port 587) or implicit (port 465)
+    from: "Holealign <alerts@example.com>"
+  allowed_domains: [example.com]    # optional: only these recipient domains
+notify:
+  ops: ["email:secops@example.com"]
+  routes:
+    - {label: prod, to: ["email:oncall@example.com", "slack:C0123456789"]}
+```
+
+```sh
+# server.env
+HOLEALIGN_SMTP_PASSWORD=...
+```
+
+- **TLS is mandatory.** `starttls` connects in plain text only to issue STARTTLS and refuses to
+  continue (permanent failure, nothing sent, no login) when the server does not offer it; `implicit`
+  starts TLS immediately. There is no plain-text mode and no downgrade. The server certificate is
+  verified against the system roots (TLS 1.2 or newer) and must match `host`. The password is sent
+  (PLAIN) only after TLS is up.
+- **Recipients.** The address syntax is strict: one `local@domain` with a local part of letters,
+  digits and `. _ % + -`, a domain with at least two labels; no display names, quotes, comments, lists
+  or address literals. `allowed_domains` (exact, lower case, subdomains are not included) limits which
+  addresses can be configured or routed in the web UI, and is checked again before sending.
+- **Message.** The subject is the first line of the alert with control characters and line breaks
+  removed (no header injection), cut to 150 characters and MIME-encoded; `Message-ID` is derived from
+  the message ID, `Date` is set, `Auto-Submitted: auto-generated` marks it as automatic. Bodies are
+  quoted-printable, at most 8 KiB each, with every untrusted value HTML-escaped.
+- **Errors.** SMTP 4xx replies and network errors are retried with backoff; 5xx replies (rejected
+  recipient, authentication failure, policy) and certificate errors are permanent. The server
+  never includes the password in logs or error messages. One SMTP connection is used per message.
+- **Restart** and look for `email channel enabled`.
+
+Gmail, Microsoft 365 and similar services need an app password or an SMTP relay account: use
+`smtp.gmail.com` / `smtp.office365.com`, port 587, `starttls`.
+
 ## Routing
 
 - A finding event goes to the **union of the destinations** of all labels of its host
@@ -293,6 +563,11 @@ status in the table.
 | 429 | Rate limited; retried after the delay the service asks for. |
 | 5xx | Service trouble; retried with backoff. |
 | 0 | The service is unreachable from the server. |
+
+Discord answers 401, 403 or 404 when the webhook was deleted or the URL is wrong; Teams answers 400 or
+404 for a workflow that is turned off or deleted; a generic webhook reports whatever status the
+receiver returned; email reports the SMTP reply code (`535` bad login, `550` rejected recipient,
+`452`/`421` temporary).
 
 For `exploitable`, `check`, `agent silent` and `feed stale` messages a permanent failure keeps the event
 pending and it is retried later (so fixing the room, channel or token delivers the backlog). For

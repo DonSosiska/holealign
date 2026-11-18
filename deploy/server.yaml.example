@@ -121,10 +121,53 @@ matrix:
 # telegram:
 #   bot_token_env: HOLEALIGN_TELEGRAM_TOKEN
 
+# Discord: one webhook per channel (channel settings, Integrations, Webhooks). The destination is the
+# name (discord:ops); the URL is a secret read from the variable url_env names (default
+# HOLEALIGN_DISCORD_<NAME>_URL). Must be https://discord.com/api/webhooks/<id>/<token>.
+# discord:
+#   webhooks:
+#     ops:  {url_env: HOLEALIGN_DISCORD_OPS_URL}
+
+# Microsoft Teams: a Workflows "When a Teams webhook request is received" trigger (template "Post to a
+# channel when a webhook request is received"). The classic Office 365 connectors are retired. The URL
+# must be https and end in .logic.azure.com, .powerplatform.com or .environment.api.powerplatform.com
+# unless allow_any_host: true (logged as a warning).
+# teams:
+#   webhooks:
+#     ops: {url_env: HOLEALIGN_TEAMS_OPS_URL}      # allow_any_host: true
+
+# Generic signed webhook: POSTs versioned JSON with X-Holealign-Signature (HMAC-SHA256 of
+# "<unix time>.<body>") and X-Holealign-Event-Id. The URL is set here (never in the web UI) and may point
+# anywhere: that is your responsibility. https unless allow_http: true (warning). secret_env: at least 16
+# bytes, default HOLEALIGN_WEBHOOK_<NAME>_SECRET. See docs/notifications.md for how to verify.
+# webhook:
+#   endpoints:
+#     siem:
+#       url: https://siem.example.com/holealign/ingest
+#       secret_env: HOLEALIGN_WEBHOOK_SIEM_SECRET
+#       headers: {Authorization: "Bearer change-me"}   # optional; values live in this file
+#       allow_http: false
+
+# Email through SMTP. TLS is mandatory (starttls must be offered by the server, or implicit TLS) and the
+# server certificate is verified. Destinations are single addresses: email:ops@example.com.
+# email:
+#   smtp:
+#     host: smtp.example.com
+#     port: 587                                # default 587 (465 for tls: implicit)
+#     username: alerts@example.com             # optional
+#     password_env: HOLEALIGN_SMTP_PASSWORD    # default
+#     tls: starttls                            # starttls (default) or implicit
+#     from: "Holealign <alerts@example.com>"
+#   allowed_domains: [example.com]             # optional: only these recipient domains can be routed to
+
 # Where alerts go. A destination is "scheme:target":
 #   Matrix   !abc123:matrix.example.com   (a bare room ID; or matrix:!abc123:matrix.example.com)
 #   Slack    slack:C0123456789            (channel ID, not the name)
 #   Telegram telegram:-1001234567890      (chat id; telegram:-1001234567890/17 for topic 17)
+#   Discord  discord:ops                  (name of a webhook above, never a URL)
+#   Teams    teams:ops                    (name of a webhook above)
+#   Webhook  webhook:siem                 (name of an endpoint above)
+#   Email    email:ops@example.com        (one plain address)
 # Every destination is validated at start; its channel must be configured above.
 notify:
   # Used when no label route matches a host.
@@ -177,7 +220,8 @@ local_agent:
   exclude_paths: []
   docker_socket: /var/run/docker.sock   # images are scanned if it exists and is readable
 
-# Names in *_env keys (matrix.access_token_env, slack.token_env, telegram.bot_token_env,
+# Names in *_env keys (matrix.access_token_env, slack.token_env, telegram.bot_token_env, the url_env
+# and secret_env of Discord, Teams and webhook entries, email.smtp.password_env,
 # llm.api_key_env, admin.initial_password_env) must
 # match ^HOLEALIGN_[A-Z0-9_]+$ and be pairwise different.
 # A WARN is logged at startup for http:// public_url / matrix.homeserver / llm.base_url on

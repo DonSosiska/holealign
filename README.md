@@ -61,7 +61,7 @@ approves it.
   [docs/rules-feed.md](docs/rules-feed.md).
 - Optional LLM rule drafting (Anthropic or any OpenAI-compatible endpoint such as Ollama):
   [docs/llm.md](docs/llm.md).
-- Matrix, Slack and Telegram alerts routed by host label, with dedup, grouping and burst summaries:
+- Matrix, Slack, Telegram, Discord, Teams, signed webhook and email alerts routed by host label, with dedup, grouping and burst summaries:
   [docs/notifications.md](docs/notifications.md).
 - Admin web UI: hosts, findings grouped per CVE with "needs attention" and "background" tiers,
   rule review, enrollment tokens, notification routes, users: [docs/user-guide.md](docs/user-guide.md).

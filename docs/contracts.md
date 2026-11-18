@@ -524,6 +524,10 @@ slack:
   token_env: HOLEALIGN_SLACK_TOKEN      # bot token xoxb-... (chat:write); empty disables Slack
 telegram:
   bot_token_env: HOLEALIGN_TELEGRAM_TOKEN   # empty disables Telegram
+discord:  {webhooks: {ops: {url_env: HOLEALIGN_DISCORD_OPS_URL}}}      # destination discord:ops
+teams:    {webhooks: {ops: {url_env: HOLEALIGN_TEAMS_OPS_URL}}}        # destination teams:ops
+webhook:  {endpoints: {siem: {url: "https://siem.example.com/in", secret_env: HOLEALIGN_WEBHOOK_SIEM_SECRET}}}  # webhook:siem
+email:    {smtp: {host: smtp.example.com, port: 587, tls: starttls, from: "alerts@example.com"}}  # email:ops@example.com
 notify:                                 # destinations: "!id:server" (Matrix), "slack:C0123456789", "telegram:-100123/17"
   default: ["!abc:example.com"]         # used when no label route matches
   routes:                               # label -> destinations; web UI edits are stored in DB and merged

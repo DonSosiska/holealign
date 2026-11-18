@@ -109,7 +109,7 @@ Details of the feed and its CLI: [rules-feed.md](rules-feed.md).
 
 | Symptom | Cause and fix |
 |---|---|
-| No alerts at all | Look for `matrix channel enabled`, `slack channel enabled` or `telegram channel enabled` in the log (`... channel disabled` names the reason). Without `matrix.homeserver` Matrix is off; Slack and Telegram need `slack.token_env` or `telegram.bot_token_env` and the variable set. Check the dashboard banner "Alert delivery problems" for the status. |
+| No alerts at all | Look for `matrix channel enabled`, `slack channel enabled`, `telegram channel enabled`, `discord channel enabled`, `teams channel enabled`, `webhook channel enabled` or `email channel enabled` in the log (`... channel disabled` names the reason). Without `matrix.homeserver` Matrix is off; Slack and Telegram need `slack.token_env` or `telegram.bot_token_env` and the variable set; Discord, Teams and the webhook need an entry in `discord.webhooks`, `teams.webhooks` or `webhook.endpoints` with its URL or secret variable set, and email needs `email.smtp.host`. Check the dashboard banner "Alert delivery problems" for the status. |
 | Status 401 / 403 | Token invalid, or the bot has not joined the room or cannot send. |
 | Status 404 | Wrong room ID (use `!id:server`, not an alias) or the room was deleted. |
 | Status 429 | Homeserver rate limit; retried with its `retry_after`. |
