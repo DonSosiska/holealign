@@ -19,7 +19,7 @@ const APIVersion = "v1"
 type EnrollRequest struct {
 	Token        string   `json:"token"`      // enrollment token created by an admin
 	Hostname     string   `json:"hostname"`   //
-	MachineID    string   `json:"machine_id"` // /etc/machine-id, stable host identity
+	MachineID    string   `json:"machine_id"` // SHA-256 of /etc/machine-id (hex); stable host identity
 	Labels       []string `json:"labels"`     // from agent.yaml; used for Matrix routing
 	AgentVersion string   `json:"agent_version"`
 }

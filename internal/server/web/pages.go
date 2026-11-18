@@ -39,10 +39,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request, sess *s
 	}
 	var stale []model.Host
 	now := s.now()
-	limit := staleAfter
-	if a := s.cfg.Alerts.AgentSilentAfter; a > 0 {
-		limit = a
-	}
+	limit := s.staleLimit()
 	for _, h := range hosts {
 		if h.LastCheckin.IsZero() || now.Sub(h.LastCheckin) > limit {
 			stale = append(stale, h)
@@ -162,7 +159,7 @@ func (s *Server) handleHost(w http.ResponseWriter, r *http.Request, sess *sessio
 	s.render(w, r, sess, http.StatusOK, "host", map[string]any{
 		"Host": h, "Targets": targets, "L": lv, "Counts": per[h.ID], "Hidden": hidden, "All": all,
 		"Local": s.localHostID(ctx) == h.ID,
-		"Stale": h.LastCheckin.IsZero() || s.now().Sub(h.LastCheckin) > staleAfter,
+		"Stale": h.LastCheckin.IsZero() || s.now().Sub(h.LastCheckin) > s.staleLimit(),
 	})
 }
 
@@ -714,3 +711,12 @@ func (s *Server) notifyProblems(raw string) []string {
 
 // epssPct formats the EPSS threshold as a percentage for the dashboard explainer (0.1 -> "10").
 func epssPct(f float64) string { return strconv.FormatFloat(f*100, 'f', -1, 64) }
+
+// staleLimit is how long a host may go without a check-in before the UI calls it stale: the
+// agent_silent alert threshold when set, otherwise the built-in default.
+func (s *Server) staleLimit() time.Duration {
+	if a := s.cfg.Alerts.AgentSilentAfter; a > 0 {
+		return a
+	}
+	return staleAfter
+}
