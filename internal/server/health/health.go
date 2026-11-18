@@ -289,11 +289,27 @@ type outEvent struct {
 	ev        model.Event
 	findingK  string // finding key recorded after delivery ("" = nothing recorded)
 	dedupK    string
-	alsoRecs  []recKey // aggregated events record one entry per host
+	scoped    []scopeRec // aggregated events: one per-destination record per host the event names
 	onSuccess func()
 }
 
-type recKey struct{ finding, dedup string }
+// scopeRec is the notification state of one host for one destination of an aggregated alert (the
+// ops overview, one label's rooms, the unlabelled hosts). It is kept apart from the host's own
+// state so that a destination that failed is retried without repeating the ones that succeeded.
+type scopeRec struct {
+	hostID  string
+	finding string
+	dedup   string
+}
+
+// deliverPlan is what hostEvents returns: the events to send and the destinations that already
+// received their part of an earlier, partly delivered pass.
+type deliverPlan struct {
+	out        []outEvent
+	prior      map[string][]scopeRec // host ID -> destinations already delivered
+	kind       model.EventKind
+	aggregated bool
+}
 
 // deliver sends the events and records those delivered; failed events are retried on the next pass.
 func (m *Monitor) deliver(ctx context.Context, out []outEvent) error {
@@ -320,17 +336,71 @@ func (m *Monitor) deliver(ctx context.Context, out []outEvent) error {
 		if failed[i] {
 			continue
 		}
-		recs := o.alsoRecs
 		if o.findingK != "" {
-			recs = append(recs, recKey{o.findingK, o.dedupK})
-		}
-		for _, r := range recs {
-			if err := m.st.RecordNotification(ctx, r.finding, r.dedup, o.ev.Kind, now); err != nil {
+			if err := m.st.RecordNotification(ctx, o.findingK, o.dedupK, o.ev.Kind, now); err != nil {
 				return fmt.Errorf("record notification: %w", err)
 			}
 		}
 		if o.onSuccess != nil {
 			o.onSuccess()
+		}
+	}
+	if len(failed) > 0 {
+		return fmt.Errorf("notify: %d of %d health events not delivered: %w", len(failed), len(evs), nerr)
+	}
+	return nil
+}
+
+// deliverAggregated sends an aggregated plan. Every delivered event records its hosts per
+// destination; a host is recorded as notified (and its per-destination records are retired) only
+// once it was named by at least one event and none of the events naming it failed in this pass.
+func (m *Monitor) deliverAggregated(ctx context.Context, p deliverPlan) error {
+	evs := make([]model.Event, len(p.out))
+	for i, o := range p.out {
+		evs[i] = o.ev
+	}
+	var nerr error
+	failed := map[int]bool{}
+	if len(evs) > 0 {
+		if nerr = m.n.Notify(ctx, evs); nerr != nil {
+			var de *notify.DeliveryError
+			if !errors.As(nerr, &de) {
+				return fmt.Errorf("notify: %w", nerr)
+			}
+			for _, i := range de.Failed {
+				failed[i] = true
+			}
+		}
+	}
+	now := m.opts.Now()
+	named := map[string][]scopeRec{} // host -> all its destination records (earlier and this pass)
+	blocked := map[string]bool{}
+	for id, recs := range p.prior {
+		named[id] = append(named[id], recs...)
+	}
+	for i, o := range p.out {
+		for _, r := range o.scoped {
+			if failed[i] {
+				blocked[r.hostID] = true
+				continue
+			}
+			if err := m.st.RecordNotification(ctx, r.finding, r.dedup, p.kind, now); err != nil {
+				return fmt.Errorf("record notification: %w", err)
+			}
+			named[r.hostID] = append(named[r.hostID], r)
+		}
+	}
+	for id, recs := range named {
+		if blocked[id] {
+			continue
+		}
+		if err := m.st.RecordNotification(ctx, hostFindingKey(id), hostDedupKey(id, p.kind), p.kind, now); err != nil {
+			return fmt.Errorf("record notification: %w", err)
+		}
+		for _, r := range recs { // retire the destination records (same finding, other dedup key)
+			if err := m.st.RecordNotification(ctx, r.finding, r.finding+"|done", p.kind, now); err != nil {
+				return fmt.Errorf("record notification: %w", err)
+			}
 		}
 	}
 	if len(failed) > 0 {
@@ -377,20 +447,30 @@ func (m *Monitor) checkAgents(ctx context.Context) error {
 		}
 	}
 	var errs []error
-	if err := m.deliver(ctx, m.hostEvents(model.EventAgentSilent, silent, fleet, now)); err != nil {
-		errs = append(errs, err)
-	}
-	if err := m.deliver(ctx, m.hostEvents(model.EventAgentBack, back, fleet, now)); err != nil {
-		errs = append(errs, err)
+	for _, c := range []struct {
+		kind  model.EventKind
+		hosts []model.Host
+	}{{model.EventAgentSilent, silent}, {model.EventAgentBack, back}} {
+		p, err := m.hostEvents(ctx, c.kind, c.hosts, fleet, now)
+		if err == nil {
+			if p.aggregated {
+				err = m.deliverAggregated(ctx, p)
+			} else {
+				err = m.deliver(ctx, p.out)
+			}
+		}
+		if err != nil {
+			errs = append(errs, err)
+		}
 	}
 	return errors.Join(errs...)
 }
 
 // hostEvents builds one event per host, or, when more than max(5, 30% of the fleet) hosts changed
 // state in the same pass, a mass-silence set of events (see aggregateEvents).
-func (m *Monitor) hostEvents(kind model.EventKind, hosts []model.Host, fleet int, now time.Time) []outEvent {
+func (m *Monitor) hostEvents(ctx context.Context, kind model.EventKind, hosts []model.Host, fleet int, now time.Time) (deliverPlan, error) {
 	if len(hosts) == 0 {
-		return nil
+		return deliverPlan{kind: kind}, nil
 	}
 	// most recent check-in first: the hosts that went quiet last are the ones to look at first
 	sort.Slice(hosts, func(i, j int) bool {
@@ -400,7 +480,7 @@ func (m *Monitor) hostEvents(kind model.EventKind, hosts []model.Host, fleet int
 		return hosts[i].ID < hosts[j].ID
 	})
 	if limit := max(minAggregate, fleet*30/100); len(hosts) > limit {
-		return m.aggregateEvents(kind, hosts, now)
+		return m.aggregateEvents(ctx, kind, hosts)
 	}
 	out := make([]outEvent, 0, len(hosts))
 	for _, h := range hosts {
@@ -413,7 +493,7 @@ func (m *Monitor) hostEvents(kind model.EventKind, hosts []model.Host, fleet int
 		}
 		out = append(out, outEvent{ev: ev, findingK: hostFindingKey(h.ID), dedupK: hostDedupKey(h.ID, kind)})
 	}
-	return out
+	return deliverPlan{out: out, kind: kind}, nil
 }
 
 const groupHostPrefix = "group:"
@@ -423,9 +503,14 @@ const groupHostPrefix = "group:"
 // but the hosts are still announced where their owners look: for every label, one message to that
 // label's rooms lists the affected hosts carrying it (up to maxSilentListed), and hosts without a
 // label go to the default rooms. Hosts with different label sets are never folded into one
-// ops-only message. A host is recorded as notified only through an event that names it, so hosts
-// beyond the listing limits are announced again on the next pass. hosts must be sorted.
-func (m *Monitor) aggregateEvents(kind model.EventKind, hosts []model.Host, now time.Time) []outEvent {
+// ops-only message.
+//
+// Delivery state is kept per destination: a host counts as announced to the ops overview, to a
+// label or to the unlabelled rooms only when an event to that destination naming it was
+// delivered, and a retry sends only the destinations that are still missing. A host is recorded
+// as notified overall (see deliverAggregated) only through events that name it, so hosts beyond
+// the listing limits are announced again on the next pass. hosts must be sorted.
+func (m *Monitor) aggregateEvents(ctx context.Context, kind model.EventKind, hosts []model.Host) (deliverPlan, error) {
 	line := func(h model.Host) string {
 		return "• " + oneLine(h.Hostname, 48) + " (" + oneLine(h.ID, 40) + ") last " + h.LastCheckin.UTC().Format("01-02 15:04")
 	}
@@ -433,27 +518,54 @@ func (m *Monitor) aggregateEvents(kind model.EventKind, hosts []model.Host, now 
 	if kind == model.EventAgentBack {
 		verb = "checking in again"
 	}
-	build := func(group []model.Host, head string, ev model.Event) outEvent {
-		listed := group[:min(len(group), maxSilentListed)]
+	plan := deliverPlan{kind: kind, aggregated: true, prior: map[string][]scopeRec{}}
+	scopeRecFor := func(h model.Host, scope string) scopeRec {
+		d := hostDedupKey(h.ID, kind) + "|" + scope
+		if kind == model.EventAgentSilent {
+			d += "|" + strconv.FormatInt(h.LastCheckin.Unix(), 10) // one silence episode of this host
+		}
+		return scopeRec{hostID: h.ID, finding: hostFindingKey(h.ID) + "|" + scope, dedup: d}
+	}
+	var firstErr error
+	build := func(scope string, group []model.Host, head string, ev model.Event) {
+		var todo []model.Host
+		for _, h := range group {
+			r := scopeRecFor(h, scope)
+			sent, err := m.st.NotificationSent(ctx, r.dedup)
+			if err != nil {
+				if firstErr == nil {
+					firstErr = err
+				}
+				return
+			}
+			if sent {
+				plan.prior[h.ID] = append(plan.prior[h.ID], r)
+				continue
+			}
+			todo = append(todo, h)
+		}
+		if len(todo) == 0 {
+			return
+		}
+		listed := todo[:min(len(todo), maxSilentListed)]
 		lines := []string{head}
-		var recs []recKey
+		var recs []scopeRec
 		for _, h := range listed {
 			lines = append(lines, line(h))
-			recs = append(recs, recKey{hostFindingKey(h.ID), hostDedupKey(h.ID, kind)})
+			recs = append(recs, scopeRecFor(h, scope))
 		}
-		if len(group) > len(listed) {
-			lines = append(lines, fmt.Sprintf("…and %d more not listed (they are announced again on the next check)", len(group)-len(listed)))
+		if len(todo) > len(listed) {
+			lines = append(lines, fmt.Sprintf("…and %d more not listed (they are announced again on the next check)", len(todo)-len(listed)))
 		}
 		ev.Kind, ev.Detail = kind, strings.Join(lines, "\n")
-		return outEvent{ev: ev, alsoRecs: recs}
+		plan.out = append(plan.out, outEvent{ev: ev, scoped: recs})
 	}
 
-	var out []outEvent
 	head := fmt.Sprintf("%d agents silent — server/network problem?", len(hosts))
 	if kind == model.EventAgentBack {
 		head = fmt.Sprintf("%d agents are checking in again", len(hosts))
 	}
-	out = append(out, build(hosts, head+"\nnewest check-in first:", model.Event{WebURL: m.hostsURL()}))
+	build("ops", hosts, head+"\nnewest check-in first:", model.Event{WebURL: m.hostsURL()})
 
 	byLabel := map[string][]model.Host{}
 	var unlabelled []model.Host
@@ -472,17 +584,17 @@ func (m *Monitor) aggregateEvents(kind model.EventKind, hosts []model.Host, now 
 	sort.Strings(labels)
 	for _, l := range labels {
 		g := byLabel[l]
-		out = append(out, build(g,
+		build("label:"+l, g,
 			fmt.Sprintf("%d hosts labelled %s %s (part of a mass silence of %d hosts); newest check-in first:", len(g), oneLine(l, 64), verb, len(hosts)),
 			model.Event{Host: model.Host{ID: groupHostPrefix + l, Hostname: fmt.Sprintf("%d hosts labelled %s", len(g), oneLine(l, 64)), Labels: []string{l}},
-				WebURL: m.hostsURL()}))
+				WebURL: m.hostsURL()})
 	}
 	if len(unlabelled) > 0 {
-		out = append(out, build(unlabelled,
+		build("nolabel", unlabelled,
 			fmt.Sprintf("%d hosts without label %s (part of a mass silence of %d hosts); newest check-in first:", len(unlabelled), verb, len(hosts)),
-			model.Event{Host: model.Host{ID: groupHostPrefix, Hostname: fmt.Sprintf("%d hosts without label", len(unlabelled))}, WebURL: m.hostsURL()}))
+			model.Event{Host: model.Host{ID: groupHostPrefix, Hostname: fmt.Sprintf("%d hosts without label", len(unlabelled))}, WebURL: m.hostsURL()})
 	}
-	return out
+	return plan, firstErr
 }
 
 func (m *Monitor) hostURL(id string) string {

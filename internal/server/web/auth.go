@@ -476,6 +476,23 @@ func (d *deviceStore) valid(user, tok string) bool {
 
 // trustedAttempt reports whether a login attempt comes from an address with a valid session for
 // the user or from a browser holding one of the user's known-device cookies; those skip the delay.
+func (s *Server) deviceAttempt(r *http.Request, lu string) bool {
+	c, err := r.Cookie(s.devName)
+	return err == nil && s.devices.valid(lu, c.Value)
+}
+
+// warnForwardedOnce logs a single warning when a request carries X-Forwarded-For but the client
+// address was taken from the TCP peer: the peer is not in trusted_proxies, so behind a reverse
+// proxy every client looks like one address and shares one set of login limits.
+func (s *Server) warnForwardedOnce(r *http.Request) {
+	if r.Header.Get("X-Forwarded-For") == "" || s.ipOf(r) != remoteIP(r) {
+		return
+	}
+	s.fwdWarn.Do(func() {
+		s.log.Warn("web: X-Forwarded-For received from a peer that is not in trusted_proxies; if a reverse proxy fronts the admin listener, set trusted_proxies, otherwise all clients share one address and one login rate limit", "peer", remoteIP(r))
+	})
+}
+
 func (s *Server) trustedAttempt(r *http.Request, ik, lu string) bool {
 	if s.trust.has(ik, lu) {
 		return true
@@ -492,9 +509,11 @@ func (s *Server) trustedAttempt(r *http.Request, ik, lu string) bool {
 
 // loginFailed records a failed attempt in the per-(IP,user) and per-IP limiters and, for attempts
 // that did not come from a trusted source, in the per-username delay.
-func (s *Server) loginFailed(ik, uk string, trusted bool) {
-	s.limIP.fail(ik)
-	s.lim.fail(ik + "|" + uk)
+func (s *Server) loginFailed(ik, uk string, trusted, device bool) {
+	if !device {
+		s.limIP.fail(ik)
+		s.lim.fail(ik + "|" + uk)
+	}
 	if !trusted {
 		s.names.fail(uk)
 	}
@@ -609,18 +628,26 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		s.log.Warn("web: login rate limited", "user", trunc64(user), "ip", ip)
 		s.loginForm(w, r, http.StatusTooManyRequests, "Too many failed attempts. Try again in a few minutes.", user)
 	}
-	if !s.limIP.acquire(ik) {
-		tooMany()
-		return
+	s.warnForwardedOnce(r)
+	// A browser holding one of the user's known-device cookies bypasses the per-IP and per-(IP,user)
+	// limiters: behind a proxy without trusted_proxies, or a shared NAT, other clients' failures
+	// must never lock the real user out. It still goes through the password check and the per-name
+	// delay, and its own failures are not counted against the shared IP.
+	device := s.deviceAttempt(r, lu)
+	if !device {
+		if !s.limIP.acquire(ik) {
+			tooMany()
+			return
+		}
+		defer s.limIP.release(ik)
+		if !s.lim.acquire(ik + "|" + uk) {
+			tooMany()
+			return
+		}
+		defer s.lim.release(ik + "|" + uk)
 	}
-	defer s.limIP.release(ik)
-	if !s.lim.acquire(ik + "|" + uk) {
-		tooMany()
-		return
-	}
-	defer s.lim.release(ik + "|" + uk)
 
-	trusted := s.trustedAttempt(r, ik, lu)
+	trusted := device || s.trustedAttempt(r, ik, lu)
 	if !trusted {
 		wait, ok := s.names.enter(uk)
 		if !ok {
@@ -650,12 +677,14 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !ok || err != nil {
-		s.loginFailed(ik, uk, trusted)
+		s.loginFailed(ik, uk, trusted, device)
 		s.log.Warn("web: login failed", "user", trunc64(user), "ip", ip)
 		s.loginForm(w, r, http.StatusUnauthorized, loginFailMsg, user)
 		return
 	}
-	s.lim.reset(ik + "|" + uk)
+	if !device {
+		s.lim.reset(ik + "|" + uk)
+	}
 	s.names.reset(uk)
 	token, th, err := store.NewSecret("ps_")
 	if err != nil {

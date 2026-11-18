@@ -471,8 +471,10 @@ func TestMassSilenceListsNewestFirstAndRecordsOnlyNamedHosts(t *testing.T) {
 			recorded++
 		}
 	}
-	if recorded != maxSilentListed {
-		t.Fatalf("recorded %d hosts, want exactly the %d named in delivered messages", recorded, maxSilentListed)
+	// the ops overview failed, and its hosts are the same newest ones the label message named: no
+	// host counts as notified overall, but the label destination remembers its 50 hosts
+	if recorded != 0 {
+		t.Fatalf("recorded %d hosts although the ops overview naming them failed", recorded)
 	}
 	// nothing delivered at all: nothing recorded
 	e2 := newEnv(t, Options{AgentSilentAfter: 30 * time.Minute})
@@ -494,8 +496,11 @@ func TestMassSilenceListsNewestFirstAndRecordsOnlyNamedHosts(t *testing.T) {
 	if len(evs) == 0 {
 		t.Fatal("hosts that were not named are never announced")
 	}
-	if !strings.Contains(evs[0].Detail, "70 agents silent") {
+	if !strings.Contains(evs[0].Detail, "120 agents silent") {
 		t.Fatalf("follow-up: %.200q", evs[0].Detail)
+	}
+	if len(evs) != 2 || strings.Contains(evs[1].Detail, "h119") || !strings.Contains(evs[1].Detail, "h069") {
+		t.Fatalf("the label message must continue with the hosts it has not named yet: %.300q", evs[len(evs)-1].Detail)
 	}
 }
 
@@ -691,5 +696,46 @@ func TestRulesFeedStale(t *testing.T) {
 	e.now = e.now.Add(8 * 24 * time.Hour)
 	if evs := e.check(); len(evs) != 1 || evs[0].Kind != model.EventFeedStale || !strings.Contains(evs[0].Detail, "last checked 8d") {
 		t.Fatalf("want stale by age, got %v", kinds(evs))
+	}
+}
+
+// The ops overview names every host, so recording hosts as notified through it alone would hide
+// the failure of a label room's message: that message must be retried per destination.
+func TestMassSilenceLabelRoomRetriedAfterPartialDelivery(t *testing.T) {
+	e := newEnv(t, Options{AgentSilentAfter: 30 * time.Minute})
+	hs := e.massSilence(30, func(int) []string { return []string{"prod"} })
+	for _, h := range hs {
+		e.checkinAt(h, e.now)
+	}
+	e.now = e.now.Add(time.Hour)
+	e.n.failFn = func(ev model.Event) bool { return !ev.ServerLevel() } // ops delivered, label room refuses
+	if err := e.m.Check(e.ctx); err == nil {
+		t.Fatal("a failed label message must surface as an error")
+	}
+	evs := e.n.take()
+	if len(evs) != 1 || !evs[0].ServerLevel() {
+		t.Fatalf("pass 1 delivered: %s", kinds(evs))
+	}
+	for _, h := range hs {
+		if sent, _ := e.st.NotificationSent(e.ctx, hostDedupKey(h.ID, model.EventAgentSilent)); sent {
+			t.Fatal("host recorded as notified although its label room never received it")
+		}
+	}
+	// the room is fixed: only the label message is delivered; the ops overview is not repeated
+	e.n.failFn = nil
+	evs = e.check()
+	if len(evs) != 1 || evs[0].ServerLevel() || len(evs[0].Host.Labels) != 1 || evs[0].Host.Labels[0] != "prod" {
+		t.Fatalf("pass 2 delivered: %s", kinds(evs))
+	}
+	if got := strings.Count(evs[0].Detail, "• "); got != 30 {
+		t.Fatalf("label message lists %d hosts: %.200q", got, evs[0].Detail)
+	}
+	for _, h := range hs {
+		if sent, _ := e.st.NotificationSent(e.ctx, hostDedupKey(h.ID, model.EventAgentSilent)); !sent {
+			t.Fatal("host not recorded after every destination was delivered")
+		}
+	}
+	if evs := e.check(); len(evs) != 0 {
+		t.Fatalf("repeated after full delivery: %s", kinds(evs))
 	}
 }

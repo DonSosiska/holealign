@@ -21,6 +21,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -95,6 +96,7 @@ type Server struct {
 	devices   *deviceStore
 	secure    bool
 	ipOf      func(*http.Request) string
+	fwdWarn   sync.Once
 	sleep     func(ctx context.Context, d time.Duration) error // injectable for tests
 
 	sessName, loginName, devName string
@@ -186,6 +188,7 @@ func (s *Server) parseTemplates() error {
 		"fixcmd":  pipeline.FixCmd,
 		"safeRef": safeRef,
 		"clip":    clip,
+		"exprArg": func(name string, v exprView) exprArg { return exprArg{name, v} },
 		"add":     func(a, b int) int { return a + b },
 		"pct":     func(f float64) string { return fmt.Sprintf("%.1f%%", f*100) },
 		"score":   func(f float64) string { return fmt.Sprintf("%.1f", f) },
@@ -720,4 +723,9 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 	case <-t.C:
 		return nil
 	}
+}
+
+type exprArg struct {
+	Name string
+	View exprView
 }
