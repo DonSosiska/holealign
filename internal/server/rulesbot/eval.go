@@ -140,12 +140,25 @@ func stringIn(s []string, v string) bool {
 
 // Score compares a drafted rule with the reference test cases.
 type Score struct {
-	Compared          int     `json:"compared"`
-	Matched           int     `json:"matched"`
-	Skipped           int     `json:"skipped"`
-	Unsafe            int     `json:"unsafe"`
-	MissedExploitable int     `json:"missed_exploitable"`
-	Agreement         float64 `json:"agreement"` // matched/compared; 0 when nothing was compared
+	Compared          int `json:"compared"`
+	Matched           int `json:"matched"`
+	Skipped           int `json:"skipped"`
+	Unsafe            int `json:"unsafe"`
+	MissedExploitable int `json:"missed_exploitable"`
+	// Unknown counts compared cases where the draft says conditions_unknown but the reference does not:
+	// the draft reads a fact the reference case does not provide. Conservative, not wrong.
+	Unknown   int          `json:"unknown"`
+	Agreement float64      `json:"agreement"` // matched/compared; 0 when nothing was compared
+	Cases     []CaseResult `json:"cases,omitempty"`
+}
+
+// CaseResult is one reference test case evaluated with the drafted rule.
+type CaseResult struct {
+	Name    string        `json:"name"`
+	Want    model.Verdict `json:"want"`
+	Got     model.Verdict `json:"got,omitempty"`
+	Reason  string        `json:"reason,omitempty"`
+	Skipped bool          `json:"skipped,omitempty"`
 }
 
 // ScoreDraft evaluates every reference case with the drafted rule (status forced to reviewed, as rule
@@ -167,11 +180,15 @@ func ScoreDraft(drafted model.Rule, ref model.Rule, cases []rules.TestCase, sour
 		ev, err := rules.EvalCase(e, c)
 		if err != nil || ev.Rule == nil || ev.Rule.ID != drafted.ID {
 			s.Skipped++
+			s.Cases = append(s.Cases, CaseResult{Name: c.Name, Want: c.Want, Skipped: true})
 			continue
 		}
 		s.Compared++
+		s.Cases = append(s.Cases, CaseResult{Name: c.Name, Want: c.Want, Got: ev.Verdict, Reason: capText(ev.Reason, 300)})
 		if ev.Verdict == c.Want {
 			s.Matched++
+		} else if ev.Verdict == model.VerdictConditionsUnknown {
+			s.Unknown++
 		}
 		wantRisky := c.Want == model.VerdictExploitable || c.Want == model.VerdictConditionsUnknown
 		gotSafe := ev.Verdict == model.VerdictNotExploitable || ev.Verdict == model.VerdictNotAffected
@@ -205,21 +222,22 @@ type EvalOptions struct {
 
 // RunResult is one draft of one reference rule by one variant.
 type RunResult struct {
-	RuleID   string    `json:"rule_id"`
-	Variant  string    `json:"variant"`
-	Run      int       `json:"run"`
-	Success  bool      `json:"success"`
-	Attempts int       `json:"attempts"`
-	Refused  bool      `json:"refused"`
-	Error    string    `json:"error,omitempty"`
-	WallMS   int64     `json:"wall_ms"`
-	Calls    int       `json:"calls"` // responses counted from the usage sink (0 when the provider reports none)
-	Reached  bool      `json:"-"`     // the provider answered at least once
-	Usage    llm.Usage `json:"usage"`
-	EstUSD   float64   `json:"est_usd"`
-	EstKnown bool      `json:"est_known"` // false when the model has no price
-	Score    *Score    `json:"score,omitempty"`
-	Skipped  string    `json:"skipped_reason,omitempty"` // the rule could not be turned into a candidate
+	RuleID   string      `json:"rule_id"`
+	Variant  string      `json:"variant"`
+	Run      int         `json:"run"`
+	Success  bool        `json:"success"`
+	Attempts int         `json:"attempts"`
+	Refused  bool        `json:"refused"`
+	Error    string      `json:"error,omitempty"`
+	WallMS   int64       `json:"wall_ms"`
+	Calls    int         `json:"calls"` // responses counted from the usage sink (0 when the provider reports none)
+	Reached  bool        `json:"-"`     // the provider answered at least once
+	Usage    llm.Usage   `json:"usage"`
+	EstUSD   float64     `json:"est_usd"`
+	EstKnown bool        `json:"est_known"` // false when the model has no price
+	Score    *Score      `json:"score,omitempty"`
+	Draft    *model.Rule `json:"draft,omitempty"`          // the drafted rule, for review of the scores
+	Skipped  string      `json:"skipped_reason,omitempty"` // the rule could not be turned into a candidate
 }
 
 // Report is the result of RunEval.
@@ -425,6 +443,8 @@ func evalOne(ctx context.Context, o EvalOptions, prov llm.Provider, v Variant, r
 	res.Success = true
 	sc := ScoreDraft(d.Rule, ref, o.Tests[ref.ID], cand.Package)
 	res.Score = &sc
+	drafted := d.Rule
+	res.Draft = &drafted
 	return res
 }
 
@@ -444,6 +464,7 @@ type Stats struct {
 	Scored    int     // successful drafts that had at least one compared case
 	Unsafe    int
 	Missed    int
+	Unknown   int
 	Attempts  float64 // mean per run
 	Tokens    float64 // mean per run, all kinds
 	USDTotal  float64
@@ -470,6 +491,7 @@ func aggregate(rs []RunResult) Stats {
 			if r.Score != nil {
 				s.Unsafe += r.Score.Unsafe
 				s.Missed += r.Score.MissedExploitable
+				s.Unknown += r.Score.Unknown
 				if r.Score.Compared > 0 {
 					agr += r.Score.Agreement
 					s.Scored++
@@ -530,7 +552,7 @@ func (r *Report) Markdown() string {
 		b.WriteString("\n")
 	}
 	b.WriteString("## Variants compared\n\n")
-	b.WriteString("| Variant | Runs | Success rate | Mean agreement | Unsafe | Missed exploitable | Est. USD per success | Total est. USD |\n|---|---|---|---|---|---|---|---|\n")
+	b.WriteString("| Variant | Runs | Success rate | Mean agreement | Unsafe | Missed exploitable | Unknown instead | Est. USD per success | Total est. USD |\n|---|---|---|---|---|---|---|---|---|\n")
 	for _, v := range r.Variants {
 		var rs []RunResult
 		for _, x := range r.Results {
@@ -543,9 +565,9 @@ func (r *Report) Markdown() string {
 		if s.Runs > 0 {
 			rate = float64(s.Successes) / float64(s.Runs)
 		}
-		fmt.Fprintf(&b, "| %s | %d | %s | %s | %d | %d | %s | %s |\n", v, s.Runs, pct(rate, s.Runs > 0),
-			pct(s.Agreement, s.Scored > 0), s.Unsafe, s.Missed, usdCell(s.USDPerOK, s.USDKnown, s.Successes > 0), usdCell(s.USDTotal, s.USDKnown, true))
+		fmt.Fprintf(&b, "| %s | %d | %s | %s | %d | %d | %d | %s | %s |\n", v, s.Runs, pct(rate, s.Runs > 0),
+			pct(s.Agreement, s.Scored > 0), s.Unsafe, s.Missed, s.Unknown, usdCell(s.USDPerOK, s.USDKnown, s.Successes > 0), usdCell(s.USDTotal, s.USDKnown, true))
 	}
-	b.WriteString("\nUnsafe: compared reference cases that want exploitable or conditions_unknown where the draft says affected_not_exploitable or not_affected. Agreement is averaged over successful drafts with at least one compared case.\n")
+	b.WriteString("\nUnsafe: compared reference cases that want exploitable or conditions_unknown where the draft says affected_not_exploitable or not_affected. Agreement is averaged over successful drafts with at least one compared case. Unknown instead: mismatches where the draft says conditions_unknown because it reads a fact the reference case does not provide (conservative, not wrong).\n")
 	return b.String()
 }
