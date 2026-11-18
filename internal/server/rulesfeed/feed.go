@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"runtime/debug"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -228,6 +229,10 @@ func (f *Feed) poll(ctx context.Context) (*Bundle, error) {
 	if target.Scheme != base.Scheme {
 		return nil, fmt.Errorf("latest.json: bundle url scheme %q differs from the pointer's %q", target.Scheme, base.Scheme)
 	}
+	if hostPort(target) != hostPort(base) || target.User != nil {
+		// the pointer is unsigned: it must not make the server fetch from another host or port
+		return nil, fmt.Errorf("latest.json: bundle url host %q differs from the pointer's %q", hostPort(target), hostPort(base))
+	}
 	tb, err := f.fetch(ctx, target, MaxBundleBytes)
 	if err != nil {
 		return nil, fmt.Errorf("bundle %d: %w", ptr.Seq, err)
@@ -253,6 +258,20 @@ func (f *Feed) poll(ctx context.Context) (*Bundle, error) {
 	f.activate(ctx, b)
 	f.o.Log.Info("rules feed: installed bundle", "seq", b.Index.Seq, "rules", len(b.Rules), "tests", len(b.Tests))
 	return b, nil
+}
+
+// hostPort is the lower-case host and effective port of u (the scheme's default port when none is given).
+func hostPort(u *url.URL) string {
+	port := u.Port()
+	if port == "" {
+		switch u.Scheme {
+		case "https":
+			port = "443"
+		case "http":
+			port = "80"
+		}
+	}
+	return strings.ToLower(u.Hostname()) + ":" + port
 }
 
 // fetch reads at most max bytes from an https:// or file:// URL (no redirects, 30 s timeout).

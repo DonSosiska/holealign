@@ -131,7 +131,8 @@ Every rule in a bundle must be `status: reviewed`.
 }
 ```
 
-`url` is relative to `latest.json` or absolute (same scheme). Only the tarball is signed; the pointer
+`url` is relative to `latest.json` or absolute with the same scheme, host and port as the pointer (no
+user info), so an unsigned pointer cannot make the server fetch from another host. Only the tarball is signed; the pointer
 is a convenience. The server therefore also requires that `index.json`'s `seq` equals the pointer's
 `seq`, so a validly signed old bundle cannot be replayed under a newer number.
 

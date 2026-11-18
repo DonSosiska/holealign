@@ -242,7 +242,7 @@ matches). The shipped rules' tests live in `rules-tests/`.
   rules: [{id, file, sha256}], tests: [{id, file, sha256}]}`. Every rule is `status: reviewed`.
 - `rules-<seq>.tar.gz.sig` = `{alg: "ed25519", key_id: <first 16 hex of sha256(pubkey)>,
   sig: base64(ed25519.Sign(priv, sha256(tarball)))}`.
-- `latest.json` = `{seq, url (relative or absolute), sha256, sig: <the sig object>}`; servers poll it.
+- `latest.json` = `{seq, url (relative, or absolute with the pointer's scheme, host and port), sha256, sig: <the sig object>}`; servers poll it.
 - Acceptance (atomic, any failure rejects the whole bundle, the installed bundle stays): pointer <= 64 KiB,
   https (or file://), no redirects; `seq` greater than the installed one (lower is logged and ignored);
   tarball <= 10 MiB with the pointer's sha256; signature by a key in `rules.feed.trusted_keys`; strict in-memory
