@@ -146,13 +146,13 @@ func TestParseAndValidateDestinations(t *testing.T) {
 	}
 	for _, in := range []string{"", " ", "room:server", "!nocolon", "! a:b", "slack:", "slack:general", "slack:#general", "slack:c0123456789",
 		"slack:C012", "slack:C0123456789/extra", "slack:T0123456789", "telegram:", "telegram:@chan", "telegram:abc",
-		"telegram:0", "telegram:-100/0", "telegram:-100/-1", "telegram:-100/", "telegram:1/2/3", "discord:123",
+		"telegram:0", "telegram:-100/0", "telegram:-100/-1", "telegram:-100/", "telegram:1/2/3", "signal:123",
 		"unknown:!room:example.org", "https://hooks.slack.com/services/T/B/x", "slack:C01234 56789", "!r:s" + strings.Repeat("a", 300)} {
 		if err := ValidateDestination(in); err == nil {
 			t.Errorf("ValidateDestination(%q) accepted", in)
 		}
 	}
-	if err := ValidateDestination("discord:123"); err == nil || !strings.Contains(err.Error(), "unknown scheme") {
+	if err := ValidateDestination("signal:123"); err == nil || !strings.Contains(err.Error(), "unknown scheme") {
 		t.Errorf("unknown scheme error = %v", err)
 	}
 	if c, err := CanonicalDestination("matrix:!a:b"); err != nil || c != "!a:b" {
@@ -735,7 +735,7 @@ func TestNewRejectsInvalidDestinations(t *testing.T) {
 	mx, _ := NewMatrixChannel(hs.srv.URL, "t", hs.srv.Client())
 	for _, cfg := range []Config{
 		{Default: []string{"slack:general"}},
-		{Ops: []string{"discord:1"}},
+		{Ops: []string{"signal:1"}},
 		{Routes: []Route{{Label: "a", To: []string{"telegram:@x"}}}},
 	} {
 		if _, err := New(cfg, nil, mx); err == nil {

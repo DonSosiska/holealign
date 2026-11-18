@@ -107,3 +107,52 @@ notify: {default: ["teams:ops"], ops: ["teams:lab"]}
 		}
 	}
 }
+
+func TestWebhookConfig(t *testing.T) {
+	cfg, err := loadYAML(t, `
+webhook:
+  endpoints:
+    siem:
+      url: https://siem.example.org/holealign
+      secret_env: HOLEALIGN_WEBHOOK_SIEM_SECRET
+      headers: {Authorization: "Bearer abc"}
+    lab: {url: "http://10.0.0.5:8080/hook", allow_http: true}
+notify: {default: ["webhook:siem"], ops: ["webhook:lab"]}
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Channels()["webhook"] || cfg.WebhookSecretEnv("lab") != "HOLEALIGN_WEBHOOK_LAB_SECRET" {
+		t.Error("webhook not enabled or env default wrong")
+	}
+	found := false
+	for _, w := range cfg.Warnings() {
+		found = found || strings.Contains(w, "webhook.endpoints.lab.allow_http")
+	}
+	if !found {
+		t.Errorf("no allow_http warning: %v", cfg.Warnings())
+	}
+	for name, y := range map[string]string{
+		"http without allow_http": `webhook: {endpoints: {a: {url: "http://x.example/h"}}}`,
+		"no url":                  `webhook: {endpoints: {a: {}}}`,
+		"userinfo":                `webhook: {endpoints: {a: {url: "https://u:p@x.example/h"}}}`,
+		"bad scheme":              `webhook: {endpoints: {a: {url: "file:///etc/passwd"}}}`,
+		"bad name":                `webhook: {endpoints: {"A": {url: "https://x.example/h"}}}`,
+		"bad header":              `webhook: {endpoints: {a: {url: "https://x.example/h", headers: {"X-A": "b\nc"}}}}`,
+		"reserved header":         `webhook: {endpoints: {a: {url: "https://x.example/h", headers: {"X-Holealign-Signature": "b"}}}}`,
+		"secret env not allowed":  `webhook: {endpoints: {a: {url: "https://x.example/h", secret_env: PATH}}}`,
+		"same secret env":         `webhook: {endpoints: {a: {url: "https://x.example/h", secret_env: HOLEALIGN_S}, b: {url: "https://y.example/h", secret_env: HOLEALIGN_S}}}`,
+		"not configured":          `notify: {default: ["webhook:a"]}`,
+		"unknown endpoint":        `webhook: {endpoints: {a: {url: "https://x.example/h"}}}` + "\n" + `notify: {default: ["webhook:b"]}`,
+		"url as destination":      `webhook: {endpoints: {a: {url: "https://x.example/h"}}}` + "\n" + `notify: {default: ["webhook:https://x.example/h"]}`,
+	} {
+		if _, err := loadYAML(t, y); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	// the error names the key but not the URL (it may carry a token)
+	_, err = loadYAML(t, `webhook: {endpoints: {a: {url: "http://x.example/h?token=TOKENTOKENTOKEN"}}}`)
+	if err == nil || !strings.Contains(err.Error(), "webhook.endpoints.a.url") || strings.Contains(err.Error(), "TOKENTOKEN") {
+		t.Errorf("error = %v", err)
+	}
+}

@@ -105,6 +105,7 @@ func newEnv(t *testing.T, withRules bool) *env {
 	cfg.Telegram.BotTokenEnv = "HOLEALIGN_TELEGRAM_TOKEN"
 	cfg.Discord.Webhooks = map[string]config.DiscordWebhook{"ops": {}}
 	cfg.Teams.Webhooks = map[string]config.TeamsWebhook{"ops": {}}
+	cfg.Webhook.Endpoints = map[string]config.WebhookEndpoint{"siem": {URL: "https://siem.example.org/h"}}
 	d := Deps{Store: st, Pipeline: e.trig, Config: &cfg, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	if withRules {
 		d.Rules = e.rules
@@ -640,7 +641,7 @@ func TestMatrixRoutes(t *testing.T) {
 	c := e.session("admin")
 	for _, bad := range []string{"prod = room:server", "prod = !noserver", "prod", "= !a:b", "prod = ", "prod = !a:b\nprod = !c:d",
 		"prod = slack:#general", "prod = slack:c0123456789", "prod = telegram:@chan", "prod = telegram:-100123/0",
-		"prod = discord:123", "prod = https://hooks.slack.com/services/T0/B0/x", "prod = slack:C0123456789 extra"} {
+		"prod = signal:123", "prod = webhook:https://evil.example/x", "prod = discord:https://discord.com/api/webhooks/1/x", "prod = teams:https://x.logic.azure.com/y", "prod = webhook:unknown", "prod = email:a@b", "prod = https://hooks.slack.com/services/T0/B0/x", "prod = slack:C0123456789 extra"} {
 		w := e.post("/settings/matrix", url.Values{"routes": {bad}}, c)
 		if w.Code != 422 {
 			t.Errorf("%q: want 422 got %d", bad, w.Code)

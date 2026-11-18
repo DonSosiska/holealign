@@ -556,6 +556,7 @@ func testValid(d string) error {
 	c.Slack.TokenEnv, c.Telegram.BotTokenEnv = "HOLEALIGN_SLACK_TOKEN", "HOLEALIGN_TELEGRAM_TOKEN"
 	c.Discord.Webhooks = map[string]config.DiscordWebhook{"ops": {}}
 	c.Teams.Webhooks = map[string]config.TeamsWebhook{"ops": {}}
+	c.Webhook.Endpoints = map[string]config.WebhookEndpoint{"siem": {URL: "https://siem.example.org/h"}}
 	return c.ValidateDestination(d)
 }
 

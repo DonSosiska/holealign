@@ -62,6 +62,7 @@ type Config struct {
 	Telegram Telegram `yaml:"telegram"`
 	Discord  Discord  `yaml:"discord"`
 	Teams    Teams    `yaml:"teams"`
+	Webhook  Webhook  `yaml:"webhook"`
 
 	deprecated []string // deprecated keys in use, reported by Warnings
 
@@ -391,6 +392,9 @@ func (c *Config) validate() error {
 	for _, name := range sortedKeys(c.Teams.Webhooks) {
 		secretEnvs = append(secretEnvs, struct{ key, val string }{"teams.webhooks." + name + ".url_env", c.TeamsURLEnv(name)})
 	}
+	for _, name := range sortedKeys(c.Webhook.Endpoints) {
+		secretEnvs = append(secretEnvs, struct{ key, val string }{"webhook.endpoints." + name + ".secret_env", c.WebhookSecretEnv(name)})
+	}
 	// *_env values name environment variables; restrict them so a config file cannot be used to
 	// read arbitrary variables (HOME, AWS_*, ...) or to reuse the admin password as another secret.
 	for _, e := range secretEnvs {
@@ -516,6 +520,11 @@ func (c *Config) Warnings() []string {
 	for _, name := range sortedKeys(c.Teams.Webhooks) {
 		if c.Teams.Webhooks[name].AllowAnyHost {
 			w = append(w, fmt.Sprintf("teams.webhooks.%s.allow_any_host is set: the webhook URL is not restricted to Microsoft hosts", name))
+		}
+	}
+	for _, name := range sortedKeys(c.Webhook.Endpoints) {
+		if c.Webhook.Endpoints[name].AllowHTTP {
+			w = append(w, fmt.Sprintf("webhook.endpoints.%s.allow_http is set: findings and the signature are sent in cleartext; use https", name))
 		}
 	}
 	if nets, err := ParseCIDRs(c.TrustedProxies); err == nil {

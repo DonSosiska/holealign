@@ -16,6 +16,10 @@ func buildGroup(raw []model.Event) Message {
 		extraEvents = len(raw) - maxGroupEvents
 		raw = raw[:maxGroupEvents]
 	}
+	events := make([]MessageEvent, len(raw))
+	for i, ev := range raw {
+		events[i] = messageEvent(ev)
+	}
 	evs := make([]model.Event, len(raw))
 	moreFixes := make([]int, len(raw))
 	for i, ev := range raw {
@@ -24,7 +28,7 @@ func buildGroup(raw []model.Event) Message {
 	}
 	g := group{evs: evs}
 	first := g.first()
-	out := Message{Kind: first.Kind, Notice: isNotice(first.Kind)}
+	out := Message{Kind: first.Kind, Notice: isNotice(first.Kind), Events: events}
 	if first.Kind.IsHealth() {
 		out.Lines = buildHealth(first)
 		return out
@@ -270,4 +274,49 @@ func buildHealth(ev model.Event) []Line {
 		l.add(txt("Details: "), link(ev.WebURL, ev.WebURL))
 	}
 	return l.lines
+}
+
+// plainField cleans a value for the structured output: control characters dropped, cut to
+// maxFieldRunes runes, no markup escaping and no mention neutralisation.
+func plainField(s string) string { return clBase(s) }
+
+func plainFields(in []string, limit int) []string {
+	out := make([]string, 0, len(in))
+	for _, s := range in[:min(len(in), limit)] {
+		out = append(out, plainField(s))
+	}
+	return out
+}
+
+// messageEvent converts an event to its structured form. Draft rules are treated like in the chat
+// text: the reason of an unreviewed draft is replaced by a fixed string.
+func messageEvent(ev model.Event) MessageEvent {
+	f := ev.Finding
+	reason := f.VerdictReason
+	if ev.Kind.IsHealth() {
+		reason = ev.Detail
+	} else if isDraft(ev) {
+		reason = draftSafeReason(reason)
+	}
+	if len(reason) > 4*maxFieldRunes {
+		reason = cutBytes(reason, 4*maxFieldRunes)
+	}
+	// health details are multi-line; keep the line structure for them, clean each line
+	lines := strings.Split(reason, "\n")
+	for i, l := range lines {
+		lines[i] = plainField(l)
+	}
+	reason = strings.Join(lines[:min(len(lines), maxDetailLines)], "\n")
+	url := ""
+	if ev.WebURL != "" && isHTTP(ev.WebURL) {
+		url = ev.WebURL
+	}
+	return MessageEvent{
+		Kind: string(ev.Kind), Host: plainField(ev.Host.Hostname), Labels: plainFields(ev.Host.Labels, 32),
+		VulnID: plainField(f.VulnID), Aliases: plainFields(f.Aliases, 20),
+		Package: plainField(f.PackageName), Version: plainField(f.PackageVer),
+		FixedVersion: strings.Join(plainFields(f.FixedVersions, maxFixedVersions), ", "),
+		Verdict:      string(f.Verdict), Severity: plainField(f.Severity), CVSS: f.CVSS, EPSS: f.EPSS, KEV: f.KEV,
+		Reason: reason, FindingURL: url,
+	}
 }

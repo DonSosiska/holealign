@@ -31,7 +31,7 @@ func TestRoutesUnconfiguredChannelShownInForm(t *testing.T) {
 func TestRoutesUnknownSchemeError(t *testing.T) {
 	e := newEnv(t, true)
 	c := e.session("admin")
-	w := e.post("/settings/matrix", url.Values{"routes": {"prod = webhook:https://evil.example/x"}}, c)
+	w := e.post("/settings/matrix", url.Values{"routes": {"prod = sms:https://evil.example/x"}}, c)
 	if w.Code != 422 || !strings.Contains(w.Body.String(), "unknown scheme") {
 		t.Fatalf("code %d body %s", w.Code, w.Body.String())
 	}

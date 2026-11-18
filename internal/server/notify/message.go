@@ -37,9 +37,34 @@ type Message struct {
 	Kind   model.EventKind // kind of the (first) event; "" for a burst summary
 	Notice bool            // informational (resolved, agent back, feed ok): no alert-style notification
 	Lines  []Line
+	// Events is the structured content of the message (one entry per event of the group, capped at
+	// maxGroupEvents), with the same cleaning as Lines but no markup. Channels that deliver data
+	// instead of text (the generic webhook) are built from it. Nil for burst summaries.
+	Events []MessageEvent
 	// ID is a unique idempotency key assigned by the Notifier; it is the same for all retries of one
 	// delivery (Matrix uses it as transaction ID).
 	ID string
+}
+
+// MessageEvent is one event of a Message in machine-readable form. The JSON names are the stable
+// schema (version 1) of the generic webhook; see docs/notifications.md. Text fields are cleaned of
+// control characters and cut to maxFieldRunes runes, but not escaped for any markup.
+type MessageEvent struct {
+	Kind         string   `json:"kind"`
+	Host         string   `json:"host"`
+	Labels       []string `json:"labels"`
+	VulnID       string   `json:"vuln_id"`
+	Aliases      []string `json:"aliases"`
+	Package      string   `json:"package"`
+	Version      string   `json:"version"`
+	FixedVersion string   `json:"fixed_version"` // fixed versions joined with ", "; "" when none
+	Verdict      string   `json:"verdict"`
+	Severity     string   `json:"severity"`
+	CVSS         float64  `json:"cvss"`
+	EPSS         float64  `json:"epss"`
+	KEV          bool     `json:"kev"`
+	Reason       string   `json:"reason"`
+	FindingURL   string   `json:"finding_url"`
 }
 
 func txt(s string) Span        { return Span{Kind: SpanText, Text: s} }

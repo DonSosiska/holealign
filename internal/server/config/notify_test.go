@@ -80,7 +80,7 @@ slack: {token_env: HOLEALIGN_SLACK_TOKEN}
 telegram: {bot_token_env: HOLEALIGN_TELEGRAM_TOKEN}
 `
 	bad := map[string]string{
-		"unknown scheme":         all + `notify: {default: ["discord:123"]}`,
+		"unknown scheme":         all + `notify: {default: ["signal:123"]}`,
 		"bad slack name":         all + `notify: {default: ["slack:#general"]}`,
 		"bad slack lowercase":    all + `notify: {default: ["slack:c0123456789"]}`,
 		"bad telegram":           all + `notify: {default: ["telegram:@channel"]}`,

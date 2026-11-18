@@ -75,6 +75,23 @@ type TeamsWebhook struct {
 	AllowAnyHost bool   `yaml:"allow_any_host"`
 }
 
+// Webhook configures the generic signed webhook channel: named endpoints. The destination is
+// "webhook:<name>". Unlike Discord and Teams, the URL is not a secret and is set here; the signing
+// secret is read from the environment variable SecretEnv names (default
+// HOLEALIGN_WEBHOOK_<NAME>_SECRET).
+type Webhook struct {
+	Endpoints map[string]WebhookEndpoint `yaml:"endpoints"`
+}
+
+// WebhookEndpoint is one generic webhook. URL must be https unless AllowHTTP is set. It may point to
+// any host: it comes from this file, which only the operator edits.
+type WebhookEndpoint struct {
+	URL       string            `yaml:"url"`
+	SecretEnv string            `yaml:"secret_env"`
+	Headers   map[string]string `yaml:"headers"`
+	AllowHTTP bool              `yaml:"allow_http"`
+}
+
 // Channels reports which notification channels are configured, by destination scheme.
 func (c *Config) Channels() map[string]bool {
 	return map[string]bool{
@@ -83,6 +100,7 @@ func (c *Config) Channels() map[string]bool {
 		"telegram": c.Telegram.BotTokenEnv != "",
 		"discord":  len(c.Discord.Webhooks) > 0,
 		"teams":    len(c.Teams.Webhooks) > 0,
+		"webhook":  len(c.Webhook.Endpoints) > 0,
 	}
 }
 
@@ -136,6 +154,10 @@ func (c *Config) ValidateDestination(dest string) error {
 		return fmt.Errorf("%q uses the %s channel, which is not configured (%s)", dest, scheme, channelHint(scheme))
 	}
 	switch scheme {
+	case "webhook":
+		if _, ok := c.Webhook.Endpoints[target]; !ok {
+			return fmt.Errorf("%q: no endpoint named %q under webhook.endpoints (configured: %s)", dest, target, mapKeys(c.Webhook.Endpoints))
+		}
 	case "teams":
 		if _, ok := c.Teams.Webhooks[target]; !ok {
 			return fmt.Errorf("%q: no webhook named %q under teams.webhooks (configured: %s)", dest, target, mapKeys(c.Teams.Webhooks))
@@ -192,6 +214,8 @@ func channelHint(scheme string) string {
 		return "add a webhook under discord.webhooks"
 	case "teams":
 		return "add a webhook under teams.webhooks"
+	case "webhook":
+		return "add an endpoint under webhook.endpoints"
 	default:
 		return "set matrix.homeserver"
 	}
@@ -237,6 +261,11 @@ func (c *Config) TeamsURLEnv(name string) string {
 	return envFor("TEAMS", name, c.Teams.Webhooks[name].URLEnv, "URL")
 }
 
+// WebhookSecretEnv is the environment variable that holds the signing secret of endpoint name.
+func (c *Config) WebhookSecretEnv(name string) string {
+	return envFor("WEBHOOK", name, c.Webhook.Endpoints[name].SecretEnv, "SECRET")
+}
+
 // validateDiscord checks the names of the webhooks. Their URLs come from the environment.
 func (c *Config) validateDiscord() error {
 	for _, name := range sortedKeys(c.Discord.Webhooks) {
@@ -247,6 +276,18 @@ func (c *Config) validateDiscord() error {
 	for _, name := range sortedKeys(c.Teams.Webhooks) {
 		if err := notify.ValidName(name); err != nil {
 			return fmt.Errorf("teams.webhooks.%s: %w", name, err)
+		}
+	}
+	for _, name := range sortedKeys(c.Webhook.Endpoints) {
+		ep := c.Webhook.Endpoints[name]
+		if err := notify.ValidName(name); err != nil {
+			return fmt.Errorf("webhook.endpoints.%s: %w", name, err)
+		}
+		if err := notify.ValidWebhookURL(ep.URL, ep.AllowHTTP); err != nil {
+			return fmt.Errorf("webhook.endpoints.%s.url: %w", name, err)
+		}
+		if err := notify.ValidWebhookHeaders(ep.Headers); err != nil {
+			return fmt.Errorf("webhook.endpoints.%s.headers: %w", name, err)
 		}
 	}
 	return nil

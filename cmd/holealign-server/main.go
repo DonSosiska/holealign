@@ -305,6 +305,18 @@ func wire(cfg *config.Config, st store.Store, log *slog.Logger, trig *lateTrigge
 			log.Info("teams channel enabled", "webhooks", len(hooks))
 		}
 	}
+	if len(cfg.Webhook.Endpoints) > 0 {
+		eps := map[string]notify.WebhookEndpoint{}
+		for name, e := range cfg.Webhook.Endpoints {
+			eps[name] = notify.WebhookEndpoint{URL: e.URL, Secret: os.Getenv(cfg.WebhookSecretEnv(name)), Headers: e.Headers, AllowHTTP: e.AllowHTTP}
+		}
+		if ch, err := notify.NewWebhookChannel(eps, nil); err != nil {
+			log.Error("webhook channel disabled", "err", err)
+		} else {
+			channels = append(channels, ch)
+			log.Info("webhook channel enabled", "endpoints", len(eps))
+		}
+	}
 	if len(channels) > 0 {
 		ncfg := notify.Config{
 			Default: cfg.Notify.Default,
