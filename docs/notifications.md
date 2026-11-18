@@ -97,7 +97,7 @@ page shows them read-only.
 | Resolved | `RESOLVED: <vuln> on <host>` | A finding that was notified became `resolved`, `affected_not_exploitable` or `not_affected`. | host labels |
 | Agent silent | `AGENT SILENT: <host>` | A host that checked in before has not checked in for `alerts.agent_silent_after` (default 30 m). | host labels |
 | Agent back | `AGENT BACK: <host>` | A silent host checks in again. | host labels |
-| Feed stale | `FEED STALE:` | The vulnerability DB is older than `alerts.feed_stale_after` (default 48 h), or refreshing failed on more than 2 consecutive checks. | ops rooms |
+| Feed stale | `FEED STALE:` | The vulnerability DB is older than `alerts.feed_stale_after` (default 48 h), or refreshing failed on more than 2 consecutive checks. A separate alert whose text starts with "rules feed" is sent when the signed rules feed ([rules-feed.md](rules-feed.md#health)) has had no successful poll for `rules.feed.stale_after` (default 7 d) or 3 polls in a row failed. | ops rooms |
 | Feed OK | `FEED OK:` | The feed recovered. | ops rooms |
 | Pipeline error | `PIPELINE ERROR: <host>` | Matching failed 3 runs in a row for a host, a target was skipped (invalid or poisoned SBOM), or a host limit was hit. At most once per host per 24 h; more than 5 hosts are aggregated. | ops rooms |
 
@@ -105,12 +105,14 @@ An exploitable or check message names the host, lists the affected packages with
 (up to 5), the severity, CVSS, EPSS and KEV flag, the reason (the facts that decided), the rule's
 explanation, a package-manager upgrade command for that host's OS, the rule's mitigation, and a link
 to the finding in the admin UI (from `public_url`). For a draft (unreviewed LLM) rule only a warning and
-the server-generated fix command are shown.
+the server-generated fix command are shown; the reason of a draft is a fixed string and the notifier
+replaces any reason that starts with `LLM draft` by a fixed text, so nothing a model wrote is ever relayed
+([llm.md](llm.md#prompt-injection-defenses)).
 
 Mass silence: when more than max(5, 30% of the fleet) hosts go silent in one pass, one aggregated
 `AGENT SILENT` event naming up to 50 hosts goes to the ops rooms, and one event per label lists the
 silent hosts with that label for that label's rooms ("server or network problem?"). Silence alerts are
-held back for twice the check-in interval after the server starts. Delivery is tracked per destination (the ops overview, each label's rooms, the hosts without a label): if one destination fails, only that message is retried on the next pass, and a host counts as notified once every message naming it was delivered.
+held back for twice the check-in interval after the server starts. Delivery is tracked **per destination** (the ops overview, each label's rooms, the hosts without a label). A host counts as announced to a destination only when a delivered message to that destination named it. If one destination fails, only the missing messages are retried on the next pass (every minute, as the health loop runs), destinations that already received the alert are not sent it again, and a host is recorded as notified once every message naming it was delivered. A silent host that no delivered message named is announced again on the next pass. The silent-host list in each message is limited to 50 hosts, newest check-in first.
 
 Safety of the text: every untrusted field (hostnames, package names, reasons) is cut to 300
 characters with control characters removed, a zero-width space follows every `@` so nothing pings

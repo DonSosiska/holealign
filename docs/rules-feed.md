@@ -1,34 +1,71 @@
 # Central rules feed
 
-A rule says when a vulnerable package is actually exploitable, and it does not depend on the host
-(the host-specific part is the facts the rule reads). So rules can be written and reviewed once, in
-one place, and delivered to every server like the Grype DB. The central rules feed does that:
+A rule says when a vulnerable package is actually exploitable. The host-specific part is the facts the
+rule reads, so a rule can be written and reviewed once and delivered to every server like the Grype DB.
+The central rules feed does that. This page covers what servers fetch and verify, how the public feed
+is built and signed, how to run your own feed, and the repository bot that drafts rules.
 
 ```
-rules repository (YAML + tests, reviewed)
+panoptes-rules repository (YAML + tests, reviewed pull requests; the trust root)
+        |  merge to main -> release workflow (protected environment, required reviewer)
         |  rules build  ->  rules-<seq>.tar.gz   (deterministic)
-        |  rules sign   ->  rules-<seq>.tar.gz.sig + latest.json   (ed25519, key kept offline)
+        |  rules sign   ->  rules-<seq>.tar.gz.sig + latest.json   (ed25519)
         v
-static HTTPS host  (latest.json, rules-<seq>.tar.gz)
+static HTTPS host  (GitHub Pages: latest.json, rules-<seq>.tar.gz)
         |  every rules.feed.interval:  GET latest.json -> download -> verify -> validate -> test -> install
         v
 panoptes-server:  built-in rules  <  feed rules  <  local rules (DB)
 ```
 
-Phase 1 covers the bundle format, signing, the server poller and the CLI. The separate rules
-repository and its CI are set up separately; everything the repository needs is the
-`panoptes-server rules build|sign` commands described here.
+The feed is **off by default**. A server without it works exactly as before, with the rules shipped in the
+binary (and optionally `rules_dir`).
 
-The feed is **off by default**. A server without it works exactly as before, with the rules shipped
-in the binary (and optionally `rules_dir`).
+## The public feed
+
+| | |
+|---|---|
+| Pointer URL | `https://donsosiska.github.io/panoptes-rules/latest.json` |
+| Public key (base64 ed25519) | `UuFW4nYSCwI3xfHhwapVhYrjYhVO6i7yaxOTv9KFCuM=` |
+| `key_id` | `75eef42e119d4dda` (first 16 hex characters of the SHA-256 of the raw public key) |
+| Canonical key location | [keys/rules-public.key](https://github.com/DonSosiska/panoptes-rules/blob/main/keys/rules-public.key) in the rules repository |
+| Source | [DonSosiska/panoptes-rules](https://github.com/DonSosiska/panoptes-rules) |
+
+Turn it on:
+
+```yaml
+rules:
+  feed:
+    enabled: true
+    url: https://donsosiska.github.io/panoptes-rules/latest.json
+    trusted_keys:
+      - "UuFW4nYSCwI3xfHhwapVhYrjYhVO6i7yaxOTv9KFCuM="
+```
+
+Do not copy the key from a web page you cannot trust: take it from the repository (the canonical
+location above), compare it with this page, and check that the signature `key_id` in the pointer matches
+`75eef42e119d4dda`. The key is the only thing that makes the feed trustworthy; a key you got from the
+same place as a tampered feed proves nothing.
+
+## Terminology
+
+The same three layers appear under different names:
+
+| Layer | Web UI label | API / engine value (`Engine.Sources()`) | Where it comes from |
+|---|---|---|---|
+| Built-in | `built-in` | `builtin` | the eight shipped rules, embedded in the binary; `rules_dir` adds to or replaces them |
+| Feed | `feed #<seq>` | `feed:<seq>` | the installed, verified bundle |
+| Local | `local` | `db` | the server's database: edits made in the web UI and LLM drafts |
+
+The rule file field `source` (`builtin`, `user`, `llm:<model>`) is a different thing: it records who wrote
+the rule, not which layer delivered it.
 
 ## Layers and precedence
 
 | Layer | Source | Reported as |
 |---|---|---|
-| built-in | the eight shipped rules, embedded in the binary (`go:embed` of `rules/`); `rules_dir` adds rules and replaces embedded ones with the same `id` | `built-in` |
-| feed | the installed, verified bundle | `feed #<seq>` |
-| local | the database: user edits and LLM drafts | `local` |
+| built-in | the eight shipped rules, embedded in the binary (`go:embed` of `rules/`); `rules_dir` adds rules and replaces embedded ones with the same `id` | `built-in` (`builtin`) |
+| feed | the installed, verified bundle | `feed #<seq>` (`feed:<seq>`) |
+| local | the database: user edits and LLM drafts | `local` (`db`) |
 
 - A rule from a higher layer replaces a rule with the same `id` from a lower layer.
 - When several rules cover the same CVE and package, the winner is chosen by status (`reviewed` over
@@ -42,35 +79,16 @@ in the binary (and optionally `rules_dir`).
 
 ## Rule tests
 
-Every rule has a test file `tests/<rule-id>.yaml`: a YAML list of cases evaluated by the real engine
-(`rules.RunTests`).
+Every rule in a bundle has a test file `tests/<rule-id>.yaml`, a YAML list of cases evaluated by the real
+engine (`rules.RunTests`). The case format and every key are in
+[rules.md](rules.md#test-case-reference). A case passes only when the rule under test is the rule that
+matched and the verdict equals `want`. The shipped rules' tests are in [`rules-tests/`](../rules-tests/)
+and run with `go test ./internal/server/rules/`.
 
-```yaml
-- name: glibc, default LoginGraceTime
-  finding: {vuln: CVE-2024-6387, package: openssh-server, type: deb, severity: High, kev: false}
-  facts:
-    os.libc: glibc
-    sshd.config: {logingracetime: "120"}
-  host: {os_id: debian, arch: amd64, labels: [prod]}
-  want: exploitable
-```
-
-| Key | Meaning |
-|---|---|
-| `name` | Required, shown in failures. |
-| `finding` | `vuln` and `package` (the binary package) are required; `source`, `type`, `version`, `severity`, `kev` optional. With `source` the finding gets a PURL with that `upstream` qualifier, so `source` selectors apply; without it the source is the package name. The case is matched like a real finding (aliases are not used). |
-| `facts` | The host facts, as the agent would send them. Numbers are handled like on the wire. Absent facts give `conditions_unknown`. |
-| `host` | `os_id`, `os_version_id`, `arch`, `labels` (the `host.*` CEL variables). |
-| `want` | `exploitable`, `affected_not_exploitable`, `conditions_unknown` or `not_affected`. |
-
-A case passes only when the rule under test (the file name) is the rule that matched **and** the
-verdict equals `want`. Unknown keys are errors. The shipped rules' tests are in
-[`rules-tests/`](../rules-tests/) and run with `go test ./internal/server/rules/`.
-
-`rules build` additionally requires, per rule, at least one case with `want: exploitable` and at
-least one non-exploitable case (`affected_not_exploitable` or `not_affected`). The only exemption is
-a rule whose `exploitable_if` is the literal `false` (such as `CVE-2024-4577`), which cannot be
-exploitable by design.
+`rules build` additionally requires, per rule, at least one case with `want: exploitable` and at least one
+non-exploitable case (`affected_not_exploitable` or `not_affected`). The only exemption from the first is a
+rule whose `exploitable_if` is the literal `false` (such as `CVE-2024-4577`), which cannot be exploitable by
+design.
 
 ## Bundle format
 
@@ -177,54 +195,103 @@ required on a schedule. `feed_ok` is sent on recovery.
 rules:
   feed:
     enabled: false                      # PANOPTES_RULES_FEED_ENABLED
-    url: https://rules.example.com/panoptes/latest.json   # https:// (file:// allowed); empty = import only
+    url: https://donsosiska.github.io/panoptes-rules/latest.json   # https:// (file:// allowed); empty = import only
     interval: 6h                        # >= 1m
     trusted_keys:                       # base64 ed25519 public keys; required when enabled
-      - "q3fYk0J6X0s2m3zH0wC1o9h1kQwq8m1r8mZ0Xo7bV1A="
+      - "UuFW4nYSCwI3xfHhwapVhYrjYhVO6i7yaxOTv9KFCuM="
     stale_after: 7d
 ```
 
 Enabled with an empty `trusted_keys` is a configuration error. See
 [configuration.md](configuration.md#rules-feed).
 
-## Key management
+## How servers verify a bundle
 
-- **Generate** on an offline machine: `panoptes-server rules keygen -out rules-signing.key`. The file
-  (mode 0600, base64 of the ed25519 seed) is the private key; the command prints the public key
-  (base64) and its `key_id`. It never overwrites an existing file.
-- **Keep the private key offline** (encrypted removable media or a hardware-backed vault) and back it
-  up. Anyone holding it can publish rules to every server that trusts the public key, and rules can
-  request files from agents, so treat it like a release-signing key. Build in CI if you like, but sign
-  on the offline machine.
-- **Publish the public key** in your server configuration management (`rules.feed.trusted_keys`).
-- **Rotation**: generate the new key, add its public key to `trusted_keys` next to the old one on every
-  server and roll that out. Then sign new bundles with the new key. When every server has the new
-  list and installed a bundle signed by the new key, remove the old key. A server accepts a bundle
-  signed by any listed key. If the signing key leaks, ship a configuration without it; persisted
-  bundles signed only by it are ignored at the next start.
-- A lost private key means distributing a new `trusted_keys` entry to every server before the feed works
-  again.
+See [What the server checks](#what-the-server-checks) for the full list. The four properties that matter:
 
-## Building and publishing
+- **Signature.** The tarball is signed with ed25519; the server accepts only a `key_id` that is in
+  `rules.feed.trusted_keys`. Without a valid signature nothing is installed, whatever the pointer says.
+- **Anti-rollback.** A bundle is installed only if its `seq` is higher than the installed one; a pointer
+  to a lower `seq` is logged and ignored. Because the pointer is not signed, `index.json` inside the
+  signed tarball must carry the same `seq`, so an old signed bundle cannot be replayed under a new number.
+- **Same-host rule.** The pointer's `url` must have the same scheme, host and port as the pointer itself
+  (relative URLs resolve against it), with no user info. A tampered pointer cannot send the server to
+  another host. Redirects are never followed.
+- **Strict extraction.** In memory only; fixed file names, regular files, bounded counts and sizes, every
+  file listed with a matching SHA-256 and nothing unlisted. One bad rule or failing test rejects the whole
+  bundle.
+
+## How the public feed is built and signed
+
+The rules repository is the trust root: whoever can get a change merged there and approve its release
+can publish rules to every server that trusts the key. Its CI is built around that.
+
+- **Pull requests are validated without secrets** (`validate.yml`, `pull_request`, never
+  `pull_request_target`): it builds `panoptes-server` from the commit pinned in the repository's
+  `PANOPTES_REF`, runs `rules build` (validation, tests, coverage policy; rules must be `reviewed`, so an
+  unreviewed bot draft fails by design) and checks that the eight rules shared with this repository are
+  byte-identical to the copies in `rules/` and `rules-tests/` here.
+- **`PANOPTES_REF` must be an ancestor of panoptes `main`.** The build action checks out the full
+  history at that commit and refuses it when it is not on `main`, so a commit from a fork, an unmerged
+  branch or rewritten history cannot become the build tool.
+- **Release only from the tip of `main`.** The release workflow runs on pushes to `main` that change
+  `rules/` or `tests/` (or manually) and stops unless `HEAD` equals the current tip of `main`, so an old
+  commit or a re-run of an old run cannot republish an older rule set under a newer `seq`.
+- **Protected environment.** The release job runs in the `rules-release` environment: a required
+  reviewer must approve each run, deployment is limited to `main`, and the signing key
+  (`RULES_SIGNING_KEY`) exists only there.
+- **Key handed over by file only.** One step writes the secret to a mode 0600 file under the runner's
+  temp directory; the signer (`rules sign -key <file>`) reads the file and never has the secret in its
+  environment; the file is deleted in an `always()` step.
+- **Verify before publishing.** The job verifies the signature with the public key committed at
+  `keys/rules-public.key`, not with the key it just used, then creates a GitHub release `rules-<seq>`
+  (tag and assets) and publishes `latest.json` plus the newest bundles to the `gh-pages` branch in one
+  commit (the pointer last, so servers never see a pointer to a missing file). `seq` is the highest
+  existing `rules-<n>` tag or release plus one.
+- **Offline backup.** The private key is also kept offline, on encrypted media, backed up. Losing it
+  means rotating the key (below).
+
+## Key rotation
+
+Servers accept a bundle signed by any key in `rules.feed.trusted_keys`, so rotation overlaps two keys:
+
+1. Generate the new key (`panoptes-server rules keygen -out <file>`; prints the public key and `key_id`).
+2. Publish the new public key to operators and ask them to list **both** keys in `trusted_keys`.
+3. Wait until the servers run with both keys.
+4. Replace the `RULES_SIGNING_KEY` secret with the new private key and commit the new
+   `keys/rules-public.key`; the next release is signed with it.
+5. Operators remove the old key from `trusted_keys` once they run a bundle signed by the new key.
+
+If the signing key leaks, operators must drop it from `trusted_keys` at once: the persisted bundle is
+re-verified at every start and a bundle signed only by a removed key is ignored. Then rotate as above
+(skip the overlap, ship the new key directly). A lost private key is the same situation: distribute a new
+`trusted_keys` entry before the feed works again.
+
+## Running your own feed
+
+Use your own repository and key when you want rules the public feed does not carry, or no dependency on
+it. You need only `panoptes-server` and a static HTTPS host.
 
 ```sh
-# in the rules repository: rules/*.yaml and tests/*.yaml (one test file per rule)
-panoptes-server rules build -rules rules -tests tests -seq 43 -out dist
-#   prints the SHA-256; any invalid, non-reviewed or untested rule, or failing test, produces no bundle
-panoptes-server rules sign -key /offline/rules-signing.key dist/rules-43.tar.gz
-#   writes dist/rules-43.tar.gz.sig and dist/latest.json
-panoptes-server rules verify -pub <base64 public key> dist/rules-43.tar.gz     # optional check
-
-# publish: upload the tarball and the .sig first, latest.json last
+panoptes-server rules keygen -out rules-signing.key      # offline machine; prints the public key
+# in your rules repository: rules/<id>.yaml and tests/<id>.yaml, every rule status: reviewed
+panoptes-server rules build -rules rules -tests tests -seq 1 -out dist
+panoptes-server rules sign -key rules-signing.key dist/rules-1.tar.gz     # writes .sig and latest.json
+panoptes-server rules verify -pub <base64 public key> dist/rules-1.tar.gz # optional
+# upload rules-1.tar.gz and rules-1.tar.gz.sig first, latest.json last
 ```
 
-Upload `latest.json` last so servers never see a pointer to a missing file. `seq` must be higher than
-every earlier bundle; `-created-at` (RFC 3339) or the `SOURCE_DATE_EPOCH` environment variable fixes
-`created_at` for reproducible builds. `-min-server-version` sets `min_server_version`. In this
-repository `make rules-bundle` builds the shipped rules (`RULES_SEQ=N`, optional `RULES_KEY=<file>` to
-sign).
+Then point servers at it with your public key in `trusted_keys`. Rules for your own feed go through
+the same validation, so a rule that does not pass `rules build` is not published. Increase `-seq` for every
+release. `-created-at` (RFC 3339) or `SOURCE_DATE_EPOCH` fixes `created_at` for reproducible builds,
+`-min-server-version` sets `min_server_version`, and `rules sign -url <URL>` sets the pointer's `url` when
+the tarball is not next to `latest.json` (it must still be on the same host). In this repository
+`make rules-bundle` builds the shipped rules (`RULES_SEQ=N`, optional `RULES_KEY=<file>` to sign).
 
-`keygen`, `build`, `sign` and `verify` need neither a server configuration nor a database.
+`keygen`, `build`, `sign` and `verify` need neither a server configuration nor a database. Handle the
+private key like a release-signing key: anyone holding it can publish rules, and rules can request file
+reads from agents. Prefer building and signing in a protected CI environment as the public feed does,
+or on an offline machine, and keep an offline backup.
 
 ## Air-gapped servers
 
@@ -245,9 +312,16 @@ poll times and the last error.
 
 ## Repository bot
 
-Two commands help the rules repository's CI bot find and draft rules. Neither needs a server
-configuration or database, and neither sends host data anywhere (there is none): only advisory and
-candidate fields go to OSV, KEV, EPSS and the LLM provider.
+The rules repository runs a scheduled workflow (`bot.yml`, daily and on demand) that finds CVEs worth a
+rule, drafts a rule and tests with an LLM, and opens one pull request per draft. A human reviews and sets
+`status: reviewed`; CI accepts a bundle only then, so a draft cannot reach the feed by itself, and a merge
+is still subject to the `rules-release` approval. The workflow calls Anthropic through workload identity
+federation, so no API key is stored anywhere. Setup:
+<https://github.com/DonSosiska/panoptes-rules/blob/main/docs/bot-setup.md>.
+
+Two `panoptes-server` commands do the work. Neither needs a server configuration or database, and neither
+sends host data anywhere (there is none): only advisory and candidate fields go to OSV, KEV, EPSS and the
+LLM provider.
 
 ### `rules candidates`
 

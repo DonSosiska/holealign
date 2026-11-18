@@ -6,9 +6,10 @@ to the server. The server matches vulnerabilities, evaluates rules, and alerts. 
 the components, the data flow, who may do what, and where data lives. Protocol-level detail is in
 [contracts.md](contracts.md).
 
-Contents: [Components](#components) - [Data flow](#data-flow) - [Privilege separation](#privilege-separation) -
-[Trust boundaries](#trust-boundaries) - [What each process may do](#what-each-process-may-do) -
-[Where data is stored](#where-data-is-stored)
+Contents: [Components](#components) - [Data flow](#data-flow) - [Pipeline stages](#pipeline-stages) -
+[Concurrency and limits](#concurrency-and-limits) - [Background workers](#background-workers) -
+[Privilege separation](#privilege-separation) - [Trust boundaries](#trust-boundaries) -
+[What each process may do](#what-each-process-may-do) - [Where data is stored](#where-data-is-stored)
 
 ## Components
 
@@ -24,19 +25,22 @@ Contents: [Components](#components) - [Data flow](#data-flow) - [Privilege separ
  | panoptes-agent -mode sender        | ---------> |                                            |
  |   (user "panoptes")                |            | pipeline: Grype match -> CEL rules -> diff |
  +------------------------------------+            | health loop (silence/feed alerts, 1/min)   |
-                                                   | feed updater (Grype DB, KEV, EPSS)         |
+                                                   | vuln DB updater (Grype DB, KEV, EPSS)      |
+                                                   | rules feed poller (optional)               |
                                                    | retention job (daily)                      |
+                                                   | local agent (optional, in-process)         |
                                                    | Matrix notifier  ---> Matrix homeserver    |
                                                    | LLM drafter (optional) ---> LLM API, OSV   |
                                                    +--------------------------------------------+
                                                        SQLite (panoptes.db) + Grype DB cache
+                                                       + rules feed bundle (data_dir/rules-feed)
 ```
 
 | Component | Binary and unit | Runs as | Network |
 |---|---|---|---|
 | Collector | `panoptes-agent -mode collector`, `panoptes-collector.service` | root, capabilities `CAP_DAC_READ_SEARCH`, `CAP_DAC_OVERRIDE`, `CAP_SYS_PTRACE` | none (`PrivateNetwork=yes`, AF_UNIX only) |
 | Sender | `panoptes-agent -mode sender`, `panoptes-agent.service` | user `panoptes`, no capabilities | outbound to the server only |
-| Server | `panoptes-server serve`, `panoptes-server.service` or container | unprivileged dynamic user (systemd) or uid 65532 (container) | listens on `:8080` and `127.0.0.1:8081` |
+| Server | `panoptes-server serve`, `panoptes-server.service` or container | unprivileged systemd `DynamicUser` (the static `panoptes` user instead when it talks to the collector socket for the local agent) or uid 65532 (container) | listens on `:8080` and `127.0.0.1:8081`; outbound to Matrix, the LLM API, OSV and feed hosts |
 | Agentless local agent | inside the server process | the server's user | none; reads the collector socket or scans in-process |
 
 The agent has a third mode, `-mode all` (the default): one process doing both roles. It is used by
@@ -51,29 +55,98 @@ The server never scans its own `data_dir`. See [installation.md](installation.md
 
 ## Data flow
 
-1. **Enroll.** The sender sends the enrollment token, hostname, machine ID and labels. The server
-   checks the token (hash lookup, expiry, `max_hosts`), creates the host, and returns an
-   `agent_id` and `agent_key`. The sender stores them in `state_dir`. After the first successful
-   check-in the collector blanks `enroll_token` in `agent.yaml`.
-2. **Check-in** (every 5 minutes by default). The sender asks the collector for facts and OS
-   info and sends them. The server answers with `fact_requests` (extra `file.match` reads wanted
-   by reviewed rules), `want_inventory`, and optionally a different interval (the agent clamps it
-   to 60 s - 1 h).
-3. **Inventory.** The collector runs Syft on the host root filesystem and on each Docker image,
-   producing CycloneDX SBOMs. The sender uploads them gzip-compressed when the package databases
-   or image set change (and every 6 hours as a safety net), or when the server asks.
-4. **Match and decide.** After an inventory, a fact change, a rule change or a vulnerability-DB
-   update, the pipeline runs Grype on each target SBOM, then evaluates the rule that covers each
-   finding against the host's facts. The result is stored as a finding with a verdict and a
-   reason.
-5. **Alert.** The pipeline compares each finding with its stored state and emits events
-   (`exploitable`, `unknown_critical`, `resolved`). The health loop emits silence, feed and
-   pipeline events. The Matrix notifier routes events to rooms by host label.
-6. **Draft rules** (optional). A finding without a rule that is High/Critical or on the KEV list
-   is queued for the LLM drafter. The draft is stored with status `draft` and is inert until a
-   human approves it.
+```
+ agent (sender)                 server                                              outside
+ --------------                 ------------------------------------------------   -------
+ enroll  ------------------->   token check -> host row, key hash
+ checkin (facts, os) ------->   merge facts -> store; reply: fact_requests,
+                                want_inventory                    (facts changed -> trigger)
+ inventory (gzip SBOMs) ---->   validate per target -> store; trigger
+                                                    |
+                                                    v
+                                pipeline: inventory -> match (Grype) -> evaluate (CEL rules)
+                                          -> cap -> store/diff -> notify ----------> Matrix rooms
+                                                    ^         \
+ Grype DB updater ----------(db updated: re-run)----+          -> draft queue ----> LLM (OSV text)
+ rules feed poller ---------(bundle installed: re-run)
+ web UI rule edits/approvals (rules changed: re-run)
+```
+
+1. **Enroll.** The sender sends the enrollment token, hostname, machine ID and labels. The server checks
+   the token (hash lookup, expiry, `max_hosts`), creates the host, and returns an `agent_id` and
+   `agent_key`. The sender stores them in `state_dir`. After the first successful check-in the collector
+   blanks `enroll_token` in `agent.yaml`. Details: [api.md](api.md#enrollment-and-re-enrollment).
+2. **Check-in** (every 5 minutes by default). The sender asks the collector for facts and OS info and
+   sends them (a full snapshot or a diff). The server merges the facts and answers with `fact_requests`
+   (extra `file.match` reads wanted by reviewed rules), `want_inventory`, and `want_full_facts`. The
+   response can carry a different interval (`next_checkin_seconds`, clamped by the agent to 60 s - 1 h), but
+   the current server never sets it. A fact change triggers the pipeline for that host.
+3. **Inventory.** The collector runs Syft on the host root filesystem and on each Docker image, producing
+   CycloneDX SBOMs. The sender uploads them gzip-compressed when the package databases or image set change
+   (and every 6 hours as a safety net), or when the server asks. An identical hash is a no-op.
+4. **Match and decide.** The pipeline runs Grype on each target SBOM, then evaluates the rule that covers
+   each finding against the host's facts ([rules.md](rules.md)). See [Pipeline stages](#pipeline-stages).
+5. **Alert.** The pipeline compares each finding with its stored state and emits events (`exploitable`,
+   `unknown_critical`, `resolved`). The health loop emits silence, feed and pipeline events. The Matrix
+   notifier routes events to rooms by host label ([notifications.md](notifications.md)).
+6. **Draft rules** (optional). A finding without a rule that is High/Critical or on the KEV list is queued
+   for the LLM drafter. The draft is stored with status `draft` and is inert until a human approves it
+   ([llm.md](llm.md)).
 
 The agent only connects out. Nothing on the monitored host listens for the server.
+
+## Pipeline stages
+
+A run for one host (`internal/server/pipeline`) is triggered by an inventory upload, a fact change on
+check-in, a vulnerability-DB update, or a rules change (web UI, feed bundle, LLM draft). Stages:
+
+| Stage | What happens |
+|---|---|
+| **Inventory** | The stored target SBOMs of the host (host root plus Docker images) are the input. A target that previously panicked is skipped until a new inventory arrives. |
+| **Match** | Grype matches each target SBOM against the local vulnerability DB (offline; the DB includes KEV and EPSS). Each target has its own 5 minute timeout; a target that fails or times out is isolated (its previous findings are carried over, a `pipeline_error` is recorded) and the others still run. A missing DB (right after start) changes nothing and is retried when the DB loads. |
+| **Evaluate** | Each finding goes to the rule engine with the host's facts: rule lookup by vulnerability ID or alias and package selector, then the verdict algorithm ([rules.md](rules.md#how-verdicts-are-decided)). |
+| **Cap** | Open findings per host are capped (`limits.findings_per_host`, default 20 000) after rule evaluation: exploitable findings are kept first, then `conditions_unknown`, then KEV/severity/CVSS. A dropped finding is never marked resolved and emits no event. |
+| **Store** | Upsert keyed by `(host, target, package, version, vuln)`; findings no longer present become `resolved`. The previous verdict is read first, to detect changes. |
+| **Notify** | Events for new or changed verdicts go to the notifier with per-event delivery results; only failed events are retried. Findings without a rule and with High/Critical severity or KEV are enqueued for the drafter. |
+
+Each run has a 10 minute timeout, and a panic in any background goroutine is logged and recovered.
+
+## Concurrency and limits
+
+- At most 2 hosts are matched concurrently; slots are granted FIFO.
+- Matcher time per host is budgeted per rolling hour (`limits.match_seconds_per_host_hour`, default 900 s);
+  over budget the runs are deferred.
+- API: per-host token buckets for check-in and inventory, a cheap per-host attempt bucket charged before an
+  inventory body is read, one decode in flight per host and `limits.inventory_concurrent_decodes` (4)
+  server-wide; per-client limits for invalid enrollments and failed authentication. See
+  [api.md](api.md#limits-and-status-codes).
+- Collector (on the host): one inventory scan at a time and at most one real scan per 10 minutes, at most 2
+  facts collections concurrently, results cached (facts 30 s); excess requests fail with `busy`.
+- LLM: queue of 256, daily call limit, per-host and global enqueue caps ([llm.md](llm.md#cost-control)).
+- Matrix: bursts of more than 15 messages for one room are summarised ([notifications.md](notifications.md)).
+- Everything external is bounded: bodies, SBOM components, facts, notification bodies, feed bundles.
+- The server is one process with one SQLite database; there is no clustering.
+
+## Background workers
+
+| Worker | Interval | Job |
+|---|---|---|
+| Vulnerability DB updater | `feeds.interval` (6 h) | Downloads the Grype DB (with KEV and EPSS) and re-runs the pipeline for all hosts when it changes. Runs once at start. |
+| Rules feed poller | `rules.feed.interval` (6 h), only when `rules.feed.enabled` | Fetches `latest.json`, verifies and installs a newer signed bundle, reloads the engine, re-runs the pipeline ([rules-feed.md](rules-feed.md)). The persisted bundle is re-verified at start. |
+| Health loop | every minute | `agent_silent` / `agent_back`, `feed_stale` / `feed_ok` (vulnerability DB and rules feed), `pipeline_error`; dedup through the notification table. Held back for twice the check-in interval after start. |
+| Notify loop | every 5 minutes | Emits held-back `unknown_critical` alerts and retries undelivered events. |
+| Retention job | daily and at start | Deletes resolved findings and notification dedup rows older than `retention.*`. |
+| LLM drafter | queue | Drafts rules for uncovered High/Critical/KEV findings, within daily limits. |
+| Local agent | `local_agent.checkin_interval` | Optional: the agent runner inside the server process for its own host (below). |
+
+**Health.** Silence alerts name the hosts that stopped checking in; when more than max(5, 30%) of the fleet
+goes silent in one pass one aggregated message goes to the ops rooms and one per label to that label's
+rooms. The dashboard shows active feed, pipeline and delivery problems.
+
+**Local agent.** With `local_agent.enabled` the server runs the normal agent runner for its own host. It
+gets an `http.Client` whose transport calls the agent API handler in memory (no network), enrolls itself by a
+direct store call, keeps its key in `data_dir/local-agent/credentials.json`, and takes data from the
+collector socket or in-process. All API validation, limits and authentication apply as for a remote agent.
 
 ## Privilege separation
 
@@ -129,14 +202,18 @@ Socket protocol and limits: [contracts.md section 2](contracts.md#2-agent-config
 | Run commands on a monitored host | n/a | no | cannot |
 | Decide verdicts | no | no | yes |
 | Approve LLM-drafted rules | no | no | only via the admin UI, after password re-entry |
+| Fetch the rules feed | no | no | yes, verified against `rules.feed.trusted_keys` |
 
 ## Where data is stored
 
 | Data | Location | Notes |
 |---|---|---|
-| Server database (hosts, findings, rules, tokens, users, sessions, notification dedup, settings) | `<data_dir>/panoptes.db` (default `/var/lib/panoptes`) | SQLite, WAL, file mode 0600, server `umask 077`. Only SHA-256 hashes of enrollment tokens, agent keys and session tokens; bcrypt password hashes. |
+| Server database (hosts, findings, rules, tokens, users, sessions, notification dedup, settings, key-value state such as feed status and health) | `<data_dir>/panoptes.db` (default `/var/lib/panoptes`) | SQLite, WAL, file mode 0600, server `umask 077`. Only SHA-256 hashes of enrollment tokens, agent keys and session tokens; bcrypt password hashes. |
 | Grype vulnerability DB (includes KEV, EPSS) | `<data_dir>/grype-db/` | Downloaded and refreshed every `feeds.interval`; about 100 MB. |
-| Rules shipped with the release | `rules_dir` (default `/usr/share/panoptes/rules`) | Read at start. DB rules (LLM drafts, edits in the UI) override a file rule with the same ID. |
+| Built-in rules | embedded in the binary; optional `rules_dir` (default `/usr/share/panoptes/rules`) | `rules_dir` adds rules and replaces embedded ones with the same ID; read at start. |
+| Signed rules feed bundle | `<data_dir>/rules-feed/` | The accepted bundle and its signature; re-verified at every start. Only when the feed is enabled or a bundle was imported. |
+| Local rules (LLM drafts, edits in the UI) | database | Override a built-in or feed rule with the same ID, except that a draft never replaces one. |
+| Local agent credentials | `<data_dir>/local-agent/credentials.json` | 0600; only with `local_agent.enabled`. |
 | Matrix label routes edited in the UI | database, setting `matrix.routes` | Merged with `matrix.routes` from `server.yaml`. |
 | Agent credentials | `<state_dir>/` (default `/var/lib/panoptes-agent`) | `agent_id`, `agent_key`; owned by `panoptes`, mode 0700 directory. |
 | Agent configuration | `/etc/panoptes/agent.yaml` | `root:panoptes`, 0640. Holds the enrollment token until the first successful check-in. |

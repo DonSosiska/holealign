@@ -6,6 +6,7 @@ page summarises the threat model and the mitigations, gives an operator hardenin
 lists known limitations. To report a vulnerability, see [SECURITY.md](../SECURITY.md).
 
 Contents: [Assets and trust](#assets-and-trust) - [Threats and mitigations](#threats-and-mitigations) -
+[The rules feed trust chain](#the-rules-feed-trust-chain) -
 [Operator hardening checklist](#operator-hardening-checklist) - [Known limitations](#known-limitations)
 
 ## Assets and trust
@@ -17,11 +18,13 @@ Contents: [Assets and trust](#assets-and-trust) - [Threats and mitigations](#thr
 | Enrollment tokens | Let someone register a host. |
 | The admin session and password | Every web account is a full administrator: approve rules, create tokens and users, edit routes. |
 | Matrix token, LLM key | Reach external services as you. |
+| The rules repository and its signing key | Whoever can publish a signed rules bundle can change verdicts and request configuration-file reads on every server that trusts the key. |
 | Host facts and inventories | Reveal what is installed and how it is configured. |
 
 Trust rules: the agent trusts nothing from the server beyond a narrow, validated request format;
 the server trusts nothing from agents beyond size-limited, schema-checked data; nobody trusts the LLM
-or advisory text. The architecture is in [architecture.md](architecture.md).
+or advisory text; a server trusts rules from outside only when they are signed by a key the operator
+listed ([feed trust chain](#the-rules-feed-trust-chain)). The architecture is in [architecture.md](architecture.md).
 
 ## Threats and mitigations
 
@@ -37,11 +40,43 @@ or advisory text. The architecture is in [architecture.md](architecture.md).
 | **Label spoofing** to steer alerts | Labels of a token-enrolled host are authoritative on the server; labels sent by the agent are ignored in that case. |
 | **Flooding** the server | Body size limits (1 MiB enroll, 64 MiB inventory), per-host token buckets for check-in and inventory (plus a per-host attempt bucket charged before an inventory body is read, one decode in flight per host and a server-wide bound on concurrent decodes), limits per client address (invalid enrollments, failed authentication, invalid uploads), per-host caps on findings and matcher time, bounded SBOMs (CycloneDX only, at most 50 000 components), agent-supplied hostname, version and OS fields length-capped and stripped of control/format/bidi characters (OS id and version_id also restricted to `[a-z0-9._-]`, else dropped), bounded internal maps. |
 | **Spoofed client addresses** (`X-Forwarded-For`) | The header is honoured only when the TCP peer is in `trusted_proxies`; the right-most untrusted entry is used. Broad entries trigger a WARN, and so does an `X-Forwarded-For` header arriving on the admin listener from a peer that is not in `trusted_proxies` (logged once; it hints at a proxy that is not configured). |
-| **Admin UI** attack | Separate listener, loopback by default, never serves the agent API; the agent listener serves nothing but `/api/v1/*` and `/healthz`. Sessions have a 1 h idle and 12 h absolute lifetime, `HttpOnly` and `SameSite=Lax` cookies (`Secure` with an https `public_url`), CSRF tokens, login delays per user name and blocks per address (a browser holding a known-device cookie for the user bypasses the per-address blocks, so failures from a shared address never lock out the real user), approving a rule shows its expressions (`exploitable_if`, `not_affected_if`) and flags LLM-written text as unverified, a re-authentication (current password) for approving or rejecting rules, editing rules, creating tokens, changing routes and managing users, and an audit log. |
+| **Admin UI** attack | Separate listener, loopback by default, never serves the agent API; the agent listener serves nothing but `/api/v1/*` and `/healthz`. Sessions have a 1 h idle and 12 h absolute lifetime, `HttpOnly` and `SameSite=Lax` cookies (`Secure` with an https `public_url`), CSRF tokens, login delays per user name and blocks per address (a browser holding a known-device cookie for the user bypasses the per-address blocks, so failures from a shared address never lock out the real user), approving a rule shows its expressions (`exploitable_if`, `not_affected_if`) and flags LLM-written text as unverified, a re-authentication (current password) for approving or rejecting rules, editing rules, creating tokens, changing routes and managing users, and an audit log. There are no roles: every account is a full administrator (see [Known limitations](#known-limitations)). |
 | **Malicious LLM output** or advisory text | The LLM only drafts; a draft is validated, inert (its file requests are not sent, it cannot lower a verdict, it only yields `exploitable` if grounded in host facts) until a human approves with password re-entry on a versioned form. Untrusted inputs are normalised, de-tagged and delimited. See [llm.md](llm.md). |
 | **Injection into Matrix messages** | Untrusted fields are length-capped and stripped of control characters, `@` gets a zero-width space, empty `m.mentions`, bodies capped at 8 KiB; draft text is not shown in alerts: the evaluation reason of a draft is a fixed string and the notifier replaces any reason starting with `LLM draft` by one. |
-| **Tampered releases** | Releases are made only by the release workflow after tests pass, in the `release` environment (reviewer approval), only for tags on `main`. Keyless cosign signature with an exact certificate identity (workflow path and tag), SPDX SBOMs, GitHub build provenance. `install.sh` verifies the signature and refuses downgrades. Actions and base images are pinned to digests. |
+| **Malicious or tampered rules** (a hijacked feed host, a man in the middle, a poisoned bundle, a replayed old bundle) | Bundles are verified with ed25519 against `rules.feed.trusted_keys` before anything is read; the pointer cannot redirect to another host; a lower or equal `seq` is never installed and `index.json` must carry the pointer's `seq`; extraction is strict and bounded; every rule must validate and pass its own tests; the accepted bundle is re-verified at every start. Details: [the feed trust chain](#the-rules-feed-trust-chain). |
+| **Tampered releases** | Releases are made only by the release workflow after tests pass, in the `release` environment (reviewer approval), only for tags on `main`. Keyless cosign signature on `checksums.txt` with an exact certificate identity (workflow path and tag), SPDX SBOMs, GitHub build provenance. `install.sh` verifies the signature and refuses downgrades. Actions and base images are pinned to digests. The `.deb` and `.rpm` packages are **not** apt- or rpm-signed (see limitations): verify their checksums against the signed `checksums.txt`. |
 | Data stolen from **backups or logs** | Evaluation reasons never contain `file.match` values (only match counts); the audit log records actors and client addresses, not passwords. Protect backups like the database. |
+
+## The rules feed trust chain
+
+The optional signed rules feed ([rules-feed.md](rules-feed.md)) is the only way rules reach a server from
+outside. A bad rule is dangerous in two ways: it can say "not exploitable" about a real hole (a false
+negative), and a `file.match` request makes every agent read configuration lines as root. So the chain is
+short and explicit:
+
+1. **The rules repository is the trust root.** [DonSosiska/panoptes-rules](https://github.com/DonSosiska/panoptes-rules)
+   holds the rules and tests. Changes need a reviewed pull request from a code owner; the bot's drafts get
+   the same review and are never merged unchecked. A merge is the review.
+2. **A protected CI environment signs.** Publishing runs in the `rules-release` environment with a
+   required reviewer, only from the tip of `main`; the build tool is pinned to a commit that must be an
+   ancestor of panoptes `main`; the private signing key is written to a file only for the signer step and
+   is also kept offline.
+3. **The signature is the gate.** Servers install a bundle only when it is signed by a key in
+   `rules.feed.trusted_keys`. The public key lives in the rules repository
+   (`keys/rules-public.key`) and is listed in [rules-feed.md](rules-feed.md#the-public-feed).
+   Everything else (the pointer, the host, the transport) is untrusted and cross-checked.
+4. **The server still validates.** Every rule passes the same validation as a local one (including the
+   strict `file.match` policy), must be `reviewed`, and must pass its tests; one failure rejects the bundle.
+   The agent re-checks every file request against its own policy and does not rely on the server.
+5. **Rollback is refused**, and a removed key takes effect at the next start.
+
+Key rotation overlaps two keys in `trusted_keys` and then retires the old one; a leaked key means removing it
+from every server's `trusted_keys` immediately ([rules-feed.md](rules-feed.md#key-rotation)). Running your own
+feed makes your repository and key the root instead.
+
+What the chain does not give you: a reviewed, signed rule can still be wrong, and an operator-installed
+`trusted_keys` entry is trusted completely. A local rule you save in the web UI overrides a feed rule on that
+server, so it is the operator's responsibility.
 
 ## Operator hardening checklist
 
@@ -79,6 +114,14 @@ Do these in a real deployment.
   package versions: keep the rooms private. Panoptes does not do Matrix end-to-end encryption, so use
   unencrypted rooms and a homeserver you trust ([notifications.md](notifications.md#matrix-setup)).
 
+**Rules feed**
+
+- [ ] Enable the feed only with `trusted_keys` containing exactly the keys you trust (the public feed's key
+  from the rules repository, compared with [rules-feed.md](rules-feed.md#the-public-feed), or your own).
+  List two keys only while rotating.
+- [ ] Watch for the "rules feed" `feed_stale` alert; leave `rules.feed.stale_after` enabled.
+- [ ] For an air-gapped server use `panoptes-server rules import` and leave `rules.feed.url` empty.
+
 **Operations**
 
 - [ ] Review every LLM draft before approving; read the "Before you approve" file-read list.
@@ -93,44 +136,54 @@ Do these in a real deployment.
 **If you maintain a fork or run the release workflow (GitHub repository settings)**
 
 - [ ] Environment `release`: add required reviewers, and restrict deployment to protected tags (`v*`).
+- [ ] In a rules repository: environment `rules-release` with required reviewers, deployment restricted
+  to `main`, the signing key only there (and backed up offline), branch protection on `main` with required
+  validation and code-owner review.
 - [ ] Tag protection (or rulesets) for `v*`, and branch protection on `main` with required CI.
 - [ ] Require reviews for workflow changes; keep Dependabot enabled.
 - [ ] Turn on private vulnerability reporting (used by [SECURITY.md](../SECURITY.md)).
 
 ## Known limitations
 
-- **No roles, no RBAC and no 2FA.** There is no read-only or observer role in the web UI: every
-  web account is a full administrator and can approve rules, create enrollment tokens and API
-  credentials, edit routes and create or delete users. Create an account only for someone you trust
-  with all of that. Authentication is a password with rate-limiting and re-authentication for
-  sensitive actions. Put the admin UI behind a VPN or an
-  authenticating proxy.
+- **There are no roles.** Every account in the web UI is a full administrator: it can approve and edit
+  rules, create and revoke enrollment tokens, edit Matrix routes and create, change or delete users. There
+  is no read-only or observer role, no RBAC and no 2FA. Create an account only for someone you trust with
+  all of that. Authentication is a password with rate-limiting and re-authentication for sensitive actions.
+  Put the admin UI behind a VPN or an authenticating proxy.
+- **Apache includes are not scanned.** Before `apachectl -M` the agent verifies the Apache config roots, but
+  unlike nginx it does not follow `Include`/`IncludeOptional`/`LoadModule` to locations outside those roots.
+  Config that includes files from outside `/etc/apache2`, `/etc/httpd` and the other verified roots is not
+  checked. The nginx scan covers `include`, `load_module`, `*_by_lua_file`, `perl_modules`, `perl_require`,
+  `js_import` and `js_path`; other nginx directives that load files (for example lua `*_by_lua_block`
+  requiring modules from a search path) are not followed.
+- **The `.deb` and `.rpm` packages are not apt- or rpm-signed.** Releases are signed through `checksums.txt`
+  (cosign), so verify the package checksum against it before installing
+  ([installation.md](installation.md#verifying-releases)). Installing with `apt install ./file.deb` or
+  `rpm -i` does not check anything by itself.
+- **AI-assisted drafts need human review.** A rule drafted by an LLM (on the server, or by the rules
+  repository's bot) is validated and inert, never lowers a verdict, and needs a grounded condition to report
+  `exploitable`. That does not make it correct: it can be wrong or too narrow. Read every draft against the
+  advisory before approving it.
+- **Rules are only as good as their author.** A wrong `exploitable_if` in a *reviewed* rule produces false
+  negatives (`affected_not_exploitable`). Missing facts and missing rules fail towards `conditions_unknown`,
+  not towards "safe", and drafts cannot lower verdicts, but a reviewed rule can. The feed moves that trust to
+  the rules repository's maintainers.
 - **The systemd units need verification on your hosts.** Their hardening (`ProtectSystem=strict`,
-  `PrivateNetwork`, the system-call filter, and child tools such as `nginx -T`, `php -i`, `sshd -T`
-  inheriting those limits) has not been verified on a real host by the project's tests, and the unit
-  comments say so. Check `panoptes-agent -print-facts` under the unit's properties, and watch `agent.collector_error`
-  and `agent.skipped`. The unit comments list the known risk: `nginx -T` may fail on a read-only file
-  system.
-- **Apache includes are not scanned.** Before `apachectl -M` the agent verifies the Apache config
-  roots, but unlike nginx it does not follow `Include`/`IncludeOptional`/`LoadModule` to locations
-  outside those roots. Config that includes files from outside `/etc/apache2`, `/etc/httpd` and the
-  other verified roots is not checked. The nginx scan covers `include`, `load_module`,
-  `*_by_lua_file`, `perl_modules`, `perl_require`, `js_import` and `js_path`; other nginx directives
-  that load files (for example lua `*_by_lua_block` requiring modules from a search path) are not
-  followed.
-- **Rules are only as good as their author.** A wrong `exploitable_if` produces false negatives
-  (`affected_not_exploitable`). Missing facts and missing rules fail towards `conditions_unknown`,
-  not towards "safe", and drafts cannot lower verdicts, but a reviewed rule can.
-- **One known dependency advisory.** `govulncheck` reports GO-2026-6905, which has no fixed upstream
-  release yet; it is tracked in [`.govulncheck-allow`](../.govulncheck-allow) until one exists.
-- **Matrix, LLM and OSV are external services.** Matrix alerts are not end-to-end encrypted; LLM
-  prompts include package names and versions from your hosts.
-- **Agents run as root.** The collector is hardened and isolated, but anything that runs as root on
-  every host is a high-value target: treat the server and the release pipeline accordingly.
+  `PrivateNetwork`, the system-call filter, and child tools such as `nginx -T`, `php -i`, `sshd -T` inheriting
+  those limits) has not been verified on a real host by the project's tests, and the unit comments say so.
+  Check `panoptes-agent -print-facts` under the unit's properties, and watch `agent.collector_error` and
+  `agent.skipped`. The unit comments list the known risk: `nginx -T` may fail on a read-only file system.
+- **One known dependency advisory.** `govulncheck` reports GO-2026-6905 (the `ar` parser used by Syft's deb
+  support) with no fixed upstream release yet; it is accepted per binary in
+  [`.govulncheck-allow`](../.govulncheck-allow) until one exists.
+- **Matrix, LLM and OSV are external services.** Matrix alerts are not end-to-end encrypted; LLM prompts
+  include package names and versions from your hosts.
+- **Agents run as root.** The collector is hardened and isolated, but anything that runs as root on every
+  host is a high-value target: treat the server and the release pipeline accordingly.
 - **Single server, SQLite.** No clustering or high availability; back up regularly.
-- **The built-in local agent (agentless mode, off by default).** With `source: collector` the server
-  process, running as the static user `panoptes`, can request the host's facts and inventory through the
-  collector socket. The root collector still has no network, and the server stays unprivileged. With
+- **The built-in local agent (agentless mode, off by default).** With `source: collector` the server process,
+  running as the static user `panoptes`, can request the host's facts and inventory through the collector
+  socket. The root collector still has no network, and the server stays unprivileged. With
   `source: inprocess` (or `auto` when the socket refuses the server) the server process itself reads
   untrusted local files with its own privileges, so the server host needs the same care as any monitored
   host. The local agent does not add a remote command channel: all API validation, limits and
