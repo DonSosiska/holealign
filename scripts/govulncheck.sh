@@ -5,7 +5,8 @@
 # module graph and does not finish in CI. Binary mode checks the module versions
 # compiled into each binary, which takes seconds. This script builds the agent
 # and server, runs govulncheck in binary mode on each, and fails if a finding is
-# not listed in .govulncheck-allow.
+# not listed in .govulncheck-allow for that binary (entries are "ID binary  # reason":
+# a finding accepted for the agent still fails when it shows up in the server).
 set -euo pipefail
 export LC_ALL=C
 
@@ -42,20 +43,25 @@ for bin in "$tmp"/*; do
     echo "error: govulncheck failed on $name (exit $rc)" >&2
     exit 1
   fi
-  # The JSON output is a stream of objects; keep the OSV IDs of findings only.
-  jq -r 'select(.finding) | .finding.osv' "$out" >> "$findings"
+  # The JSON output is a stream of objects; keep "ID binary" for every finding.
+  jq -r --arg bin "$name" 'select(.finding) | "\(.finding.osv) \($bin)"' "$out" >> "$findings"
 done
 
 ids="$tmp/ids.txt"
 allow="$tmp/allow.txt"
 sort -u "$findings" | grep -v '^$' > "$ids" || true
-awk '{ sub(/#.*/, ""); if (NF) print $1 }' "$allow_file" | sort -u > "$allow"
+awk '{ sub(/#.*/, ""); if (NF >= 2) print $1 " " $2; else if (NF == 1) print "MALFORMED " $1 }' "$allow_file" | sort -u > "$allow"
+if grep -q '^MALFORMED ' "$allow"; then
+  echo "error: .govulncheck-allow entries need 'ID binary  # reason':" >&2
+  grep '^MALFORMED ' "$allow" | sed 's/^MALFORMED /  /' >&2
+  exit 1
+fi
 
 seen="$(grep -xF -f "$allow" "$ids" || true)"
 unexpected="$(grep -vxF -f "$allow" "$ids" || true)"
 stale="$(grep -vxF -f "$ids" "$allow" || true)"
 
-echo "govulncheck (binary mode): $(grep -c . "$ids" || true) distinct finding(s)"
+echo "govulncheck (binary mode): $(grep -c . "$ids" || true) finding(s) (ID binary)"
 if [[ -n "$seen" ]]; then
   echo "allowlisted (see .govulncheck-allow):"
   while IFS= read -r id; do echo "  $id"; done <<< "$seen"
@@ -67,10 +73,10 @@ if [[ -n "$stale" ]]; then
 fi
 
 if [[ -n "$unexpected" ]]; then
-  echo "error: vulnerabilities not listed in .govulncheck-allow:" >&2
+  echo "error: vulnerabilities not listed in .govulncheck-allow (ID binary):" >&2
   while IFS= read -r id; do echo "  $id" >&2; done <<< "$unexpected"
   echo "hint: upgrade the affected module, or if no fix exists and the risk is reviewed," >&2
-  echo "      add 'ID  # reason, reviewed YYYY-MM-DD' to .govulncheck-allow (see docs/development.md)." >&2
+  echo "      add 'ID binary  # reason, reviewed YYYY-MM-DD' to .govulncheck-allow (see docs/development.md)." >&2
   echo "      details: govulncheck -mode=binary <binary>" >&2
   exit 1
 fi

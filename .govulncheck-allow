@@ -1,4 +1,7 @@
 # Reviewed govulncheck findings accepted for binary-mode CI (scripts/govulncheck.sh).
-# Format: ID  # reason, reviewed YYYY-MM-DD
+# Format: ID binary  # reason, reviewed YYYY-MM-DD
+# An entry applies to that binary only (panoptes-agent, panoptes-server): the same finding in
+# another binary fails the check until it is reviewed there too.
 # Remove an entry as soon as the finding is no longer reported.
-GO-2026-6905  # github.com/blakesmith/ar via Syft deb parser; no upstream fix; agent recovers panics in scans; reviewed 2026-11-17
+GO-2026-6905 panoptes-agent  # github.com/blakesmith/ar via Syft deb parser; no upstream fix; agent recovers panics in scans; reviewed 2026-11-17
+GO-2026-6905 panoptes-server  # same module via Syft (local agent and container image scans); no upstream fix; the pipeline recovers panics in scans; reviewed 2026-11-18

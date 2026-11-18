@@ -67,7 +67,7 @@ Add a unit test for every behaviour change; rules get cases in `internal/server/
 (shipped rules are loaded by that test), and parsers get fixtures under
 `internal/agent/facts/testdata/`.
 
-**Vulnerability check.** `make vulncheck` (also run in CI) builds `panoptes-agent` and `panoptes-server` and runs `govulncheck -mode=binary` on each. Source-mode `govulncheck ./...` does not finish in CI, so it is not used. The check fails on any finding not listed in `.govulncheck-allow`. To accept a finding that has no fix, add a line `ID  # reason, reviewed YYYY-MM-DD`; to drop one, delete its line once it is no longer reported (the script warns about stale entries). Review each entry at least when its date is old, and always after a dependency upgrade.
+**Vulnerability check.** `make vulncheck` (also run in CI) builds `panoptes-agent` and `panoptes-server` and runs `govulncheck -mode=binary` on each. Source-mode `govulncheck ./...` does not finish in CI, so it is not used. The check fails on any finding not listed in `.govulncheck-allow` for that binary. Entries are per binary: to accept a finding that has no fix, add a line `ID panoptes-agent  # reason, reviewed YYYY-MM-DD` (or `panoptes-server`); a finding allowed for the agent still fails if it shows up in the server. to drop one, delete its line once it is no longer reported (the script warns about stale entries). Review each entry at least when its date is old, and always after a dependency upgrade.
 
 ## Coding constraints
 

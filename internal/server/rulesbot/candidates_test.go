@@ -181,7 +181,7 @@ func fixture() []fakeVuln {
 		{id: "DEBIAN-CVE-2099-0003", modified: old, vector: vecMed, pkg: "openssh"}, // KEV, old, Medium
 		{id: "DEBIAN-CVE-2099-0005", modified: recent, vector: vecHigh, pkg: "openssh"},
 		{id: "DEBIAN-CVE-2099-0004", modified: old, vector: vecCrit, pkg: "openssh"}, // old, not KEV
-		{id: "DEBIAN-CVE-2099-0006", modified: recent, vector: vecCrit, pkg: "nginx", binaries: []string{"nginx", "nginx-common"}},
+		{id: "UBUNTU-CVE-2099-0006", modified: recent, vector: vecCrit, pkg: "nginx", binaries: []string{"nginx", "nginx-common"}},
 	}
 }
 
@@ -213,7 +213,7 @@ func TestCandidates(t *testing.T) {
 	}
 	n := cs[1]
 	if n.CVSS != 9.8 || n.Severity != "Critical" || n.EPSS != 0.9 || strings.Join(n.BinaryPackages, ",") != "nginx,nginx-common" ||
-		strings.Join(n.Aliases, ",") != "DEBIAN-CVE-2099-0006" || n.Published == "" {
+		strings.Join(n.Aliases, ",") != "UBUNTU-CVE-2099-0006" || n.Published == "" {
 		t.Fatalf("nginx candidate: %+v", n)
 	}
 	if !f.uaOK {

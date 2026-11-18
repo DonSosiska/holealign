@@ -322,10 +322,18 @@ and tests: few-shot examples and ID collision); `-out-rules`, `-out-tests` (defa
 `ANTHROPIC_API_KEY`; provider `anthropic` is assumed when only a key is set); `-max-attempts`
 (default 2); `-osv-url`.
 
+Keyless authentication. When neither `PANOPTES_LLM_API_KEY` nor `ANTHROPIC_API_KEY` is set, the
+Anthropic SDK looks for workload identity federation credentials in the environment:
+`ANTHROPIC_FEDERATION_RULE_ID`, `ANTHROPIC_ORGANIZATION_ID`, `ANTHROPIC_SERVICE_ACCOUNT_ID` and
+`ANTHROPIC_IDENTITY_TOKEN_FILE` (optionally `ANTHROPIC_WORKSPACE_ID`). Then no API key is needed;
+set `-provider anthropic` (or `PANOPTES_LLM_PROVIDER`) explicitly, because without a key the provider
+is not inferred. Setup for the rules repository's workflow:
+<https://github.com/DonSosiska/panoptes-rules/blob/main/docs/bot-setup.md>.
+
 The model sees the same prompt as the server drafter (fact catalog, CEL environment, untrusted-data
 delimiters, sanitising) plus a repository variant that asks for `{rule, tests}` with at least one
 `exploitable` and one non-exploitable case (the exploitable case is not needed when `exploitable_if`
-is `false`). Cleaning is as in the server: `vulns` are the candidate and its aliases, the package
+is `false`). Cleaning is as in the server: `vulns` are the candidate and its aliases (see below), the package
 selector is `{source: <candidate package>, type: <candidate type>}` (the rule covers every binary built
 from the source; the model is told to use `pkg["name"]` / `pkg["source"]` in expressions to tell
 binaries apart), test findings carry `source` and a realistic binary `package`, the ID is `<VULN>-<source>`
@@ -334,6 +342,20 @@ be catalog facts. The rule is written with `status: draft` and `source: llm:<mod
 with `Validate`, the bundle coverage rules and `RunTests` (evaluated as if `reviewed`, because drafts
 never lower verdicts at runtime); a failure is retried once with the messages (2 KB at most).
 Nothing is written unless everything passes.
+
+Aliases. Only identifiers of the candidate's own vulnerability reach `vulns`: GHSA IDs
+(`GHSA-xxxx-xxxx-xxxx`) and the ecosystem's own CVE-derived IDs (`DEBIAN-CVE-...`, `ALPINE-CVE-...`,
+`UBUNTU-CVE-...`, matching the candidate's CVE). Other CVEs, other distributions' IDs and anything
+else are dropped (and logged). A record that names more than one distinct CVE keeps only the candidate's
+CVE and its own distro ID, because its GHSA IDs cannot be tied to one CVE. The same filter runs again
+in `rules draft`, so a hand-edited candidate file cannot widen a rule.
+
+Pull request body. Everything the model or the feed wrote (title, explanation, fix text, test names,
+facts, references) is shown as inline code or in fenced code blocks, never as Markdown, so links,
+images, HTML, `@mentions` and emphasis in it are inert; references are plain text, not links. The only
+links are the advisory links the bot builds from validated IDs (OSV, NVD, CISA KEV search, GitHub
+advisories). A "Rule scope" section lists the full `vulns` and `packages` of the rule exactly as in the
+rule file; the reviewer checks each ID there.
 
 A reviewer checks the pull request and sets `status: reviewed`; CI validates the bundle only then.
 
