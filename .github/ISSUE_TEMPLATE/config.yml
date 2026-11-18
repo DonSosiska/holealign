@@ -6,3 +6,6 @@ contact_links:
   - name: Documentation
     url: https://github.com/DonSosiska/panoptes/tree/main/docs
     about: Installation, configuration, rules, operations and troubleshooting.
+  - name: Request or propose an exploitability rule
+    url: https://github.com/DonSosiska/panoptes-rules/issues/new/choose
+    about: Rules live in the panoptes-rules repository.

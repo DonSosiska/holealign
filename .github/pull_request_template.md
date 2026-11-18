@@ -9,7 +9,7 @@
 - [ ] `docs/contracts.md` updated if a wire format, fact, limit or rule policy changed
 - [ ] Documentation and `CHANGELOG.md` (Unreleased) updated
 - [ ] No secrets, tokens or private hostnames in the diff
-- [ ] I agree to the contribution terms in [CONTRIBUTING.md](../CONTRIBUTING.md) (project license, and the author's right to relicense)
+- [ ] I have read [CONTRIBUTING.md](../CONTRIBUTING.md); for code contributions I will sign the contributor license agreement the maintainer sends on my first pull request
 
 ## Security impact
 

@@ -98,7 +98,7 @@ One package, one vulnerability, one host.
 
 A **draft** (LLM-written, unreviewed) rule can never lower a verdict: anything it does not call
 exploitable shows as `conditions_unknown`. An `exploitable` result from a draft is kept only when the
-rule is grounded in host facts. Details: [rules.md](rules.md#how-verdicts-work).
+rule is grounded in host facts. Details: [rules.md](rules.md#how-verdicts-are-decided).
 
 ## Triage tiers
 
