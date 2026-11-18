@@ -42,7 +42,7 @@ func TestPermanent403OnCriticalKindsIsFailedAndReported(t *testing.T) {
 	for _, kind := range []model.EventKind{model.EventExploitable, model.EventUnknownCritical} {
 		hs := newFakeHS(t, func(int, recorded) (int, string) { return http.StatusForbidden, `{"errcode":"M_FORBIDDEN"}` })
 		pl := &problemLog{}
-		m := newTestMatrix(t, hs, Config{DefaultRooms: []string{"!r:example.org"}, OnDeliveryProblem: pl.add}, nil)
+		m := newTestMatrix(t, hs, Config{Default: []string{"!r:example.org"}, OnDeliveryProblem: pl.add}, nil)
 		err := m.Notify(context.Background(), []model.Event{testEvent(kind, "CVE-1", "h")})
 		var de *DeliveryError
 		if !errors.As(err, &de) || len(de.Failed) != 1 || de.Failed[0] != 0 {
@@ -62,7 +62,7 @@ func TestPermanent403OnCriticalKindsIsFailedAndReported(t *testing.T) {
 		{Kind: model.EventFeedStale, Detail: "stale"},
 	} {
 		hs := newFakeHS(t, func(int, recorded) (int, string) { return http.StatusForbidden, `{}` })
-		m := newTestMatrix(t, hs, Config{DefaultRooms: []string{"!r:example.org"}}, nil)
+		m := newTestMatrix(t, hs, Config{Default: []string{"!r:example.org"}}, nil)
 		var de *DeliveryError
 		if err := m.Notify(context.Background(), []model.Event{ev}); !errors.As(err, &de) || len(de.Failed) != 1 {
 			t.Errorf("%s: err = %v", ev.Kind, err)
@@ -71,7 +71,7 @@ func TestPermanent403OnCriticalKindsIsFailedAndReported(t *testing.T) {
 	// non-critical kinds keep the old behaviour (reported, not retried) but are still surfaced
 	hs := newFakeHS(t, func(int, recorded) (int, string) { return http.StatusForbidden, `{}` })
 	pl := &problemLog{}
-	m := newTestMatrix(t, hs, Config{DefaultRooms: []string{"!r:example.org"}, OnDeliveryProblem: pl.add}, nil)
+	m := newTestMatrix(t, hs, Config{Default: []string{"!r:example.org"}, OnDeliveryProblem: pl.add}, nil)
 	var de *DeliveryError
 	if err := m.Notify(context.Background(), []model.Event{testEvent(model.EventResolved, "CVE-1", "h")}); !errors.As(err, &de) || len(de.Failed) != 0 {
 		t.Fatalf("resolved: %v", err)
@@ -84,7 +84,7 @@ func TestPermanent403OnCriticalKindsIsFailedAndReported(t *testing.T) {
 func TestProblemsReportedOncePerRoomStatusPer10Minutes(t *testing.T) {
 	hs := newFakeHS(t, func(int, recorded) (int, string) { return http.StatusForbidden, `{}` })
 	pl := &problemLog{}
-	m := newTestMatrix(t, hs, Config{DefaultRooms: []string{"!r:example.org", "!q:example.org"}, OnDeliveryProblem: pl.add}, nil)
+	m := newTestMatrix(t, hs, Config{Default: []string{"!r:example.org", "!q:example.org"}, OnDeliveryProblem: pl.add}, nil)
 	now := time.Now()
 	m.now = func() time.Time { return now }
 	ev := testEvent(model.EventExploitable, "CVE-1", "h")
@@ -108,7 +108,7 @@ func TestRetryDoesNotRepostToRoomsThatWereReached(t *testing.T) {
 		}
 		return http.StatusOK, `{"event_id":"$x"}`
 	})
-	m := newTestMatrix(t, hs, Config{DefaultRooms: []string{"!good:example.org", "!bad:example.org"}}, nil)
+	m := newTestMatrix(t, hs, Config{Default: []string{"!good:example.org", "!bad:example.org"}}, nil)
 	ev := testEvent(model.EventExploitable, "CVE-1", "h")
 	for i := 0; i < 3; i++ {
 		var de *DeliveryError
@@ -126,7 +126,7 @@ func TestRetryDoesNotRepostToRoomsThatWereReached(t *testing.T) {
 
 func TestMessageHasEmptyMentions(t *testing.T) {
 	hs := newFakeHS(t, nil)
-	m := newTestMatrix(t, hs, Config{DefaultRooms: []string{"!r:example.org"}}, nil)
+	m := newTestMatrix(t, hs, Config{Default: []string{"!r:example.org"}}, nil)
 	var evs []model.Event
 	evs = append(evs, testEvent(model.EventExploitable, "CVE-1", "h"))
 	for i := 0; i < 30; i++ { // enough for a burst summary as well
@@ -221,9 +221,7 @@ func TestBodyCapAfterEscapingIncludingFallback(t *testing.T) {
 		t.Fatalf("bodies %d/%d exceed the cap after escaping", len(plain), len(h))
 	}
 	// fallback path: a single line that alone does not fit
-	var l lineSet
-	l.add(strings.Repeat(`"`, 20000), esc(strings.Repeat(`"`, 20000)))
-	p, f := l.render()
+	p, f := formatMatrix(Message{Lines: []Line{{txt(strings.Repeat(`"`, 20000))}}})
 	if len(p) > maxBodyBytes || len(f) > maxBodyBytes {
 		t.Fatalf("fallback bodies %d/%d", len(p), len(f))
 	}

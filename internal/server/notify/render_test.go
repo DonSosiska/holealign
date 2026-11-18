@@ -198,10 +198,10 @@ func TestRenderResolved(t *testing.T) {
 	if !strings.Contains(h, "db&lt;1&gt;") {
 		t.Errorf("hostname not escaped: %s", h)
 	}
-	if mt := newMessage(ev, plain, h).MsgType; mt != "m.notice" {
+	if mt := newMatrixMessage(buildGroup([]model.Event{ev})).MsgType; mt != "m.notice" {
 		t.Errorf("msgtype = %q, want m.notice", mt)
 	}
-	if mt := newMessage(fullExploitable(), "", "").MsgType; mt != "m.text" {
+	if mt := newMatrixMessage(buildGroup([]model.Event{fullExploitable()})).MsgType; mt != "m.text" {
 		t.Errorf("exploitable msgtype = %q, want m.text", mt)
 	}
 }
@@ -213,6 +213,12 @@ func TestRenderOmitsUnsafeLink(t *testing.T) {
 	if strings.Contains(plain, "Details:") || strings.Contains(h, "href") {
 		t.Errorf("non-http link rendered:\n%s\n%s", plain, h)
 	}
+}
+
+// renderSummary is the Matrix rendering of the burst summary.
+func renderSummary(rest []group, link string) message {
+	p, h := formatMatrix(summaryMessage(rest, link))
+	return message{Body: p, FormattedBody: h}
 }
 
 func TestRenderSummaryCapsLines(t *testing.T) {

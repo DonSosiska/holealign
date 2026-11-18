@@ -599,8 +599,12 @@ func TestMassSilenceVictimNamedInLabelRoomViaMatrix(t *testing.T) {
 		_, _ = w.Write([]byte(`{"event_id":"$x"}`))
 	}))
 	defer srv.Close()
-	mx, err := notify.NewMatrix(notify.Config{Homeserver: srv.URL, AccessToken: "t", OpsRooms: []string{"!ops:x"},
-		DefaultRooms: []string{"!def:x"}, Routes: []notify.Route{{Label: "pci", Rooms: []string{"!pci:x"}}, {Label: "web", Rooms: []string{"!web:x"}}}}, nil, srv.Client())
+	ch, err := notify.NewMatrixChannel(srv.URL, "t", srv.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	mx, err := notify.New(notify.Config{Ops: []string{"!ops:x"},
+		Default: []string{"!def:x"}, Routes: []notify.Route{{Label: "pci", To: []string{"!pci:x"}}, {Label: "web", To: []string{"!web:x"}}}}, nil, ch)
 	if err != nil {
 		t.Fatal(err)
 	}

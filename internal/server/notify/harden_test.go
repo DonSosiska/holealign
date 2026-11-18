@@ -77,7 +77,7 @@ func TestNotifyContinuesPastFailedGroup(t *testing.T) {
 		}
 		return http.StatusOK, `{}`
 	})
-	m := newTestMatrix(t, hs, Config{DefaultRooms: []string{"!r:example.org"}}, nil)
+	m := newTestMatrix(t, hs, Config{Default: []string{"!r:example.org"}}, nil)
 	events := []model.Event{
 		testEvent(model.EventExploitable, "CVE-1", "h"),
 		testEvent(model.EventExploitable, "CVE-BAD", "h"),
@@ -98,7 +98,7 @@ func TestNotifyContinuesPastFailedGroup(t *testing.T) {
 
 func TestPermanentErrorNotRetriedForNonCriticalKinds(t *testing.T) {
 	hs := newFakeHS(t, func(int, recorded) (int, string) { return http.StatusForbidden, `{}` })
-	m := newTestMatrix(t, hs, Config{DefaultRooms: []string{"!r:example.org"}}, nil)
+	m := newTestMatrix(t, hs, Config{Default: []string{"!r:example.org"}}, nil)
 	err := m.Notify(context.Background(), []model.Event{testEvent(model.EventResolved, "CVE-1", "h")})
 	var de *DeliveryError
 	if !errors.As(err, &de) || len(de.Failed) != 0 {
