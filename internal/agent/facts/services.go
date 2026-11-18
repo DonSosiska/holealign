@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/DonSosiska/panoptes/internal/model"
+	"github.com/DonSosiska/holealign/internal/model"
 )
 
 // Values of services.source.
@@ -54,13 +54,13 @@ var procServiceNames = map[string][]string{
 
 // procIgnoredNames are shells and tools that are never reported as services.
 var procIgnoredNames = map[string]bool{
-	"bash":           true,
-	"sh":             true,
-	"zsh":            true,
-	"sleep":          true,
-	"ps":             true,
-	"cat":            true,
-	"panoptes-agent": true,
+	"bash":            true,
+	"sh":              true,
+	"zsh":             true,
+	"sleep":           true,
+	"ps":              true,
+	"cat":             true,
+	"holealign-agent": true,
 }
 
 // parseSystemctl extracts unit names (without ".service") from

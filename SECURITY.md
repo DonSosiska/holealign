@@ -8,10 +8,10 @@ Report them privately through GitHub private vulnerability reporting. There are 
 
 | What | Where to report |
 |---|---|
-| The Panoptes product: server, agent, rule engine, web UI, packages, release pipeline | [Report a vulnerability](https://github.com/DonSosiska/panoptes/security/advisories/new) (Security tab of [DonSosiska/panoptes](https://github.com/DonSosiska/panoptes)) |
-| The rules feed: a wrong or malicious rule, the rules signing key, the feed hosting, the rules CI or bot | [Report a vulnerability](https://github.com/DonSosiska/panoptes-rules/security/advisories/new) (Security tab of [DonSosiska/panoptes-rules](https://github.com/DonSosiska/panoptes-rules)) |
+| The Holealign product: server, agent, rule engine, web UI, packages, release pipeline | [Report a vulnerability](https://github.com/DonSosiska/holealign/security/advisories/new) (Security tab of [DonSosiska/holealign](https://github.com/DonSosiska/holealign)) |
+| The rules feed: a wrong or malicious rule, the rules signing key, the feed hosting, the rules CI or bot | [Report a vulnerability](https://github.com/DonSosiska/holealign-rules/security/advisories/new) (Security tab of [DonSosiska/holealign-rules](https://github.com/DonSosiska/holealign-rules)) |
 
-If you are not sure which one applies, use the Panoptes repository. If a private reporting link does not
+If you are not sure which one applies, use the Holealign repository. If a private reporting link does not
 work, contact the [repository owner](https://github.com/DonSosiska) through GitHub without putting details
 in a public place.
 
@@ -44,7 +44,7 @@ The full threat model, the operator hardening checklist and the known limitation
 
 - The agent is split in two processes: a root collector with no network (it parses untrusted local
   files and serves the results on a unix socket, peer-checked with `SO_PEERCRED`) and an unprivileged
-  sender (user `panoptes`) that is the only process talking to the server. Only `-mode all`
+  sender (user `holealign`) that is the only process talking to the server. Only `-mode all`
   (containers, `-once`, tests) runs both roles in one root process.
 - Agentless mode (`local_agent.enabled`, off by default) lets the server monitor its own host. With
   `source: collector` privilege separation is kept: the root collector has no network and the server stays
@@ -63,7 +63,7 @@ The full threat model, the operator hardening checklist and the known limitation
 - There are no roles in the web UI: every account is a full administrator. Keep the admin listener on a
   trusted network.
 - The optional central rules feed is trusted only through its signature. Rules come from the
-  [panoptes-rules](https://github.com/DonSosiska/panoptes-rules) repository (the trust root: reviewed pull
+  [holealign-rules](https://github.com/DonSosiska/holealign-rules) repository (the trust root: reviewed pull
   requests, a protected `rules-release` environment with a required reviewer, release only from the tip of
   `main`); servers install a bundle only if it is signed by a key in `rules.feed.trusted_keys`, newer than the
   installed one, fetched from the pointer's own host, and valid and tested rule by rule. A feed rule can
@@ -88,5 +88,5 @@ checksums. See [docs/installation.md](docs/installation.md#verifying-releases) f
 
 ## License
 
-Panoptes is source-available under the PolyForm Noncommercial License 1.0.0 (see [LICENSE](LICENSE)).
+Holealign is source-available under the PolyForm Noncommercial License 1.0.0 (see [LICENSE](LICENSE)).
 Reporting a vulnerability does not change the license terms.

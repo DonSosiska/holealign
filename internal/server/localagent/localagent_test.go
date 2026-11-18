@@ -18,13 +18,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/DonSosiska/panoptes/internal/agent/collector"
-	"github.com/DonSosiska/panoptes/internal/agent/hostdata"
-	"github.com/DonSosiska/panoptes/internal/agent/transport"
-	"github.com/DonSosiska/panoptes/internal/model"
-	"github.com/DonSosiska/panoptes/internal/server/api"
-	"github.com/DonSosiska/panoptes/internal/server/config"
-	"github.com/DonSosiska/panoptes/internal/server/store"
+	"github.com/DonSosiska/holealign/internal/agent/collector"
+	"github.com/DonSosiska/holealign/internal/agent/hostdata"
+	"github.com/DonSosiska/holealign/internal/agent/transport"
+	"github.com/DonSosiska/holealign/internal/model"
+	"github.com/DonSosiska/holealign/internal/server/api"
+	"github.com/DonSosiska/holealign/internal/server/config"
+	"github.com/DonSosiska/holealign/internal/server/store"
 )
 
 var machineA = strings.Repeat("ab", 32)

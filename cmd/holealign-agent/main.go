@@ -1,4 +1,4 @@
-// Command panoptes-agent sends host facts and software inventory to a Panoptes server.
+// Command holealign-agent sends host facts and software inventory to a Holealign server.
 package main
 
 import (
@@ -12,13 +12,13 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/DonSosiska/panoptes/internal/agent/collector"
-	"github.com/DonSosiska/panoptes/internal/agent/config"
-	"github.com/DonSosiska/panoptes/internal/agent/facts"
-	"github.com/DonSosiska/panoptes/internal/agent/hostdata"
-	"github.com/DonSosiska/panoptes/internal/agent/inventory"
-	"github.com/DonSosiska/panoptes/internal/agent/runner"
-	"github.com/DonSosiska/panoptes/internal/agent/transport"
+	"github.com/DonSosiska/holealign/internal/agent/collector"
+	"github.com/DonSosiska/holealign/internal/agent/config"
+	"github.com/DonSosiska/holealign/internal/agent/facts"
+	"github.com/DonSosiska/holealign/internal/agent/hostdata"
+	"github.com/DonSosiska/holealign/internal/agent/inventory"
+	"github.com/DonSosiska/holealign/internal/agent/runner"
+	"github.com/DonSosiska/holealign/internal/agent/transport"
 )
 
 // version is set with -ldflags "-X main.version=...".
@@ -28,7 +28,7 @@ func main() { os.Exit(run()) }
 
 func run() int {
 	var (
-		cfgPath    = flag.String("config", "", "path to agent.yaml (default $PANOPTES_AGENT_CONFIG or "+config.DefaultPath+")")
+		cfgPath    = flag.String("config", "", "path to agent.yaml (default $HOLEALIGN_AGENT_CONFIG or "+config.DefaultPath+")")
 		once       = flag.Bool("once", false, "do one check-in and inventory upload, then exit")
 		printInv   = flag.Bool("print-inventory", false, "scan and print the inventory payload as JSON, no server needed")
 		printFacts = flag.Bool("print-facts", false, "collect and print facts as JSON, no server needed")
@@ -96,7 +96,7 @@ func run() int {
 		return runCollector(ctx, cfg, log)
 	}
 
-	log.Info("panoptes-agent starting", "version", version, "mode", *mode, "server", cfg.ServerURL)
+	log.Info("holealign-agent starting", "version", version, "mode", *mode, "server", cfg.ServerURL)
 	var src hostdata.Source // nil = in-process (mode all)
 	if *mode == modeSender {
 		src = hostdata.NewClient(cfg.CollectorSocket)
@@ -141,7 +141,7 @@ func runCollector(ctx context.Context, cfg config.Config, log *slog.Logger) int 
 		Group:       cfg.CollectorUser,
 		Log:         log,
 	}
-	log.Info("panoptes-agent collector starting", "version", version, "socket", cfg.CollectorSocket)
+	log.Info("holealign-agent collector starting", "version", version, "socket", cfg.CollectorSocket)
 	if err := srv.Serve(ctx); err != nil {
 		log.Error("collector stopped", "err", err)
 		return 1

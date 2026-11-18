@@ -17,8 +17,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/DonSosiska/panoptes/internal/model"
-	"github.com/DonSosiska/panoptes/internal/server/rules"
+	"github.com/DonSosiska/holealign/internal/model"
+	"github.com/DonSosiska/holealign/internal/server/rules"
 )
 
 // Defaults of the candidates command.
@@ -33,7 +33,7 @@ const (
 	DefaultKEVMaxAge = 3 * 365 * 24 * time.Hour
 	MaxBodyBytes     = 8 << 20
 	RequestTimeout   = 30 * time.Second
-	UserAgent        = "panoptes-rules-bot"
+	UserAgent        = "holealign-rules-bot"
 	epssBatch        = 100
 	maxQueryPages    = 50
 	maxBinaryPackets = 50
@@ -307,7 +307,7 @@ func FindCandidates(ctx context.Context, o CandidateOptions) ([]Candidate, error
 	}
 	cacheDir := o.CacheDir
 	if len(bulk) > 0 && cacheDir == "" {
-		d, err := os.MkdirTemp("", "panoptes-rules-")
+		d, err := os.MkdirTemp("", "holealign-rules-")
 		if err != nil {
 			return nil, err
 		}

@@ -9,7 +9,7 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/DonSosiska/panoptes/internal/model"
+	"github.com/DonSosiska/holealign/internal/model"
 )
 
 // parseOSRelease parses /etc/os-release style KEY=value lines.
@@ -57,6 +57,8 @@ func CollectOSInfo() model.OSInfo {
 // hashMachineID returns the hex SHA-256 of "panoptes-machine-id:"+raw, so the
 // raw (application-specific-secret-ish) machine id never leaves the host.
 func hashMachineID(raw string) string {
+	// The salt keeps the project's former name on purpose: it is part of the wire identity of
+	// every enrolled host, and changing it would make every host look new to the server.
 	sum := sha256.Sum256([]byte("panoptes-machine-id:" + raw))
 	return hex.EncodeToString(sum[:])
 }

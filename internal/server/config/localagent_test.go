@@ -27,7 +27,7 @@ func TestLocalAgentDefaults(t *testing.T) {
 	if l.Enabled {
 		t.Fatal("local_agent must be disabled by default")
 	}
-	if l.Source != "auto" || l.CollectorSocket != "/run/panoptes/collector.sock" ||
+	if l.Source != "auto" || l.CollectorSocket != "/run/holealign/collector.sock" ||
 		!reflect.DeepEqual(l.Labels, []string{"server"}) || l.CheckinInterval != 5*time.Minute ||
 		l.InventoryInterval != 6*time.Hour || !l.ScanLanguagePackages || l.DockerSocket != "/var/run/docker.sock" ||
 		len(l.ExcludePaths) != 0 {
@@ -43,7 +43,7 @@ local_agent:
   labels: [server, prod]
   checkin_interval: 10m
   exclude_paths: ["/srv"]
-`, map[string]string{"PANOPTES_LOCAL_AGENT_ENABLED": "true", "PANOPTES_LOCAL_AGENT_SOURCE": "collector"})
+`, map[string]string{"HOLEALIGN_LOCAL_AGENT_ENABLED": "true", "HOLEALIGN_LOCAL_AGENT_SOURCE": "collector"})
 	if err != nil {
 		t.Fatal(err)
 	}

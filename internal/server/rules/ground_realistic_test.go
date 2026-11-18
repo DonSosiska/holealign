@@ -3,7 +3,7 @@ package rules
 import (
 	"testing"
 
-	"github.com/DonSosiska/panoptes/internal/model"
+	"github.com/DonSosiska/holealign/internal/model"
 )
 
 // Drafts whose result only varies over a literal that no real host reports are true (or false) on

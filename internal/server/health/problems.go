@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/DonSosiska/panoptes/internal/model"
-	"github.com/DonSosiska/panoptes/internal/server/store"
+	"github.com/DonSosiska/holealign/internal/model"
+	"github.com/DonSosiska/holealign/internal/server/store"
 )
 
 // KVNotifyErrors holds the last notifier delivery problems as a JSON array of NotifyProblem

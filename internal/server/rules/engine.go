@@ -13,8 +13,8 @@ import (
 	"cel.dev/cel-go/cel"
 	celast "cel.dev/cel-go/common/ast"
 
-	"github.com/DonSosiska/panoptes/internal/model"
-	"github.com/DonSosiska/panoptes/internal/server/core"
+	"github.com/DonSosiska/holealign/internal/model"
+	"github.com/DonSosiska/holealign/internal/server/core"
 )
 
 // DefaultEvalTimeout is the per-expression evaluation timeout.

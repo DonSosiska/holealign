@@ -5,7 +5,7 @@ import (
 	"path"
 	"strings"
 
-	"github.com/DonSosiska/panoptes/internal/model"
+	"github.com/DonSosiska/holealign/internal/model"
 )
 
 // SourceOf returns the source package of a finding: the "upstream" qualifier of its PURL without

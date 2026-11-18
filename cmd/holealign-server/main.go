@@ -1,11 +1,11 @@
-// Command panoptes-server is the Panoptes central server.
+// Command holealign-server is the Holealign central server.
 //
-//	panoptes-server [-config file] [serve]
-//	panoptes-server [-config file] token create <name> [-max-hosts N] [-expires 72h] [-labels a,b] | token list | token revoke <name>
-//	panoptes-server [-config file] host list | host allow-reenroll <id|hostname> [-ttl 1h] | host delete <id|hostname>
-//	panoptes-server [-config file] user set-password <user>   (password on stdin)
-//	panoptes-server rules keygen|build|sign|verify|import|status   (signed rules feed, docs/rules-feed.md)
-//	panoptes-server -version
+//	holealign-server [-config file] [serve]
+//	holealign-server [-config file] token create <name> [-max-hosts N] [-expires 72h] [-labels a,b] | token list | token revoke <name>
+//	holealign-server [-config file] host list | host allow-reenroll <id|hostname> [-ttl 1h] | host delete <id|hostname>
+//	holealign-server [-config file] user set-password <user>   (password on stdin)
+//	holealign-server rules keygen|build|sign|verify|import|status   (signed rules feed, docs/rules-feed.md)
+//	holealign-server -version
 package main
 
 import (
@@ -30,22 +30,22 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/DonSosiska/panoptes/internal/model"
-	"github.com/DonSosiska/panoptes/internal/server/api"
-	"github.com/DonSosiska/panoptes/internal/server/clientip"
-	"github.com/DonSosiska/panoptes/internal/server/config"
-	"github.com/DonSosiska/panoptes/internal/server/core"
-	"github.com/DonSosiska/panoptes/internal/server/feeds"
-	"github.com/DonSosiska/panoptes/internal/server/health"
-	"github.com/DonSosiska/panoptes/internal/server/llm"
-	"github.com/DonSosiska/panoptes/internal/server/localagent"
-	"github.com/DonSosiska/panoptes/internal/server/match"
-	"github.com/DonSosiska/panoptes/internal/server/notify"
-	"github.com/DonSosiska/panoptes/internal/server/pipeline"
-	"github.com/DonSosiska/panoptes/internal/server/rules"
-	"github.com/DonSosiska/panoptes/internal/server/rulesfeed"
-	"github.com/DonSosiska/panoptes/internal/server/store"
-	"github.com/DonSosiska/panoptes/internal/server/web"
+	"github.com/DonSosiska/holealign/internal/model"
+	"github.com/DonSosiska/holealign/internal/server/api"
+	"github.com/DonSosiska/holealign/internal/server/clientip"
+	"github.com/DonSosiska/holealign/internal/server/config"
+	"github.com/DonSosiska/holealign/internal/server/core"
+	"github.com/DonSosiska/holealign/internal/server/feeds"
+	"github.com/DonSosiska/holealign/internal/server/health"
+	"github.com/DonSosiska/holealign/internal/server/llm"
+	"github.com/DonSosiska/holealign/internal/server/localagent"
+	"github.com/DonSosiska/holealign/internal/server/match"
+	"github.com/DonSosiska/holealign/internal/server/notify"
+	"github.com/DonSosiska/holealign/internal/server/pipeline"
+	"github.com/DonSosiska/holealign/internal/server/rules"
+	"github.com/DonSosiska/holealign/internal/server/rulesfeed"
+	"github.com/DonSosiska/holealign/internal/server/store"
+	"github.com/DonSosiska/holealign/internal/server/web"
 )
 
 // version is set at build time: -ldflags "-X main.version=1.2.3".
@@ -57,12 +57,12 @@ func main() {
 }
 
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("panoptes-server", flag.ContinueOnError)
+	fs := flag.NewFlagSet("holealign-server", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	cfgPath := fs.String("config", "", "path to server.yaml (default $PANOPTES_CONFIG or /etc/panoptes/server.yaml)")
+	cfgPath := fs.String("config", "", "path to server.yaml (default $HOLEALIGN_CONFIG or /etc/holealign/server.yaml)")
 	showVersion := fs.Bool("version", false, "print version and exit")
 	fs.Usage = func() {
-		fmt.Fprint(stderr, `usage: panoptes-server [-config file] [command]
+		fmt.Fprint(stderr, `usage: holealign-server [-config file] [command]
 
 commands:
   serve                       run the server (default)
@@ -88,7 +88,7 @@ commands:
 		return 2
 	}
 	if *showVersion {
-		fmt.Fprintln(stdout, "panoptes-server", version)
+		fmt.Fprintln(stdout, "holealign-server", version)
 		return 0
 	}
 	rest := fs.Args()
@@ -471,7 +471,7 @@ func serve(cfg *config.Config) error {
 		go func() {
 			defer serving.Done()
 			defer recoverLog(log, "http serve "+s.name)
-			log.Info("panoptes-server listening", "role", s.name, "addr", ln.Addr().String(), "tls", s.tls, "version", version, "data_dir", cfg.DataDir)
+			log.Info("holealign-server listening", "role", s.name, "addr", ln.Addr().String(), "tls", s.tls, "version", version, "data_dir", cfg.DataDir)
 			var err error
 			if s.tls {
 				err = s.srv.ServeTLS(ln, "", "") // certificates are in srv.TLSConfig
@@ -535,9 +535,9 @@ const minAdminPassword = 12
 
 // adminPasswordFileEnv names a file holding the initial admin password (preferred over the
 // environment variable: it does not show up in process environments or `docker inspect`).
-const adminPasswordFileEnv = "PANOPTES_ADMIN_PASSWORD_FILE"
+const adminPasswordFileEnv = "HOLEALIGN_ADMIN_PASSWORD_FILE"
 
-// ensureAdmin creates user "admin" from PANOPTES_ADMIN_PASSWORD_FILE or the configured env var
+// ensureAdmin creates user "admin" from HOLEALIGN_ADMIN_PASSWORD_FILE or the configured env var
 // when no users exist yet.
 func ensureAdmin(ctx context.Context, cfg *config.Config, st store.Store, log *slog.Logger) error {
 	n, err := st.CountUsers(ctx)

@@ -12,7 +12,7 @@ import (
 
 // enrollTokenDir is the only directory whose agent.yaml may be rewritten by
 // ForgetEnrollToken (a variable so tests can use a temporary directory).
-var enrollTokenDir = "/etc/panoptes"
+var enrollTokenDir = "/etc/holealign"
 
 const maxConfigBytes = 1 << 20
 
@@ -23,7 +23,7 @@ var reEnrollToken = regexp.MustCompile(`(?m)^(["']?enroll_token["']?[ \t]*:)[^\r
 // ForgetEnrollToken removes the enrollment token from the config file by atomically
 // rewriting it with `enroll_token: ""`. Everything else (other keys, comments), the mode and
 // the owner/group are preserved. It only touches a regular file (not a symlink) directly
-// inside /etc/panoptes/, so a compromised caller cannot make the root collector rewrite an
+// inside /etc/holealign/, so a compromised caller cannot make the root collector rewrite an
 // arbitrary file. A file without an enroll_token line is left alone.
 func ForgetEnrollToken(path string) error {
 	clean := filepath.Clean(path)

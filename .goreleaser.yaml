@@ -3,12 +3,12 @@
 # Real release:   push a tag v* (see .github/workflows/release.yml)
 version: 2
 
-project_name: panoptes
+project_name: holealign
 
 builds:
-  - id: panoptes-agent
-    main: ./cmd/panoptes-agent
-    binary: panoptes-agent
+  - id: holealign-agent
+    main: ./cmd/holealign-agent
+    binary: holealign-agent
     env:
       - CGO_ENABLED=0
     goos: [linux]
@@ -17,9 +17,9 @@ builds:
     mod_timestamp: "{{ .CommitTimestamp }}"  # reproducible output
     ldflags: ["-s -w -X main.version={{ .Version }}"]
 
-  - id: panoptes-server
-    main: ./cmd/panoptes-server
-    binary: panoptes-server
+  - id: holealign-server
+    main: ./cmd/holealign-server
+    binary: holealign-server
     env:
       - CGO_ENABLED=0
     goos: [linux]
@@ -32,14 +32,14 @@ gomod:
   proxy: true  # build from the module proxy, with checksums checked against go.sum
 
 archives:
-  - id: panoptes-agent
-    ids: [panoptes-agent]
-    name_template: "panoptes-agent_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+  - id: holealign-agent
+    ids: [holealign-agent]
+    name_template: "holealign-agent_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     formats: [tar.gz]
 
-  - id: panoptes-server
-    ids: [panoptes-server]
-    name_template: "panoptes-server_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+  - id: holealign-server
+    ids: [holealign-server]
+    name_template: "holealign-server_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     formats: [tar.gz]
 
 checksum:
@@ -85,53 +85,53 @@ snapshot:
   version_template: "{{ incpatch .Version }}-next"
 
 nfpms:
-  - id: panoptes-agent
-    ids: [panoptes-agent]
-    package_name: panoptes-agent
+  - id: holealign-agent
+    ids: [holealign-agent]
+    package_name: holealign-agent
     file_name_template: "{{ .PackageName }}_{{ .Version }}_{{ .Arch }}"
     formats: [deb, rpm]
-    vendor: Panoptes
-    homepage: https://github.com/DonSosiska/panoptes
-    maintainer: "Panoptes <noreply@panoptes.invalid>"
-    description: "Panoptes agent: sends host facts and package inventory to panoptes-server."
+    vendor: Holealign
+    homepage: https://github.com/DonSosiska/holealign
+    maintainer: "Holealign <noreply@holealign.invalid>"
+    description: "Holealign agent: sends host facts and package inventory to holealign-server."
     license: PolyForm-Noncommercial-1.0.0
     bindir: /usr/bin
     contents:
-      - src: deploy/systemd/panoptes-agent.service
-        dst: /usr/lib/systemd/system/panoptes-agent.service
-      - src: deploy/systemd/panoptes-collector.service
-        dst: /usr/lib/systemd/system/panoptes-collector.service
+      - src: deploy/systemd/holealign-agent.service
+        dst: /usr/lib/systemd/system/holealign-agent.service
+      - src: deploy/systemd/holealign-collector.service
+        dst: /usr/lib/systemd/system/holealign-collector.service
       - src: deploy/agent.yaml.example
-        dst: /etc/panoptes/agent.yaml
+        dst: /etc/holealign/agent.yaml
         type: config|noreplace # keeps an edited file on upgrade
         file_info:
-          mode: 0600 # holds the enroll token; postinstall makes it root:panoptes 0640 (group exists only after preinstall)
+          mode: 0600 # holds the enroll token; postinstall makes it root:holealign 0640 (group exists only after preinstall)
     scripts:
       preinstall: deploy/nfpm/agent-preinstall.sh
       postinstall: deploy/nfpm/agent-postinstall.sh
       preremove: deploy/nfpm/agent-preremove.sh
 
-  - id: panoptes-server
-    ids: [panoptes-server]
-    package_name: panoptes-server
+  - id: holealign-server
+    ids: [holealign-server]
+    package_name: holealign-server
     file_name_template: "{{ .PackageName }}_{{ .Version }}_{{ .Arch }}"
     formats: [deb, rpm]
-    vendor: Panoptes
-    homepage: https://github.com/DonSosiska/panoptes
-    maintainer: "Panoptes <noreply@panoptes.invalid>"
-    description: "Panoptes server: matches vulnerabilities, evaluates exploitability, alerts to Matrix."
+    vendor: Holealign
+    homepage: https://github.com/DonSosiska/holealign
+    maintainer: "Holealign <noreply@holealign.invalid>"
+    description: "Holealign server: matches vulnerabilities, evaluates exploitability, alerts to Matrix."
     license: PolyForm-Noncommercial-1.0.0
     bindir: /usr/bin
     contents:
-      - src: deploy/systemd/panoptes-server.service
-        dst: /usr/lib/systemd/system/panoptes-server.service
+      - src: deploy/systemd/holealign-server.service
+        dst: /usr/lib/systemd/system/holealign-server.service
       - src: deploy/server.yaml.example
-        dst: /etc/panoptes/server.yaml
+        dst: /etc/holealign/server.yaml
         type: config|noreplace
         file_info:
           mode: 0644 # secrets live in server.env, not here
       - src: rules/*.yaml
-        dst: /usr/share/panoptes/rules/
+        dst: /usr/share/holealign/rules/
     scripts:
       postinstall: deploy/nfpm/postinstall.sh
 
@@ -139,8 +139,8 @@ nfpms:
 # must be lowercase in image names). The release workflow logs in to ghcr.io
 # with GITHUB_TOKEN, which needs packages: write.
 dockers:
-  - id: panoptes-server-amd64
-    ids: [panoptes-server]
+  - id: holealign-server-amd64
+    ids: [holealign-server]
     goos: linux
     goarch: amd64
     use: buildx
@@ -148,14 +148,14 @@ dockers:
     build_flag_templates:
       - "--platform=linux/amd64"
       - "--label=org.opencontainers.image.version={{ .Version }}"
-      - "--label=org.opencontainers.image.source=https://github.com/DonSosiska/panoptes"
+      - "--label=org.opencontainers.image.source=https://github.com/DonSosiska/holealign"
     image_templates:
-      - "ghcr.io/donsosiska/panoptes-server:{{ .Version }}-amd64"
+      - "ghcr.io/donsosiska/holealign-server:{{ .Version }}-amd64"
     extra_files:
       - rules
 
-  - id: panoptes-server-arm64
-    ids: [panoptes-server]
+  - id: holealign-server-arm64
+    ids: [holealign-server]
     goos: linux
     goarch: arm64
     use: buildx
@@ -163,22 +163,22 @@ dockers:
     build_flag_templates:
       - "--platform=linux/arm64"
       - "--label=org.opencontainers.image.version={{ .Version }}"
-      - "--label=org.opencontainers.image.source=https://github.com/DonSosiska/panoptes"
+      - "--label=org.opencontainers.image.source=https://github.com/DonSosiska/holealign"
     image_templates:
-      - "ghcr.io/donsosiska/panoptes-server:{{ .Version }}-arm64"
+      - "ghcr.io/donsosiska/holealign-server:{{ .Version }}-arm64"
     extra_files:
       - rules
 
 docker_manifests:
-  - name_template: "ghcr.io/donsosiska/panoptes-server:{{ .Version }}"
+  - name_template: "ghcr.io/donsosiska/holealign-server:{{ .Version }}"
     image_templates:
-      - "ghcr.io/donsosiska/panoptes-server:{{ .Version }}-amd64"
-      - "ghcr.io/donsosiska/panoptes-server:{{ .Version }}-arm64"
+      - "ghcr.io/donsosiska/holealign-server:{{ .Version }}-amd64"
+      - "ghcr.io/donsosiska/holealign-server:{{ .Version }}-arm64"
 
   # "latest" moves on every release, so it is only published for final semver
   # releases (no prerelease suffix such as -rc1). Prereleases skip it.
-  - name_template: "ghcr.io/donsosiska/panoptes-server:latest"
+  - name_template: "ghcr.io/donsosiska/holealign-server:latest"
     skip: "{{ if .Prerelease }}true{{ end }}"
     image_templates:
-      - "ghcr.io/donsosiska/panoptes-server:{{ .Version }}-amd64"
-      - "ghcr.io/donsosiska/panoptes-server:{{ .Version }}-arm64"
+      - "ghcr.io/donsosiska/holealign-server:{{ .Version }}-amd64"
+      - "ghcr.io/donsosiska/holealign-server:{{ .Version }}-arm64"

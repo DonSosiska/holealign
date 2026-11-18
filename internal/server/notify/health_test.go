@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/DonSosiska/panoptes/internal/model"
+	"github.com/DonSosiska/holealign/internal/model"
 )
 
 func hostEv(kind model.EventKind, name, id string, labels []string, detail string) model.Event {

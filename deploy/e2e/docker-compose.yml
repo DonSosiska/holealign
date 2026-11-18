@@ -1,24 +1,24 @@
 # Driven by run.sh; it exports every ${VAR} used below. Start order matters
 # (homeserver -> server -> hosts) and is handled by run.sh via profiles.
-name: panoptes-e2e
+name: holealign-e2e
 
 x-host: &host
   build:
     context: ../..
     dockerfile: deploy/e2e/Dockerfile
     target: host
-  image: panoptes-e2e-host
+  image: holealign-e2e-host
   depends_on: []
   environment: &host-env
-    PANOPTES_SERVER_URL: http://panoptes-server:8080
-    PANOPTES_ENROLL_TOKEN: ${E2E_ENROLL_TOKEN:-unset}
+    HOLEALIGN_SERVER_URL: http://holealign-server:8080
+    HOLEALIGN_ENROLL_TOKEN: ${E2E_ENROLL_TOKEN:-unset}
 
 services:
   matrix:
     # Continuwuity (conduwuit successor): single static binary, no external DB.
     image: ${MATRIX_IMAGE:-ghcr.io/continuwuity/continuwuity:latest}
     environment:
-      CONDUWUIT_SERVER_NAME: panoptes.test
+      CONDUWUIT_SERVER_NAME: holealign.test
       CONDUWUIT_ADDRESS: 0.0.0.0
       CONDUWUIT_PORT: "8008"
       CONDUWUIT_DATABASE_PATH: /var/lib/conduwuit
@@ -32,36 +32,36 @@ services:
     tmpfs:
       - /var/lib/conduwuit
 
-  panoptes-server:
+  holealign-server:
     build:
       context: ../..
       dockerfile: deploy/e2e/Dockerfile
       target: server
-    image: panoptes-e2e-server
+    image: holealign-e2e-server
     profiles: ["server"]
     environment:
-      PANOPTES_CONFIG: /etc/panoptes/server.yaml
-      PANOPTES_PUBLIC_URL: http://localhost:${E2E_ADMIN_PORT:-18081}
-      PANOPTES_ADMIN_LISTEN: 0.0.0.0:8081
-      PANOPTES_FEEDS_UPDATE: ${E2E_FEEDS_UPDATE:-true}
-      PANOPTES_MATRIX_HOMESERVER: http://matrix:8008
-      PANOPTES_MATRIX_ACCESS_TOKEN_ENV: PANOPTES_E2E_MATRIX_BOT_TOKEN
-      PANOPTES_MATRIX_DEFAULT_ROOMS: ${E2E_ROOM_DEFAULT:-}
-      PANOPTES_E2E_MATRIX_BOT_TOKEN: ${E2E_BOT_TOKEN:-}
-      PANOPTES_ADMIN_PASSWORD: ${PANOPTES_ADMIN_PASSWORD:-}
+      HOLEALIGN_CONFIG: /etc/holealign/server.yaml
+      HOLEALIGN_PUBLIC_URL: http://localhost:${E2E_ADMIN_PORT:-18081}
+      HOLEALIGN_ADMIN_LISTEN: 0.0.0.0:8081
+      HOLEALIGN_FEEDS_UPDATE: ${E2E_FEEDS_UPDATE:-true}
+      HOLEALIGN_MATRIX_HOMESERVER: http://matrix:8008
+      HOLEALIGN_MATRIX_ACCESS_TOKEN_ENV: HOLEALIGN_E2E_MATRIX_BOT_TOKEN
+      HOLEALIGN_MATRIX_DEFAULT_ROOMS: ${E2E_ROOM_DEFAULT:-}
+      HOLEALIGN_E2E_MATRIX_BOT_TOKEN: ${E2E_BOT_TOKEN:-}
+      HOLEALIGN_ADMIN_PASSWORD: ${HOLEALIGN_ADMIN_PASSWORD:-}
       # built-in local agent (assertion g): the server container monitors itself in-process
-      PANOPTES_LOCAL_AGENT_ENABLED: ${E2E_LOCAL_AGENT:-true}
-      PANOPTES_LOCAL_AGENT_SOURCE: inprocess
+      HOLEALIGN_LOCAL_AGENT_ENABLED: ${E2E_LOCAL_AGENT:-true}
+      HOLEALIGN_LOCAL_AGENT_SOURCE: inprocess
       # Optional LLM rule drafting for demos (e.g. a local Ollama on the host):
       # E2E_LLM_PROVIDER=openai-compatible E2E_LLM_BASE_URL=http://host.docker.internal:11434/v1 E2E_LLM_MODEL=<model>
-      PANOPTES_LLM_PROVIDER: ${E2E_LLM_PROVIDER:-none}
-      PANOPTES_LLM_MODEL: ${E2E_LLM_MODEL:-claude-sonnet-5-5}
-      PANOPTES_LLM_BASE_URL: ${E2E_LLM_BASE_URL:-}
-      PANOPTES_LLM_DAILY_LIMIT: ${E2E_LLM_DAILY_LIMIT:-50}
+      HOLEALIGN_LLM_PROVIDER: ${E2E_LLM_PROVIDER:-none}
+      HOLEALIGN_LLM_MODEL: ${E2E_LLM_MODEL:-claude-sonnet-5-5}
+      HOLEALIGN_LLM_BASE_URL: ${E2E_LLM_BASE_URL:-}
+      HOLEALIGN_LLM_DAILY_LIMIT: ${E2E_LLM_DAILY_LIMIT:-50}
     volumes:
-      - ${E2E_TMP:-/tmp}/server.yaml:/etc/panoptes/server.yaml:ro
-      - ${E2E_GRYPE_MOUNT:-e2e-grype-db}:/var/lib/panoptes/grype-db
-      - e2e-data:/var/lib/panoptes
+      - ${E2E_TMP:-/tmp}/server.yaml:/etc/holealign/server.yaml:ro
+      - ${E2E_GRYPE_MOUNT:-e2e-grype-db}:/var/lib/holealign/grype-db
+      - e2e-data:/var/lib/holealign
     extra_hosts:
       - "host.docker.internal:host-gateway"   # reach an LLM on the host (Linux; built in on Docker Desktop)
     ports:

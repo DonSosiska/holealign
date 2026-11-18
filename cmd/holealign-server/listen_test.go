@@ -20,10 +20,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/DonSosiska/panoptes/internal/server/api"
-	"github.com/DonSosiska/panoptes/internal/server/config"
-	"github.com/DonSosiska/panoptes/internal/server/store"
-	"github.com/DonSosiska/panoptes/internal/server/web"
+	"github.com/DonSosiska/holealign/internal/server/api"
+	"github.com/DonSosiska/holealign/internal/server/config"
+	"github.com/DonSosiska/holealign/internal/server/store"
+	"github.com/DonSosiska/holealign/internal/server/web"
 )
 
 func testLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
@@ -125,7 +125,7 @@ func selfSigned(t *testing.T, dir string) (certFile, keyFile string, pool *x509.
 		t.Fatal(err)
 	}
 	tmpl := &x509.Certificate{
-		SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "panoptes.test"},
+		SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "holealign.test"},
 		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
 		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		DNSNames: []string{"localhost"}, IPAddresses: []net.IP{net.ParseIP("127.0.0.1")},

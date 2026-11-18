@@ -1,19 +1,19 @@
-# Single-host Panoptes server.
+# Single-host Holealign server.
 #
-#   cp deploy/server.env.example deploy/.env   # then set PANOPTES_ADMIN_PASSWORD etc.
+#   cp deploy/server.env.example deploy/.env   # then set HOLEALIGN_ADMIN_PASSWORD etc.
 #   cd deploy && docker compose up -d --build
-#   docker compose exec panoptes-server panoptes-server token create first
+#   docker compose exec holealign-server holealign-server token create first
 #
 # The server has no healthcheck: the distroless image has no shell or curl.
-# Check it with: docker compose logs -f panoptes-server
+# Check it with: docker compose logs -f holealign-server
 services:
-  panoptes-server:
+  holealign-server:
     # Build from source. To use a prebuilt image instead, comment out "build"
-    # and set image: ghcr.io/donsosiska/panoptes-server:latest.
+    # and set image: ghcr.io/donsosiska/holealign-server:latest.
     build:
       context: ..
       dockerfile: deploy/Dockerfile.server.build
-    image: panoptes-server:local
+    image: holealign-server:local
     restart: unless-stopped
     # Two listeners:
     #   8080  agent API (/api/v1/*, /healthz only): monitored hosts must reach it, so it is published
@@ -21,8 +21,8 @@ services:
     #         plain HTTP exposes agent keys on the network.
     #   8081  admin web UI: published on loopback only, so monitored hosts cannot even reach the login
     #         page. Reach it through an SSH tunnel / VPN, or a TLS reverse proxy on this machine that
-    #         forwards to 127.0.0.1:8081 (set PANOPTES_PUBLIC_URL to the proxy's https URL and, if
-    #         it sets X-Forwarded-For, PANOPTES_TRUSTED_PROXIES to its address).
+    #         forwards to 127.0.0.1:8081 (set HOLEALIGN_PUBLIC_URL to the proxy's https URL and, if
+    #         it sets X-Forwarded-For, HOLEALIGN_TRUSTED_PROXIES to its address).
     ports:
       - "8080:8080"
       - "127.0.0.1:8081:8081"
@@ -42,37 +42,37 @@ services:
         max-file: "5"
     volumes:
       # SQLite database and Grype DB cache.
-      - panoptes-data:/var/lib/panoptes
-      # Agentless mode, local_agent.source: collector. The Docker HOST runs panoptes-collector.service
+      - holealign-data:/var/lib/holealign
+      # Agentless mode, local_agent.source: collector. The Docker HOST runs holealign-collector.service
       # (install.sh --collector-only); mount its socket directory read-only. The collector accepts only
-      # root and the host user "panoptes" (SO_PEERCRED), so run this container as that uid/gid
-      # (`id panoptes` on the host) and add the group for socket access:
-      #   - /run/panoptes:/run/panoptes:ro
+      # root and the host user "holealign" (SO_PEERCRED), so run this container as that uid/gid
+      # (`id holealign` on the host) and add the group for socket access:
+      #   - /run/holealign:/run/holealign:ro
       # with, on the service:
-      #   user: "<panoptes uid>:<panoptes gid>"
-      #   group_add: ["<panoptes gid>"]
-      # and PANOPTES_LOCAL_AGENT_ENABLED=true, PANOPTES_LOCAL_AGENT_SOURCE=collector.
+      #   user: "<holealign uid>:<holealign gid>"
+      #   group_add: ["<holealign gid>"]
+      # and HOLEALIGN_LOCAL_AGENT_ENABLED=true, HOLEALIGN_LOCAL_AGENT_SOURCE=collector.
       # Mind: source "inprocess" inside a container scans the CONTAINER (its own minimal filesystem), not
       # the Docker host; use the collector socket to monitor the host.
     environment:
       # Secrets come from deploy/.env. Empty values are ignored by the server.
-      PANOPTES_ADMIN_PASSWORD: ${PANOPTES_ADMIN_PASSWORD:-}   # min 12 chars, first start only (or PANOPTES_ADMIN_PASSWORD_FILE)
-      PANOPTES_MATRIX_TOKEN: ${PANOPTES_MATRIX_TOKEN:-}       # Matrix bot access token
-      PANOPTES_LLM_API_KEY: ${PANOPTES_LLM_API_KEY:-}         # LLM provider key, if any
+      HOLEALIGN_ADMIN_PASSWORD: ${HOLEALIGN_ADMIN_PASSWORD:-}   # min 12 chars, first start only (or HOLEALIGN_ADMIN_PASSWORD_FILE)
+      HOLEALIGN_MATRIX_TOKEN: ${HOLEALIGN_MATRIX_TOKEN:-}       # Matrix bot access token
+      HOLEALIGN_LLM_API_KEY: ${HOLEALIGN_LLM_API_KEY:-}         # LLM provider key, if any
       # Non-secret overrides (optional).
-      PANOPTES_PUBLIC_URL: ${PANOPTES_PUBLIC_URL:-http://localhost:8081}   # admin UI base URL
+      HOLEALIGN_PUBLIC_URL: ${HOLEALIGN_PUBLIC_URL:-http://localhost:8081}   # admin UI base URL
       # Inside the container the admin listener must bind to all interfaces; the published port
       # above restricts it to the host's loopback.
-      PANOPTES_ADMIN_LISTEN: 0.0.0.0:8081
-      PANOPTES_TRUSTED_PROXIES: ${PANOPTES_TRUSTED_PROXIES:-}
-      PANOPTES_ALERTS_OPS_ROOMS: ${PANOPTES_ALERTS_OPS_ROOMS:-}   # Matrix rooms for silence/feed alerts
-      PANOPTES_MATRIX_HOMESERVER: ${PANOPTES_MATRIX_HOMESERVER:-}
-      PANOPTES_LLM_PROVIDER: ${PANOPTES_LLM_PROVIDER:-none}   # none | anthropic | openai-compatible
-      PANOPTES_LLM_MODEL: ${PANOPTES_LLM_MODEL:-}
-      PANOPTES_LLM_BASE_URL: ${PANOPTES_LLM_BASE_URL:-}       # openai-compatible only
+      HOLEALIGN_ADMIN_LISTEN: 0.0.0.0:8081
+      HOLEALIGN_TRUSTED_PROXIES: ${HOLEALIGN_TRUSTED_PROXIES:-}
+      HOLEALIGN_ALERTS_OPS_ROOMS: ${HOLEALIGN_ALERTS_OPS_ROOMS:-}   # Matrix rooms for silence/feed alerts
+      HOLEALIGN_MATRIX_HOMESERVER: ${HOLEALIGN_MATRIX_HOMESERVER:-}
+      HOLEALIGN_LLM_PROVIDER: ${HOLEALIGN_LLM_PROVIDER:-none}   # none | anthropic | openai-compatible
+      HOLEALIGN_LLM_MODEL: ${HOLEALIGN_LLM_MODEL:-}
+      HOLEALIGN_LLM_BASE_URL: ${HOLEALIGN_LLM_BASE_URL:-}       # openai-compatible only
       # Agentless mode (server monitors its own host), off by default. See the volume note above.
-      PANOPTES_LOCAL_AGENT_ENABLED: ${PANOPTES_LOCAL_AGENT_ENABLED:-false}
-      PANOPTES_LOCAL_AGENT_SOURCE: ${PANOPTES_LOCAL_AGENT_SOURCE:-auto}
+      HOLEALIGN_LOCAL_AGENT_ENABLED: ${HOLEALIGN_LOCAL_AGENT_ENABLED:-false}
+      HOLEALIGN_LOCAL_AGENT_SOURCE: ${HOLEALIGN_LOCAL_AGENT_SOURCE:-auto}
 
 volumes:
-  panoptes-data:
+  holealign-data:

@@ -16,12 +16,12 @@ Contents: [1 Install the server](#1-install-the-server) - [2 Configure and start
 ## 1. Install the server
 
 Download the `.deb` or `.rpm` of a release from the
-[releases page](https://github.com/DonSosiska/panoptes/releases), verify it
+[releases page](https://github.com/DonSosiska/holealign/releases), verify it
 ([installation.md](installation.md#verifying-releases)) and install it:
 
 ```sh
-sudo apt install ./panoptes-server_X.Y.Z_amd64.deb      # Debian, Ubuntu
-# sudo dnf install ./panoptes-server_X.Y.Z_<arch>.rpm   # RHEL family
+sudo apt install ./holealign-server_X.Y.Z_amd64.deb      # Debian, Ubuntu
+# sudo dnf install ./holealign-server_X.Y.Z_<arch>.rpm   # RHEL family
 ```
 
 No release yet, or you prefer containers? The Compose path in
@@ -33,12 +33,12 @@ container scans the container, not the host. For this quick start use the packag
 Create the secrets file, then switch on agentless mode:
 
 ```sh
-sudo install -m 0600 /dev/null /etc/panoptes/server.env
-echo "PANOPTES_ADMIN_PASSWORD=$(openssl rand -base64 18)" | sudo tee -a /etc/panoptes/server.env >/dev/null
-sudo grep PANOPTES_ADMIN_PASSWORD /etc/panoptes/server.env      # note it: you log in as "admin"
+sudo install -m 0600 /dev/null /etc/holealign/server.env
+echo "HOLEALIGN_ADMIN_PASSWORD=$(openssl rand -base64 18)" | sudo tee -a /etc/holealign/server.env >/dev/null
+sudo grep HOLEALIGN_ADMIN_PASSWORD /etc/holealign/server.env      # note it: you log in as "admin"
 ```
 
-Edit `/etc/panoptes/server.yaml` (the package installs a copy of the annotated example) and set:
+Edit `/etc/holealign/server.yaml` (the package installs a copy of the annotated example) and set:
 
 ```yaml
 local_agent:
@@ -55,11 +55,11 @@ see [installation.md](installation.md#agentless-mode).
 Start it and watch the log:
 
 ```sh
-sudo systemctl enable --now panoptes-server
-journalctl -u panoptes-server -f
+sudo systemctl enable --now holealign-server
+journalctl -u holealign-server -f
 ```
 
-Look for these lines, in about this order: `panoptes-server listening` (twice, agent API and admin
+Look for these lines, in about this order: `holealign-server listening` (twice, agent API and admin
 UI), `local agent source: inprocess`, `local host provisioned`, `waiting for the vulnerability DB before
 the first inventory upload`, and `grype db loaded`. The first start downloads the Grype database
 (about 100 MB), so allow a few minutes. Problems: [troubleshooting.md](troubleshooting.md).
@@ -93,17 +93,17 @@ shipped rules decide, for example, regreSSHion (CVE-2024-6387), Terrapin and HTT
 public feed:
 
 ```yaml
-# /etc/panoptes/server.yaml
+# /etc/holealign/server.yaml
 rules:
   feed:
     enabled: true
-    url: https://donsosiska.github.io/panoptes-rules/latest.json
+    url: https://donsosiska.github.io/holealign-rules/latest.json
     trusted_keys: ["UuFW4nYSCwI3xfHhwapVhYrjYhVO6i7yaxOTv9KFCuM="]
 ```
 
 Check the key against
-<https://github.com/DonSosiska/panoptes-rules/blob/main/keys/rules-public.key> first, then
-`sudo systemctl restart panoptes-server`. The Dashboard then shows a *Rules feed* box
+<https://github.com/DonSosiska/holealign-rules/blob/main/keys/rules-public.key> first, then
+`sudo systemctl restart holealign-server`. The Dashboard then shows a *Rules feed* box
 ([rules-feed.md](rules-feed.md)).
 
 ## 5. Get a Matrix alert
@@ -112,19 +112,19 @@ You need a bot account, its access token, and a room the bot has joined; the ste
 [notifications.md](notifications.md#matrix-setup). Then:
 
 ```sh
-echo 'PANOPTES_MATRIX_TOKEN=syt_...' | sudo tee -a /etc/panoptes/server.env >/dev/null
+echo 'HOLEALIGN_MATRIX_TOKEN=syt_...' | sudo tee -a /etc/holealign/server.env >/dev/null
 ```
 
 ```yaml
-# /etc/panoptes/server.yaml
+# /etc/holealign/server.yaml
 matrix:
   homeserver: https://matrix.example.com
   default_rooms: ["!yourroom:matrix.example.com"]   # internal room ID, not an alias
 ```
 
 ```sh
-sudo systemctl restart panoptes-server
-journalctl -u panoptes-server | grep 'matrix notifier'    # "matrix notifier enabled"
+sudo systemctl restart holealign-server
+journalctl -u holealign-server | grep 'matrix notifier'    # "matrix notifier enabled"
 ```
 
 Alerts are sent for `exploitable` findings and for unknown findings that are in KEV or Critical. A
@@ -137,7 +137,7 @@ can be edited under Settings.
 On the server, create an enrollment token for the host, with labels that pick the Matrix rooms:
 
 ```sh
-sudo panoptes-server token create web-01 -labels prod,web -max-hosts 1 -expires 24h
+sudo holealign-server token create web-01 -labels prod,web -max-hosts 1 -expires 24h
 ```
 
 Agents require `https://`, so the agent port (8080) needs TLS first: native `tls_cert` and `tls_key`, or
@@ -148,11 +148,11 @@ it, run it:
 
 ```sh
 V=X.Y.Z
-install -m 0600 /dev/null /root/panoptes.token && vi /root/panoptes.token   # paste the pt_... token
-curl --proto '=https' --tlsv1.2 -fsSLO https://raw.githubusercontent.com/DonSosiska/panoptes/v$V/deploy/install.sh
+install -m 0600 /dev/null /root/holealign.token && vi /root/holealign.token   # paste the pt_... token
+curl --proto '=https' --tlsv1.2 -fsSLO https://raw.githubusercontent.com/DonSosiska/holealign/v$V/deploy/install.sh
 less install.sh
-sudo sh install.sh --version $V --server https://panoptes.example.com --token-file /root/panoptes.token
-journalctl -u panoptes-agent -f
+sudo sh install.sh --version $V --server https://holealign.example.com --token-file /root/holealign.token
+journalctl -u holealign-agent -f
 ```
 
 `install.sh` needs [cosign](https://docs.sigstore.dev/cosign/system_config/installation/) to verify the

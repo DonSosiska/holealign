@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/DonSosiska/panoptes/internal/model"
-	"github.com/DonSosiska/panoptes/internal/server/llm"
-	"github.com/DonSosiska/panoptes/internal/server/rules"
-	"github.com/DonSosiska/panoptes/internal/server/rulesfeed"
+	"github.com/DonSosiska/holealign/internal/model"
+	"github.com/DonSosiska/holealign/internal/server/llm"
+	"github.com/DonSosiska/holealign/internal/server/rules"
+	"github.com/DonSosiska/holealign/internal/server/rulesfeed"
 )
 
 const (

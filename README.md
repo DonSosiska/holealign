@@ -1,11 +1,15 @@
-# Panoptes
+# Holealign
 
-[![ci](https://github.com/DonSosiska/panoptes/actions/workflows/ci.yml/badge.svg)](https://github.com/DonSosiska/panoptes/actions/workflows/ci.yml)
+[![ci](https://github.com/DonSosiska/holealign/actions/workflows/ci.yml/badge.svg)](https://github.com/DonSosiska/holealign/actions/workflows/ci.yml)
 License: [PolyForm Noncommercial 1.0.0](LICENSE) (source-available, not open source)
 
 English | [Українська](README.uk.md)
 
-Panoptes finds vulnerabilities on Linux hosts and decides whether each one is **actually
+> The name comes from the Swiss cheese model of failures: every layer of defence has holes, and an
+> incident happens only when the holes in all layers line up. A vulnerable package is one hole, an
+> enabled feature another, an exposed configuration a third. Holealign tells you when they align.
+
+Holealign finds vulnerabilities on Linux hosts and decides whether each one is **actually
 exploitable given that host's configuration**. Agents on your hosts push a software inventory
 (SBOM) and a set of configuration facts to a central server. The server matches vulnerabilities
 with Grype (including CISA KEV and EPSS data), evaluates CEL rules against the facts, and alerts
@@ -19,11 +23,11 @@ host, and most of them cannot be exploited where they run: the vulnerable featur
 not open, the libc is different. Teams either drown in the list or stop reading it, and the one
 finding that matters is lost among the rest.
 
-## How Panoptes is different
+## How Holealign is different
 
-Panoptes also reads the host. regreSSHion (CVE-2024-6387) is exploitable only on glibc systems
+Holealign also reads the host. regreSSHion (CVE-2024-6387) is exploitable only on glibc systems
 where `LoginGraceTime` is not `0`. On a musl host, or with `LoginGraceTime 0`, the finding is
-recorded as `affected_not_exploitable` and nobody gets paged. When Panoptes cannot tell (no rule,
+recorded as `affected_not_exploitable` and nobody gets paged. When Holealign cannot tell (no rule,
 or a fact is missing) the verdict is `conditions_unknown`, never "safe". Rules that do not exist
 yet can be drafted by an LLM; a draft stays inert, and can never lower a verdict, until a human
 approves it.
@@ -68,14 +72,14 @@ approves it.
 ## Architecture
 
 ```
-  Monitored Linux host (any number)                Panoptes server
+  Monitored Linux host (any number)                Holealign server
  +-------------------------------------+        +----------------------------------------+
- | panoptes-collector (root, NO network)|        | agent API  :8080  /api/v1/*  /healthz  |
+ | holealign-collector (root, NO network)|        | agent API  :8080  /api/v1/*  /healthz  |
  |   sshd -T, nginx -T, sysctl, /proc, |        |   enroll, check-in, inventory          |
  |   Syft scan, file.match             |        |                                        |
  |        |  unix socket               | HTTPS  | SQLite + Grype DB      (data_dir)      |
- | panoptes-agent sender (user         |------->| pipeline: Grype -> CEL rules -> verdict|
- |   "panoptes", the only one with     | push,  |                                        |
+ | holealign-agent sender (user         |------->| pipeline: Grype -> CEL rules -> verdict|
+ |   "holealign", the only one with     | push,  |                                        |
  |   network access)                   | out-   | admin UI   :8081  (loopback default)   |
  +-------------------------------------+ bound  |        ^  SSH tunnel / VPN / proxy     |
    no inbound connection to the host     only   |        |                               |
@@ -102,11 +106,11 @@ The full 15-minute path (agentless server, first findings, Matrix alert, first r
 [docs/quickstart.md](docs/quickstart.md). In short, to try the server and one agent:
 
 ```sh
-git clone https://github.com/DonSosiska/panoptes.git
-cd panoptes/deploy
-cp server.env.example .env       # set PANOPTES_ADMIN_PASSWORD (at least 12 characters)
+git clone https://github.com/DonSosiska/holealign.git
+cd holealign/deploy
+cp server.env.example .env       # set HOLEALIGN_ADMIN_PASSWORD (at least 12 characters)
 docker compose up -d --build
-docker compose exec panoptes-server panoptes-server token create first -labels prod,web -max-hosts 5 -expires 72h
+docker compose exec holealign-server holealign-server token create first -labels prod,web -max-hosts 5 -expires 72h
 ```
 
 Agents require `https://`: put TLS in front of port 8080 ([TLS options](docs/installation.md#tls)).
@@ -114,10 +118,10 @@ Then, on a monitored host as root, take `install.sh` from a **release tag** (not
 with the token saved in a file:
 
 ```sh
-V=X.Y.Z    # a release version from https://github.com/DonSosiska/panoptes/releases
-curl --proto '=https' --tlsv1.2 -fsSLO https://raw.githubusercontent.com/DonSosiska/panoptes/v$V/deploy/install.sh
+V=X.Y.Z    # a release version from https://github.com/DonSosiska/holealign/releases
+curl --proto '=https' --tlsv1.2 -fsSLO https://raw.githubusercontent.com/DonSosiska/holealign/v$V/deploy/install.sh
 less install.sh
-sudo sh install.sh --version $V --server https://panoptes.example.com --token-file /root/panoptes.token
+sudo sh install.sh --version $V --server https://holealign.example.com --token-file /root/holealign.token
 ```
 
 The installer verifies the release signature with [cosign](https://docs.sigstore.dev/cosign/system_config/installation/)
@@ -162,13 +166,13 @@ vulnerabilities privately: [SECURITY.md](SECURITY.md). To check a release by han
 ## Packages and building from source
 
 Release archives, `.deb`/`.rpm` packages and the server image
-`ghcr.io/donsosiska/panoptes-server` are published from tags `v*`. `make build` builds the
+`ghcr.io/donsosiska/holealign-server` are published from tags `v*`. `make build` builds the
 binaries into `bin/`; `make docker` builds the server image from source. See
 [docs/development.md](docs/development.md).
 
 ## License
 
-Panoptes is **source-available** under the [PolyForm Noncommercial License
+Holealign is **source-available** under the [PolyForm Noncommercial License
 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0/) (see [LICENSE](LICENSE)). You
 may use, modify and distribute it for any noncommercial purpose: personal use, research,
 education, hobby projects, and use by charities, educational institutions, public research and
@@ -177,5 +181,5 @@ open-source license. Third-party dependencies keep their own licenses: [NOTICE](
 
 **Commercial use** (for example use by a for-profit company for its business) is not covered and
 requires a separate license. Commercial licensing is available on request: contact the maintainer
-through [GitHub](https://github.com/DonSosiska/panoptes) (do not post confidential details in a
+through [GitHub](https://github.com/DonSosiska/holealign) (do not post confidential details in a
 public issue).

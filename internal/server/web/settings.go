@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/DonSosiska/panoptes/internal/server/api"
-	"github.com/DonSosiska/panoptes/internal/server/config"
-	"github.com/DonSosiska/panoptes/internal/server/store"
+	"github.com/DonSosiska/holealign/internal/server/api"
+	"github.com/DonSosiska/holealign/internal/server/config"
+	"github.com/DonSosiska/holealign/internal/server/store"
 )
 
 const matrixSettingKey = "matrix.routes"

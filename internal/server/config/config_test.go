@@ -9,7 +9,7 @@ import (
 )
 
 func TestDefaultsWhenNoFile(t *testing.T) {
-	t.Setenv("PANOPTES_CONFIG", "")
+	t.Setenv("HOLEALIGN_CONFIG", "")
 	cfg, err := load("", func(string) (string, bool) { return "", false })
 	if err != nil {
 		t.Fatal(err)
@@ -36,10 +36,10 @@ matrix:
 		t.Fatal(err)
 	}
 	env := map[string]string{
-		"PANOPTES_MATRIX_HOMESERVER": "https://override",
-		"PANOPTES_FEEDS_INTERVAL":    "30m",
-		"PANOPTES_LLM_DAILY_LIMIT":   "7",
-		"PANOPTES_LLM_EFFORT":        "xhigh",
+		"HOLEALIGN_MATRIX_HOMESERVER": "https://override",
+		"HOLEALIGN_FEEDS_INTERVAL":    "30m",
+		"HOLEALIGN_LLM_DAILY_LIMIT":   "7",
+		"HOLEALIGN_LLM_EFFORT":        "xhigh",
 	}
 	cfg, err := load(p, func(k string) (string, bool) { v, ok := env[k]; return v, ok })
 	if err != nil {
@@ -85,16 +85,16 @@ func TestEnvNameValidation(t *testing.T) {
 	none := func(string) (string, bool) { return "", false }
 	for _, bad := range []string{
 		"matrix:\n  access_token_env: HOME\n",
-		"llm:\n  api_key_env: panoptes_x\n",
+		"llm:\n  api_key_env: holealign_x\n",
 		"llm:\n  effort: extreme\n",
-		"matrix:\n  access_token_env: PANOPTES_ADMIN_PASSWORD\n",
+		"matrix:\n  access_token_env: HOLEALIGN_ADMIN_PASSWORD\n",
 		"admin:\n  initial_password_env: AWS_SECRET\n",
 	} {
 		if _, err := load(write(bad), none); err == nil {
 			t.Errorf("accepted %q", bad)
 		}
 	}
-	if _, err := load(write("matrix:\n  access_token_env: PANOPTES_MX_1\n"), none); err != nil {
+	if _, err := load(write("matrix:\n  access_token_env: HOLEALIGN_MX_1\n"), none); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -108,7 +108,7 @@ func TestWarnings(t *testing.T) {
 	if len(c.Warnings()) != 0 {
 		t.Fatalf("warnings with TLS: %v", c.Warnings())
 	}
-	c.PublicURL = "http://panoptes.example.com"
+	c.PublicURL = "http://holealign.example.com"
 	c.Matrix.Homeserver = "http://10.0.0.5:8008"
 	c.LLM.BaseURL = "http://127.0.0.1:11434/v1"
 	if n := len(c.Warnings()); n != 2 {
@@ -162,7 +162,7 @@ func TestRound2Warnings(t *testing.T) {
 func TestSecretEnvNamesPairwiseDifferent(t *testing.T) {
 	none := func(string) (string, bool) { return "", false }
 	p := filepath.Join(t.TempDir(), "c.yaml")
-	_ = os.WriteFile(p, []byte("matrix:\n  access_token_env: PANOPTES_SAME\nllm:\n  api_key_env: PANOPTES_SAME\n"), 0o600)
+	_ = os.WriteFile(p, []byte("matrix:\n  access_token_env: HOLEALIGN_SAME\nllm:\n  api_key_env: HOLEALIGN_SAME\n"), 0o600)
 	if _, err := load(p, none); err == nil {
 		t.Fatal("matrix and llm env names may not be equal")
 	}
@@ -181,7 +181,7 @@ func TestRetentionAndLimits(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "c.yaml")
 	_ = os.WriteFile(p, []byte("retention:\n  resolved_findings: 7d\n  notifications: 0\nlimits:\n  findings_per_host: 5\n"), 0o600)
 	c, err = load(p, func(k string) (string, bool) {
-		if k == "PANOPTES_LIMITS_MATCH_SECONDS_PER_HOST_HOUR" {
+		if k == "HOLEALIGN_LIMITS_MATCH_SECONDS_PER_HOST_HOUR" {
 			return "12", true
 		}
 		return "", false
@@ -244,15 +244,15 @@ func TestRulesFeedConfig(t *testing.T) {
 	// environment overrides
 	env := func(k string) (string, bool) {
 		switch k {
-		case "PANOPTES_RULES_FEED_ENABLED":
+		case "HOLEALIGN_RULES_FEED_ENABLED":
 			return "true", true
-		case "PANOPTES_RULES_FEED_URL":
+		case "HOLEALIGN_RULES_FEED_URL":
 			return "https://env.example/latest.json", true
-		case "PANOPTES_RULES_FEED_TRUSTED_KEYS":
+		case "HOLEALIGN_RULES_FEED_TRUSTED_KEYS":
 			return key + "," + key, true
-		case "PANOPTES_RULES_FEED_INTERVAL":
+		case "HOLEALIGN_RULES_FEED_INTERVAL":
 			return "2h", true
-		case "PANOPTES_RULES_FEED_STALE_AFTER":
+		case "HOLEALIGN_RULES_FEED_STALE_AFTER":
 			return "2d", true
 		}
 		return "", false

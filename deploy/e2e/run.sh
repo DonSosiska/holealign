@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Panoptes end-to-end test: real Matrix homeserver, real server, three simulated hosts.
+# Holealign end-to-end test: real Matrix homeserver, real server, three simulated hosts.
 # See README.md. Usage: deploy/e2e/run.sh
 set -euo pipefail
 
@@ -17,8 +17,8 @@ export E2E_ADMIN_PORT="${E2E_ADMIN_PORT:-18081}"
 # Secrets are random per run; E2E_* overrides exist so a kept stack (E2E_KEEP=1) can be logged into.
 export E2E_REG_TOKEN
 E2E_REG_TOKEN="${E2E_REG_TOKEN:-e2e-$(openssl rand -hex 8)}"
-export PANOPTES_ADMIN_PASSWORD
-PANOPTES_ADMIN_PASSWORD="${E2E_ADMIN_PASSWORD:-$(openssl rand -hex 12)}"
+export HOLEALIGN_ADMIN_PASSWORD
+HOLEALIGN_ADMIN_PASSWORD="${E2E_ADMIN_PASSWORD:-$(openssl rand -hex 12)}"
 WAIT_TIMEOUT="${E2E_WAIT_TIMEOUT:-180}"
 KEEP="${E2E_KEEP:-0}"
 HS="http://127.0.0.1:${E2E_MATRIX_PORT}"
@@ -48,8 +48,8 @@ FINISHED=""
 cleanup() {
   local rc=$?
   if [[ -z "$FINISHED" && $rc -ne 0 ]]; then
-    echo "--- aborted (rc=$rc); panoptes-server log tail ---" >&2
-    dc logs --no-color --tail 60 panoptes-server >&2 2>&1 || true
+    echo "--- aborted (rc=$rc); holealign-server log tail ---" >&2
+    dc logs --no-color --tail 60 holealign-server >&2 2>&1 || true
   fi
   if [[ "$KEEP" == 1 ]]; then
     echo "E2E_KEEP=1: leaving the stack running (docker compose -f $DIR/docker-compose.yml --profile server --profile hosts down -v)"
@@ -127,7 +127,7 @@ counts() { local r; for r in "$ROOM_PROD" "$ROOM_STAGING" "$ROOM_DEFAULT"; do ro
 echo "== building images (server, host) and starting Matrix homeserver"
 dc up -d matrix >/dev/null &
 UP_PID=$!
-dc build panoptes-server web-default
+dc build holealign-server web-default
 wait "$UP_PID" || die "homeserver failed to start"
 
 wait_for homeserver 90 curl -fsS "$HS/_matrix/client/versions" -o /dev/null || die "homeserver did not come up"
@@ -139,13 +139,13 @@ echo "== registering users and creating rooms"
 BOOT_TOKEN=$(dc logs --no-color matrix 2>&1 | sed $'s/\x1b\\[[0-9;]*m//g' | sed -n 's/.*using the registration token \([A-Za-z0-9]*\).*/\1/p' | head -1)
 BOT_TOKEN=$(register e2ebot "$BOT_PASS" "${BOOT_TOKEN:-$E2E_REG_TOKEN}")
 OBS_TOKEN=$(register e2eobserver "$OBS_PASS" "$E2E_REG_TOKEN")
-OBS_MXID="@e2eobserver:panoptes.test"
+OBS_MXID="@e2eobserver:holealign.test"
 ROOM_PROD=$(create_room prod)
 ROOM_STAGING=$(create_room staging)
 ROOM_DEFAULT=$(create_room default)
 echo "   prod=$ROOM_PROD staging=$ROOM_STAGING default=$ROOM_DEFAULT"
 
-# ---- 2. panoptes-server ------------------------------------------------------------
+# ---- 2. holealign-server ------------------------------------------------------------
 cat > "$E2E_TMP/server.yaml" <<YAML
 matrix:
   routes:
@@ -154,11 +154,11 @@ matrix:
 YAML
 export E2E_BOT_TOKEN="$BOT_TOKEN" E2E_ROOM_DEFAULT="$ROOM_DEFAULT"
 
-echo "== starting panoptes-server (feeds.update=$E2E_FEEDS_UPDATE${GRYPE_DB_CACHE:+, grype cache $GRYPE_DB_CACHE})"
-dc up -d panoptes-server >/dev/null
-wait_for server 90 curl -fsS "$SRV/healthz" -o /dev/null || die "panoptes-server did not become healthy"
+echo "== starting holealign-server (feeds.update=$E2E_FEEDS_UPDATE${GRYPE_DB_CACHE:+, grype cache $GRYPE_DB_CACHE})"
+dc up -d holealign-server >/dev/null
+wait_for server 90 curl -fsS "$SRV/healthz" -o /dev/null || die "holealign-server did not become healthy"
 
-E2E_ENROLL_TOKEN=$(dc exec -T panoptes-server panoptes-server token create e2e 2>/dev/null | grep -Eo '^pt_[A-Za-z0-9_-]+' | head -1)
+E2E_ENROLL_TOKEN=$(dc exec -T holealign-server holealign-server token create e2e 2>/dev/null | grep -Eo '^pt_[A-Za-z0-9_-]+' | head -1)
 [[ -n "$E2E_ENROLL_TOKEN" ]] || die "could not create enrollment token"
 export E2E_ENROLL_TOKEN
 
@@ -216,11 +216,11 @@ fi
 before=$(counts)
 rerun_ok=1
 for h in web-default web-lgt0 staging-1; do
-  dc exec -T "$h" panoptes-agent -once >/dev/null 2>&1 || { echo "   agent re-run on $h failed" >&2; rerun_ok=0; }
+  dc exec -T "$h" holealign-agent -once >/dev/null 2>&1 || { echo "   agent re-run on $h failed" >&2; rerun_ok=0; }
 done
 sleep 15
-dc restart panoptes-server >/dev/null 2>&1
-wait_for server 90 curl -fsS "$SRV/healthz" -o /dev/null || die "panoptes-server did not come back after restart"
+dc restart holealign-server >/dev/null 2>&1
+wait_for server 90 curl -fsS "$SRV/healthz" -o /dev/null || die "holealign-server did not come back after restart"
 sleep 30
 after=$(counts)
 if [[ "$rerun_ok" == 1 && "$before" == "$after" ]]; then pass "d. dedup: agent re-run + server restart produced no new messages (counts prod,staging,default = $before)"
@@ -241,7 +241,7 @@ if dc exec -T web-default bash -c '
 else
   echo "   upgrade failed:" >&2; tail -20 "$E2E_TMP/upgrade.log" >&2
 fi
-dc exec -T web-default panoptes-agent -once >/dev/null 2>&1 || echo "   agent re-run after upgrade failed" >&2
+dc exec -T web-default holealign-agent -once >/dev/null 2>&1 || echo "   agent re-run after upgrade failed" >&2
 if wait_for resolved 120 has_resolved "$ROOM_PROD" web-default; then
   pass "e. fix flow: RESOLVED message for web-default arrived in prod"
 else
@@ -258,7 +258,7 @@ elif [[ -z "$csrf" ]]; then
   fail "f. web: no CSRF token on /login"
 else
   lcode=$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR" -c "$JAR" --data-urlencode "csrf=$csrf" \
-    --data-urlencode "username=admin" --data-urlencode "password=$PANOPTES_ADMIN_PASSWORD" "$ADMIN/login")
+    --data-urlencode "username=admin" --data-urlencode "password=$HOLEALIGN_ADMIN_PASSWORD" "$ADMIN/login")
   fcode=$(curl -s -o "$E2E_TMP/findings.html" -w '%{http_code}' -b "$JAR" "$ADMIN/findings?q=CVE-2024-6387&resolved=1")
   if [[ "$lcode" == 303 && "$fcode" == 200 ]] && grep -q 'web-default' "$E2E_TMP/findings.html"; then
     pass "f. web: /login 200, form login 303, /findings?q=CVE-2024-6387 200 and lists web-default"
@@ -278,12 +278,12 @@ if wait_for localhost 90 ghost; then
   pass "g. built-in local agent: the server host is listed with label 'server' and the local (built-in) badge"
 else
   fail "g. built-in local agent: no 'server'-labelled local host on /hosts within 90s"; dump=1
-  dc logs --no-color --tail 40 panoptes-server 2>&1 | grep -i 'local' >&2 || true
+  dc logs --no-color --tail 40 holealign-server 2>&1 | grep -i 'local' >&2 || true
 fi
 
 if [[ "$dump" == 1 ]]; then
   transcript prod "$ROOM_PROD"; transcript staging "$ROOM_STAGING"; transcript default "$ROOM_DEFAULT"
-  dc logs --no-color --tail 40 panoptes-server >&2 2>&1 || true
+  dc logs --no-color --tail 40 holealign-server >&2 2>&1 || true
 fi
 
 # ---- 5. summary --------------------------------------------------------------------------

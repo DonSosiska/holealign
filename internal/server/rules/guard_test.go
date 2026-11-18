@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/DonSosiska/panoptes/internal/model"
-	"github.com/DonSosiska/panoptes/internal/server/core"
+	"github.com/DonSosiska/holealign/internal/model"
+	"github.com/DonSosiska/holealign/internal/server/core"
 )
 
 func draftEngine(r model.Rule) *Engine {
@@ -136,8 +136,8 @@ func TestValidateFileMatchPolicy(t *testing.T) {
 		{"/etc/app/Credentials.conf", "x"},
 		{"/etc/app/db.env", "x"},
 		{"/etc/NetworkManager/system-connections/x", "x"},
-		{"/etc/panoptes/agent.yaml", "x"},
-		{"/opt/panoptes/conf/a.conf", "x"},
+		{"/etc/holealign/agent.yaml", "x"},
+		{"/opt/holealign/conf/a.conf", "x"},
 		{"/etc/a/[.][.]/shadow", "x"},
 		{"/etc/a.conf", ""},
 		{"/etc/a.conf", "^"},

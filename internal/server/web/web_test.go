@@ -17,9 +17,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/DonSosiska/panoptes/internal/model"
-	"github.com/DonSosiska/panoptes/internal/server/config"
-	"github.com/DonSosiska/panoptes/internal/server/store"
+	"github.com/DonSosiska/holealign/internal/model"
+	"github.com/DonSosiska/holealign/internal/server/config"
+	"github.com/DonSosiska/holealign/internal/server/store"
 )
 
 type fakeRules struct {
@@ -99,7 +99,7 @@ func newEnv(t *testing.T, withRules bool) *env {
 		Facts: []string{"os.id"}, ExploitableIf: `facts["os.id"] == "debian"`, Explanation: "because", Status: model.RuleDraft, Source: "llm:test",
 	}}
 	cfg := config.Default()
-	cfg.PublicURL = "http://panoptes.test"
+	cfg.PublicURL = "http://holealign.test"
 	d := Deps{Store: st, Pipeline: e.trig, Config: &cfg, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	if withRules {
 		d.Rules = e.rules
@@ -350,7 +350,7 @@ func TestLoginRateLimitAndSecureCookie(t *testing.T) {
 
 	// https public URL -> Secure cookie
 	cfg := config.Default()
-	cfg.PublicURL = "https://panoptes.example.com"
+	cfg.PublicURL = "https://holealign.example.com"
 	s, _ := New(Deps{Store: e.st, Config: &cfg})
 	if c := s.cookie("x", "v", time.Now().Add(time.Hour)); !c.Secure {
 		t.Error("cookie not Secure for https public_url")
@@ -401,7 +401,7 @@ func TestCSRFAndOriginRejected(t *testing.T) {
 		t.Error("setting saved despite rejected requests")
 	}
 	// same origin passes
-	if w := e.do("POST", "/settings/matrix", f, c, "Origin", "http://panoptes.test", "Sec-Fetch-Site", "same-origin"); w.Code != 303 {
+	if w := e.do("POST", "/settings/matrix", f, c, "Origin", "http://holealign.test", "Sec-Fetch-Site", "same-origin"); w.Code != 303 {
 		t.Errorf("same origin: %d", w.Code)
 	}
 }
@@ -673,7 +673,7 @@ func TestEnrollTokenShownOnce(t *testing.T) {
 	if m == "" {
 		t.Fatal("token not shown")
 	}
-	if !strings.Contains(w.Body.String(), "enroll_token:") || !strings.Contains(w.Body.String(), "server_url: http://panoptes.test") {
+	if !strings.Contains(w.Body.String(), "enroll_token:") || !strings.Contains(w.Body.String(), "server_url: http://holealign.test") {
 		t.Error("agent.yaml snippet missing")
 	}
 	// stored hashed: the hash is accepted by UseEnrollToken, the plain secret is not

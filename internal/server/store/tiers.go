@@ -4,7 +4,7 @@ import (
 	"context"
 	"strings"
 
-	"github.com/DonSosiska/panoptes/internal/model"
+	"github.com/DonSosiska/holealign/internal/model"
 )
 
 // attentionSQL is the SQL of the attention tier for rows aliased f; it takes one argument, the EPSS

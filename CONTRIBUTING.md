@@ -1,15 +1,15 @@
 # Contributing
 
-Thanks for helping. Panoptes is source-available under the
+Thanks for helping. Holealign is source-available under the
 [PolyForm Noncommercial License 1.0.0](LICENSE) and is also offered under other terms (see
 [License of contributions](#license-of-contributions)). Please read this page before opening an issue or a
 pull request.
 
 ## Reporting bugs
 
-Open an issue with the **Bug report** template. Include the version (`panoptes-server -version`,
-`panoptes-agent -version`), how you run it (Docker, package, binary), the distribution of the affected
-host, the relevant log lines (`journalctl -u panoptes-server`, `panoptes-agent`, `panoptes-collector`) and
+Open an issue with the **Bug report** template. Include the version (`holealign-server -version`,
+`holealign-agent -version`), how you run it (Docker, package, binary), the distribution of the affected
+host, the relevant log lines (`journalctl -u holealign-server`, `holealign-agent`, `holealign-collector`) and
 the steps to reproduce. Remove tokens, keys and anything private first.
 
 **Security problems are not bug reports.** Do not open a public issue. Use GitHub's private reporting as
@@ -17,15 +17,15 @@ described in [SECURITY.md](SECURITY.md).
 
 ## Where things go
 
-Panoptes has two repositories:
+Holealign has two repositories:
 
 | You want to | Where |
 |---|---|
-| Fix or extend code: server, agent, rule engine, web UI, a new **fact**, a new CEL function, the installer, the docs | this repository, [DonSosiska/panoptes](https://github.com/DonSosiska/panoptes) |
-| Add or fix a **rule** for a CVE (YAML plus tests) for everyone | [DonSosiska/panoptes-rules](https://github.com/DonSosiska/panoptes-rules): a pull request with `rules/<id>.yaml` and `tests/<id>.yaml` |
+| Fix or extend code: server, agent, rule engine, web UI, a new **fact**, a new CEL function, the installer, the docs | this repository, [DonSosiska/holealign](https://github.com/DonSosiska/holealign) |
+| Add or fix a **rule** for a CVE (YAML plus tests) for everyone | [DonSosiska/holealign-rules](https://github.com/DonSosiska/holealign-rules): a pull request with `rules/<id>.yaml` and `tests/<id>.yaml` |
 | Change one of the eight rules shipped in the binary | **both** repositories: `rules/` and `rules-tests/` here, the same files in the rules repository (its CI requires them to be byte-identical) |
 | Write rules only for your own servers | your own `rules_dir`, the web UI, or [your own feed](docs/rules-feed.md#running-your-own-feed) |
-| Report a wrong or malicious rule from the feed | [panoptes-rules](https://github.com/DonSosiska/panoptes-rules) (private reporting for anything security-relevant) |
+| Report a wrong or malicious rule from the feed | [holealign-rules](https://github.com/DonSosiska/holealign-rules) (private reporting for anything security-relevant) |
 
 Rule authoring is documented in [docs/rules.md](docs/rules.md). A rule that needs a fact that does not
 exist yet starts as a code change here (a collector in `internal/agent/facts/`, the catalog entry and a
@@ -79,7 +79,7 @@ commit; do not mix a refactor with a fix.
 
 ## License of contributions
 
-Panoptes is dual-licensed: it is available to everyone under the PolyForm Noncommercial License 1.0.0, and
+Holealign is dual-licensed: it is available to everyone under the PolyForm Noncommercial License 1.0.0, and
 the author also offers it under other terms, for example a commercial license. To make that possible,
 **code contributions from external contributors require agreeing to a contributor license agreement (CLA)
 before they are merged.** The maintainer will send it on your first pull request; there is nothing to sign

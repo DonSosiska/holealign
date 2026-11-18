@@ -39,20 +39,20 @@ Secrets come from the environment, never from `server.yaml`. In `.env` or `serve
 
 ```sh
 # Anthropic
-PANOPTES_LLM_PROVIDER=anthropic
-PANOPTES_LLM_API_KEY=sk-ant-...
-PANOPTES_LLM_MODEL=claude-sonnet-5-5
+HOLEALIGN_LLM_PROVIDER=anthropic
+HOLEALIGN_LLM_API_KEY=sk-ant-...
+HOLEALIGN_LLM_MODEL=claude-sonnet-5-5
 
 # Ollama on the same Docker network (no key needed)
-PANOPTES_LLM_PROVIDER=openai-compatible
-PANOPTES_LLM_BASE_URL=http://ollama:11434/v1
-PANOPTES_LLM_MODEL=llama3.1
+HOLEALIGN_LLM_PROVIDER=openai-compatible
+HOLEALIGN_LLM_BASE_URL=http://ollama:11434/v1
+HOLEALIGN_LLM_MODEL=llama3.1
 
 # OpenRouter
-PANOPTES_LLM_PROVIDER=openai-compatible
-PANOPTES_LLM_BASE_URL=https://openrouter.ai/api/v1
-PANOPTES_LLM_API_KEY=...
-PANOPTES_LLM_MODEL=<model id from the provider>
+HOLEALIGN_LLM_PROVIDER=openai-compatible
+HOLEALIGN_LLM_BASE_URL=https://openrouter.ai/api/v1
+HOLEALIGN_LLM_API_KEY=...
+HOLEALIGN_LLM_MODEL=<model id from the provider>
 ```
 
 Or in `server.yaml`:
@@ -61,7 +61,7 @@ Or in `server.yaml`:
 llm:
   provider: anthropic
   model: claude-sonnet-5-5
-  api_key_env: PANOPTES_LLM_API_KEY     # name of the variable, not the key
+  api_key_env: HOLEALIGN_LLM_API_KEY     # name of the variable, not the key
   daily_limit: 50
 ```
 
@@ -71,14 +71,14 @@ server warns when `llm.base_url` is plain `http://` to a non-loopback host.
 
 ### Keyless authentication
 
-The Anthropic provider does not require `PANOPTES_LLM_API_KEY`. When the variable named by `llm.api_key_env`
+The Anthropic provider does not require `HOLEALIGN_LLM_API_KEY`. When the variable named by `llm.api_key_env`
 is unset or empty the server creates the SDK client without an explicit key and the SDK falls back to its
 own credential discovery from the environment (for example `ANTHROPIC_API_KEY`, or workload identity
 federation through `ANTHROPIC_FEDERATION_RULE_ID`, `ANTHROPIC_ORGANIZATION_ID`,
 `ANTHROPIC_SERVICE_ACCOUNT_ID` and `ANTHROPIC_IDENTITY_TOKEN_FILE`). The project exercises this only in the
 rules repository's bot, which stores no API key at all: its workflow exchanges a short-lived GitHub OIDC
 token for Anthropic credentials, see [rules-feed.md](rules-feed.md#repository-bot) and the
-[bot setup](https://github.com/DonSosiska/panoptes-rules/blob/main/docs/bot-setup.md). For a long-running
+[bot setup](https://github.com/DonSosiska/holealign-rules/blob/main/docs/bot-setup.md). For a long-running
 server, a dedicated key with a provider-side spend limit remains the documented setup.
 
 Provider details: the Anthropic provider asks for medium effort and, for the `claude-sonnet-5-5`
@@ -133,7 +133,7 @@ summary line to stderr (stdout stays the pull request body):
 `usage: model=... calls=N in=... out=... cache_read=... cache_write=... est_usd=...`.
 
 Effort. `llm.effort` (`low`, `medium`, `high`, `xhigh` or `max`; default `medium`; environment
-`PANOPTES_LLM_EFFORT`) sets the reasoning effort the Anthropic provider requests. An invalid value is a
+`HOLEALIGN_LLM_EFFORT`) sets the reasoning effort the Anthropic provider requests. An invalid value is a
 configuration error. `rules draft` and `rules eval` take `-effort` (default: the environment value, else
 `medium`). Only `claude-sonnet-5-5` and `claude-opus-5-5` are called through the beta endpoint with
 server-side fallback after a refusal; other models, Haiku 5.5 included, have no fallback and accept the
@@ -220,7 +220,7 @@ costs calls and produces `failed` drafts rather than wrong rules.
   expect more validator retries from small models. Keep it on a trusted network; plain `http://` to
   a non-loopback host triggers a warning.
 - To decide whether a cheaper model (for example `claude-haiku-5-5`) is good enough, measure it on
-  your own reference rules with `panoptes-server rules eval`
+  your own reference rules with `holealign-server rules eval`
   ([rules-feed.md](rules-feed.md#rules-eval)). It spends real money.
 - Whatever you use, every draft needs the same human review. Drafts are AI-assisted: the validator shows a
   rule is well-formed and cannot lower a verdict, not that it is correct. Compare the conditions and the
@@ -229,6 +229,6 @@ costs calls and produces `failed` drafts rather than wrong rules.
 ## The same drafter in the rules repository
 
 The rules repository's bot uses the same prompt, sanitising and validation through
-`panoptes-server rules draft`, with a variant that also writes the test cases, and opens pull requests
+`holealign-server rules draft`, with a variant that also writes the test cases, and opens pull requests
 instead of storing drafts in a database. Its pull request bodies show everything the model wrote as inert
 code, and a human must set `status: reviewed`. See [rules-feed.md](rules-feed.md#repository-bot).

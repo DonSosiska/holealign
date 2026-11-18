@@ -18,9 +18,9 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/DonSosiska/panoptes/internal/model"
-	"github.com/DonSosiska/panoptes/internal/server/core"
-	"github.com/DonSosiska/panoptes/internal/server/store"
+	"github.com/DonSosiska/holealign/internal/model"
+	"github.com/DonSosiska/holealign/internal/server/core"
+	"github.com/DonSosiska/holealign/internal/server/store"
 )
 
 const (
@@ -385,7 +385,7 @@ func (s *server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case errors.Is(err, store.ErrReenrollDenied):
 		s.log.Warn("re-enroll refused", "machine_id", req.MachineID, "token", tok.Name, "ip", s.ClientIP(r))
-		writeErr(w, http.StatusConflict, "host exists; previous key required (admin: panoptes-server host allow-reenroll <host>)")
+		writeErr(w, http.StatusConflict, "host exists; previous key required (admin: holealign-server host allow-reenroll <host>)")
 		return
 	case errors.Is(err, store.ErrTokenExhausted):
 		writeErr(w, http.StatusForbidden, "enrollment token exhausted (max_hosts reached)")

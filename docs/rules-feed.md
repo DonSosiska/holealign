@@ -6,7 +6,7 @@ The central rules feed does that. This page covers what servers fetch and verify
 is built and signed, how to run your own feed, and the repository bot that drafts rules.
 
 ```
-panoptes-rules repository (YAML + tests, reviewed pull requests; the trust root)
+holealign-rules repository (YAML + tests, reviewed pull requests; the trust root)
         |  merge to main -> release workflow (protected environment, required reviewer)
         |  rules build  ->  rules-<seq>.tar.gz   (deterministic)
         |  rules sign   ->  rules-<seq>.tar.gz.sig + latest.json   (ed25519)
@@ -14,7 +14,7 @@ panoptes-rules repository (YAML + tests, reviewed pull requests; the trust root)
 static HTTPS host  (GitHub Pages: latest.json, rules-<seq>.tar.gz)
         |  every rules.feed.interval:  GET latest.json -> download -> verify -> validate -> test -> install
         v
-panoptes-server:  built-in rules  <  feed rules  <  local rules (DB)
+holealign-server:  built-in rules  <  feed rules  <  local rules (DB)
 ```
 
 The feed is **off by default**. A server without it works exactly as before, with the rules shipped in the
@@ -24,11 +24,11 @@ binary (and optionally `rules_dir`).
 
 | | |
 |---|---|
-| Pointer URL | `https://donsosiska.github.io/panoptes-rules/latest.json` |
+| Pointer URL | `https://donsosiska.github.io/holealign-rules/latest.json` |
 | Public key (base64 ed25519) | `UuFW4nYSCwI3xfHhwapVhYrjYhVO6i7yaxOTv9KFCuM=` |
 | `key_id` | `75eef42e119d4dda` (first 16 hex characters of the SHA-256 of the raw public key) |
-| Canonical key location | [keys/rules-public.key](https://github.com/DonSosiska/panoptes-rules/blob/main/keys/rules-public.key) in the rules repository |
-| Source | [DonSosiska/panoptes-rules](https://github.com/DonSosiska/panoptes-rules) |
+| Canonical key location | [keys/rules-public.key](https://github.com/DonSosiska/holealign-rules/blob/main/keys/rules-public.key) in the rules repository |
+| Source | [DonSosiska/holealign-rules](https://github.com/DonSosiska/holealign-rules) |
 
 Turn it on:
 
@@ -36,7 +36,7 @@ Turn it on:
 rules:
   feed:
     enabled: true
-    url: https://donsosiska.github.io/panoptes-rules/latest.json
+    url: https://donsosiska.github.io/holealign-rules/latest.json
     trusted_keys:
       - "UuFW4nYSCwI3xfHhwapVhYrjYhVO6i7yaxOTv9KFCuM="
 ```
@@ -194,8 +194,8 @@ required on a schedule. `feed_ok` is sent on recovery.
 ```yaml
 rules:
   feed:
-    enabled: false                      # PANOPTES_RULES_FEED_ENABLED
-    url: https://donsosiska.github.io/panoptes-rules/latest.json   # https:// (file:// allowed); empty = import only
+    enabled: false                      # HOLEALIGN_RULES_FEED_ENABLED
+    url: https://donsosiska.github.io/holealign-rules/latest.json   # https:// (file:// allowed); empty = import only
     interval: 6h                        # >= 1m
     trusted_keys:                       # base64 ed25519 public keys; required when enabled
       - "UuFW4nYSCwI3xfHhwapVhYrjYhVO6i7yaxOTv9KFCuM="
@@ -227,11 +227,11 @@ The rules repository is the trust root: whoever can get a change merged there an
 can publish rules to every server that trusts the key. Its CI is built around that.
 
 - **Pull requests are validated without secrets** (`validate.yml`, `pull_request`, never
-  `pull_request_target`): it builds `panoptes-server` from the commit pinned in the repository's
-  `PANOPTES_REF`, runs `rules build` (validation, tests, coverage policy; rules must be `reviewed`, so an
+  `pull_request_target`): it builds `holealign-server` from the commit pinned in the repository's
+  `HOLEALIGN_REF`, runs `rules build` (validation, tests, coverage policy; rules must be `reviewed`, so an
   unreviewed bot draft fails by design) and checks that the eight rules shared with this repository are
   byte-identical to the copies in `rules/` and `rules-tests/` here.
-- **`PANOPTES_REF` must be an ancestor of panoptes `main`.** The build action checks out the full
+- **`HOLEALIGN_REF` must be an ancestor of holealign `main`.** The build action checks out the full
   history at that commit and refuses it when it is not on `main`, so a commit from a fork, an unmerged
   branch or rewritten history cannot become the build tool.
 - **Release only from the tip of `main`.** The release workflow runs on pushes to `main` that change
@@ -255,7 +255,7 @@ can publish rules to every server that trusts the key. Its CI is built around th
 
 Servers accept a bundle signed by any key in `rules.feed.trusted_keys`, so rotation overlaps two keys:
 
-1. Generate the new key (`panoptes-server rules keygen -out <file>`; prints the public key and `key_id`).
+1. Generate the new key (`holealign-server rules keygen -out <file>`; prints the public key and `key_id`).
 2. Publish the new public key to operators and ask them to list **both** keys in `trusted_keys`.
 3. Wait until the servers run with both keys.
 4. Replace the `RULES_SIGNING_KEY` secret with the new private key and commit the new
@@ -270,14 +270,14 @@ re-verified at every start and a bundle signed only by a removed key is ignored.
 ## Running your own feed
 
 Use your own repository and key when you want rules the public feed does not carry, or no dependency on
-it. You need only `panoptes-server` and a static HTTPS host.
+it. You need only `holealign-server` and a static HTTPS host.
 
 ```sh
-panoptes-server rules keygen -out rules-signing.key      # offline machine; prints the public key
+holealign-server rules keygen -out rules-signing.key      # offline machine; prints the public key
 # in your rules repository: rules/<id>.yaml and tests/<id>.yaml, every rule status: reviewed
-panoptes-server rules build -rules rules -tests tests -seq 1 -out dist
-panoptes-server rules sign -key rules-signing.key dist/rules-1.tar.gz     # writes .sig and latest.json
-panoptes-server rules verify -pub <base64 public key> dist/rules-1.tar.gz # optional
+holealign-server rules build -rules rules -tests tests -seq 1 -out dist
+holealign-server rules sign -key rules-signing.key dist/rules-1.tar.gz     # writes .sig and latest.json
+holealign-server rules verify -pub <base64 public key> dist/rules-1.tar.gz # optional
 # upload rules-1.tar.gz and rules-1.tar.gz.sig first, latest.json last
 ```
 
@@ -298,8 +298,8 @@ or on an offline machine, and keep an offline backup.
 Copy `rules-<seq>.tar.gz` and `rules-<seq>.tar.gz.sig` over your usual channel, then on the server:
 
 ```sh
-panoptes-server rules import rules-43.tar.gz          # uses rules-43.tar.gz.sig; -sig <file> to override
-panoptes-server rules status
+holealign-server rules import rules-43.tar.gz          # uses rules-43.tar.gz.sig; -sig <file> to override
+holealign-server rules status
 ```
 
 `import` verifies against `rules.feed.trusted_keys`, applies the anti-rollback rule (the `seq` must be
@@ -317,9 +317,9 @@ rule, drafts a rule and tests with an LLM, and opens one pull request per draft.
 `status: reviewed`; CI accepts a bundle only then, so a draft cannot reach the feed by itself, and a merge
 is still subject to the `rules-release` approval. The workflow calls Anthropic through workload identity
 federation, so no API key is stored anywhere. Setup:
-<https://github.com/DonSosiska/panoptes-rules/blob/main/docs/bot-setup.md>.
+<https://github.com/DonSosiska/holealign-rules/blob/main/docs/bot-setup.md>.
 
-Three `panoptes-server` commands do the work (the third, `rules eval`, is a measurement tool and not part of the workflow). Neither needs a server configuration or database, and neither
+Three `holealign-server` commands do the work (the third, `rules eval`, is a measurement tool and not part of the workflow). Neither needs a server configuration or database, and neither
 sends host data anywhere (there is none): only advisory and candidate fields go to OSV, KEV, EPSS and the
 LLM provider.
 
@@ -328,7 +328,7 @@ LLM provider.
 Selects CVEs worth a rule that the repository does not cover yet and prints a JSON array.
 
 ```sh
-panoptes-server rules candidates -rules rules -packages packages.txt -max 20 -out candidates.json
+holealign-server rules candidates -rules rules -packages packages.txt -max 20 -out candidates.json
 ```
 
 | Flag | Default | Meaning |
@@ -340,7 +340,7 @@ panoptes-server rules candidates -rules rules -packages packages.txt -max 20 -ou
 | `-epss <url>` | `https://api.first.org/data/v1/epss?cve=` | EPSS API; the CVE list is appended, 100 per request |
 | `-since` | `30d` | a vulnerability *published* (not modified) within this window is relevant |
 | `-kev-max-age` | `1095d` | a KEV vulnerability published within this age is relevant |
-| `-cache <dir>` | `$XDG_CACHE_HOME/panoptes-rules`, else the user cache dir, else a temporary directory | where the OSV bulk exports are kept between runs |
+| `-cache <dir>` | `$XDG_CACHE_HOME/holealign-rules`, else the user cache dir, else a temporary directory | where the OSV bulk exports are kept between runs |
 | `-bulk-url` | `https://osv-vulnerabilities.storage.googleapis.com` | base URL of the bulk exports (mirrors, tests) |
 | `-max` | `20` | cap on the result |
 | `-out <file>` | stdout | |
@@ -373,7 +373,7 @@ list. A CVE appearing for the same package in several ecosystems is listed once 
 Each entry: `vuln, aliases, package, source, binary_packages, type, ecosystem, severity, cvss, epss,
 kev, published`. `package` and `source` are the source package; `binary_packages` is best effort
 (Debian records carry no binaries: it is `[package]`) and the draft does not depend on it. Further
-limits: 8 MiB per API response, 30 s API timeouts, `User-Agent: panoptes-rules-bot`. Failures for
+limits: 8 MiB per API response, 30 s API timeouts, `User-Agent: holealign-rules-bot`. Failures for
 single packages are logged and skipped; exit 1 when every OSV source fails or KEV cannot be read.
 
 Expected cost of a run with the six packages openssh, openssl, nginx, sudo, glibc and curl on the
@@ -386,27 +386,27 @@ path needed.
 Writes one rule and its tests for one candidate and prints a Markdown pull request body.
 
 ```sh
-panoptes-server rules draft -candidate-file candidates.json -index 0 \
+holealign-server rules draft -candidate-file candidates.json -index 0 \
   -rules rules -tests tests -out-rules rules -out-tests tests > pr-body.md
 ```
 
 Flags: `-candidate <json>` or `-candidate-file <file> -index N`; `-rules`, `-tests` (existing rules
 and tests: few-shot examples and ID collision); `-out-rules`, `-out-tests` (default: `-rules`,
-`-tests`); `-provider`, `-model`, `-base-url` (defaults from `PANOPTES_LLM_PROVIDER`,
-`PANOPTES_LLM_MODEL`, `PANOPTES_LLM_BASE_URL`; key from `PANOPTES_LLM_API_KEY` or
+`-tests`); `-provider`, `-model`, `-base-url` (defaults from `HOLEALIGN_LLM_PROVIDER`,
+`HOLEALIGN_LLM_MODEL`, `HOLEALIGN_LLM_BASE_URL`; key from `HOLEALIGN_LLM_API_KEY` or
 `ANTHROPIC_API_KEY`; provider `anthropic` is assumed when only a key is set); `-max-attempts`
-(default 2); `-osv-url`; `-effort low|medium|high|xhigh|max` (default `PANOPTES_LLM_EFFORT`, else `medium`). A
+(default 2); `-osv-url`; `-effort low|medium|high|xhigh|max` (default `HOLEALIGN_LLM_EFFORT`, else `medium`). A
 summary line `usage: model=... calls=N in=... out=... cache_read=... cache_write=... est_usd=...` goes to
 stderr after the run (see [llm.md](llm.md#prompt-caching-usage-and-effort)); stdout and the exit codes are
 unchanged. `rules candidates` makes no LLM call and has no `-effort`.
 
-Keyless authentication. When neither `PANOPTES_LLM_API_KEY` nor `ANTHROPIC_API_KEY` is set, the
+Keyless authentication. When neither `HOLEALIGN_LLM_API_KEY` nor `ANTHROPIC_API_KEY` is set, the
 Anthropic SDK looks for workload identity federation credentials in the environment:
 `ANTHROPIC_FEDERATION_RULE_ID`, `ANTHROPIC_ORGANIZATION_ID`, `ANTHROPIC_SERVICE_ACCOUNT_ID` and
 `ANTHROPIC_IDENTITY_TOKEN_FILE` (optionally `ANTHROPIC_WORKSPACE_ID`). Then no API key is needed;
-set `-provider anthropic` (or `PANOPTES_LLM_PROVIDER`) explicitly, because without a key the provider
+set `-provider anthropic` (or `HOLEALIGN_LLM_PROVIDER`) explicitly, because without a key the provider
 is not inferred. Setup for the rules repository's workflow:
-<https://github.com/DonSosiska/panoptes-rules/blob/main/docs/bot-setup.md>.
+<https://github.com/DonSosiska/holealign-rules/blob/main/docs/bot-setup.md>.
 
 The model sees the same prompt as the server drafter (fact catalog, CEL environment, untrusted-data
 delimiters, sanitising) plus a repository variant that asks for `{rule, tests}` with at least one
@@ -446,7 +446,7 @@ Measures how well a model drafts rules, against human-reviewed rules and their t
 cheaper model is good enough. **It makes real LLM calls and spends real money** (see below).
 
 ```sh
-panoptes-server rules eval -rules rules -tests tests \
+holealign-server rules eval -rules rules -tests tests \
   -variants claude-sonnet-5-5@medium,claude-haiku-5-5@medium,claude-haiku-5-5@high \
   -runs 3 -out report.json > summary.md
 ```
@@ -455,14 +455,14 @@ Usage: `rules eval -rules <dir> -tests <dir> [-ids a,b] [-variants model[@effort
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `-rules`, `-tests` | required | the reference rules and tests, for example a `panoptes-rules` checkout |
+| `-rules`, `-tests` | required | the reference rules and tests, for example a `holealign-rules` checkout |
 | `-ids` | every rule with `status: reviewed` that has tests | comma-separated rule IDs |
-| `-variants` | one variant: `-model` / `PANOPTES_LLM_MODEL`, else `claude-sonnet-5-5` | comma-separated `model[@effort]`; without `@effort`, `-effort` applies |
+| `-variants` | one variant: `-model` / `HOLEALIGN_LLM_MODEL`, else `claude-sonnet-5-5` | comma-separated `model[@effort]`; without `@effort`, `-effort` applies |
 | `-runs` | `3` | drafts per rule and variant (a model is not deterministic) |
 | `-max-attempts` | `2` | attempts per draft, as in `rules draft` |
 | `-concurrency` | `2` | drafts in flight; raise it with care, rate limits apply |
 | `-out` | | JSON report with every run |
-| `-provider`, `-base-url`, `-osv-url`, `-effort` | as in `rules draft` | the key comes from `PANOPTES_LLM_API_KEY` or `ANTHROPIC_API_KEY` |
+| `-provider`, `-base-url`, `-osv-url`, `-effort` | as in `rules draft` | the key comes from `HOLEALIGN_LLM_API_KEY` or `ANTHROPIC_API_KEY` |
 
 For every reference rule, variant and run the command builds a candidate from the rule (vuln: the first
 `CVE-*` in `vulns`, else the first ID; its other vulns are aliases; package: the `source` of the `deb`

@@ -8,8 +8,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/DonSosiska/panoptes/internal/server/llm"
-	"github.com/DonSosiska/panoptes/internal/server/rulesbot"
+	"github.com/DonSosiska/holealign/internal/server/llm"
+	"github.com/DonSosiska/holealign/internal/server/rulesbot"
 )
 
 const evalUsageLine = "usage: rules eval -rules <dir> -tests <dir> [-ids a,b] [-variants model[@effort],...] [-runs 3] [-max-attempts 2] [-concurrency 2] [-out report.json] [-provider p] [-base-url u] [-osv-url u] [-effort medium]"
@@ -22,16 +22,16 @@ func rulesEval(args []string, stdout, stderr io.Writer) error {
 	rulesDir := fs.String("rules", "", "directory with the reference rules")
 	testsDir := fs.String("tests", "", "directory with the reference tests")
 	ids := fs.String("ids", "", "comma-separated rule IDs (default: every reviewed rule that has tests)")
-	variants := fs.String("variants", "", "comma-separated model[@effort] list, e.g. claude-sonnet-5-5@medium,claude-haiku-5-5@medium (default: the -model/PANOPTES_LLM_MODEL or claude-sonnet-5-5)")
+	variants := fs.String("variants", "", "comma-separated model[@effort] list, e.g. claude-sonnet-5-5@medium,claude-haiku-5-5@medium (default: the -model/HOLEALIGN_LLM_MODEL or claude-sonnet-5-5)")
 	runs := fs.Int("runs", 3, "drafts per rule and variant")
 	attempts := fs.Int("max-attempts", 2, "LLM attempts per draft, as in 'rules draft'")
 	conc := fs.Int("concurrency", 2, "drafts in flight")
 	out := fs.String("out", "", "write the JSON report to this file")
-	provider := fs.String("provider", os.Getenv("PANOPTES_LLM_PROVIDER"), "anthropic | openai-compatible (env PANOPTES_LLM_PROVIDER)")
-	model := fs.String("model", os.Getenv("PANOPTES_LLM_MODEL"), "model for a variant without one (env PANOPTES_LLM_MODEL)")
-	baseURL := fs.String("base-url", os.Getenv("PANOPTES_LLM_BASE_URL"), "provider base URL (env PANOPTES_LLM_BASE_URL)")
+	provider := fs.String("provider", os.Getenv("HOLEALIGN_LLM_PROVIDER"), "anthropic | openai-compatible (env HOLEALIGN_LLM_PROVIDER)")
+	model := fs.String("model", os.Getenv("HOLEALIGN_LLM_MODEL"), "model for a variant without one (env HOLEALIGN_LLM_MODEL)")
+	baseURL := fs.String("base-url", os.Getenv("HOLEALIGN_LLM_BASE_URL"), "provider base URL (env HOLEALIGN_LLM_BASE_URL)")
 	osv := fs.String("osv-url", rulesbot.DefaultOSVURL, "OSV API base URL (advisory source)")
-	effort := fs.String("effort", defaultEffort(), "effort of a variant without @effort (env PANOPTES_LLM_EFFORT)")
+	effort := fs.String("effort", defaultEffort(), "effort of a variant without @effort (env HOLEALIGN_LLM_EFFORT)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}

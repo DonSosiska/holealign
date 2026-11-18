@@ -10,7 +10,7 @@ func TestTriageEPSSThreshold(t *testing.T) {
 	}
 	env := func(v string) func(string) (string, bool) {
 		return func(k string) (string, bool) {
-			if k == "PANOPTES_TRIAGE_EPSS_THRESHOLD" {
+			if k == "HOLEALIGN_TRIAGE_EPSS_THRESHOLD" {
 				return v, true
 			}
 			return "", false

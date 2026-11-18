@@ -10,7 +10,7 @@ import (
 
 // The server links the inventory scanner (built-in local agent) and Grype. Both of the SQLite
 // drivers register the database/sql name "sqlite" and a second registration panics at start, so
-// modernc.org/sqlite must only be linked by the agent binary (cmd/panoptes-agent/sqlite_driver.go).
+// modernc.org/sqlite must only be linked by the agent binary (cmd/holealign-agent/sqlite_driver.go).
 
 func TestSingleSQLiteDriver(t *testing.T) {
 	// Reaching this point means package initialisation (all driver registrations) did not panic.
@@ -50,10 +50,10 @@ func goDeps(t *testing.T, pkg string) []string {
 
 func TestModerncSQLiteOnlyInAgentBinary(t *testing.T) {
 	const modernc = "modernc.org/sqlite"
-	if slices.Contains(goDeps(t, "github.com/DonSosiska/panoptes/cmd/panoptes-server"), modernc) {
+	if slices.Contains(goDeps(t, "github.com/DonSosiska/holealign/cmd/holealign-server"), modernc) {
 		t.Fatalf("the server binary links %s: it would panic at start (driver \"sqlite\" registered twice)", modernc)
 	}
-	if !slices.Contains(goDeps(t, "github.com/DonSosiska/panoptes/cmd/panoptes-agent"), modernc) {
+	if !slices.Contains(goDeps(t, "github.com/DonSosiska/holealign/cmd/holealign-agent"), modernc) {
 		t.Fatalf("the agent binary no longer links %s: Syft cannot read newer RPM databases", modernc)
 	}
 }

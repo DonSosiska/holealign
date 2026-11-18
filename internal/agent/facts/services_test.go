@@ -88,7 +88,7 @@ func TestServicesAbsentWithoutProc(t *testing.T) {
 func TestServiceNamesFromComms(t *testing.T) {
 	comms := []string{
 		"apache2\n", "php-fpm8.2\n", "mariadbd\n", "postgres", "redis-server",
-		"[kworker/0:1]", "", "bash", "sleep", "panoptes-agent", "Dockerd\n", "named",
+		"[kworker/0:1]", "", "bash", "sleep", "holealign-agent", "Dockerd\n", "named",
 	}
 	want := []string{
 		"apache2", "bind9", "docker", "httpd", "mariadb", "mysql",

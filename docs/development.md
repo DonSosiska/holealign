@@ -13,8 +13,8 @@ Contents: [Repository layout](#repository-layout) - [Building](#building) - [Tes
 
 | Path | Contents |
 |---|---|
-| `cmd/panoptes-agent/` | Agent entry point: `-mode all\|collector\|sender`, `-once`, `-print-facts`, `-print-inventory`, `-print-server-pin` |
-| `cmd/panoptes-server/` | Server entry point and CLI: `serve`, `token`, `host`, `user`, `rules ...`; listeners, TLS, privilege drop, retention job ([api.md](api.md#panoptes-server)) |
+| `cmd/holealign-agent/` | Agent entry point: `-mode all\|collector\|sender`, `-once`, `-print-facts`, `-print-inventory`, `-print-server-pin` |
+| `cmd/holealign-server/` | Server entry point and CLI: `serve`, `token`, `host`, `user`, `rules ...`; listeners, TLS, privilege drop, retention job ([api.md](api.md#holealign-server)) |
 | `internal/model/` | Types shared by agent and server (wire format, findings, rules, events). A change here is a contract change. |
 | `internal/agent/collector/` | Root collector: unix socket server, peer-credential check |
 | `internal/agent/hostdata/` | The facts and inventory source: local (in-process) or the collector client |
@@ -63,11 +63,11 @@ make release-snapshot   # local goreleaser dry run: archives, .deb/.rpm, checksu
 | Web UI package | `go test -race -timeout 30m ./internal/server/web/` | The slowest package. The default 10 minute timeout can be too short under `-race`; give it 30 minutes. |
 | Linux-only | `go test ./internal/agent/...` on Linux | Some tests use `//go:build linux` (symlink-safe opens, ancestor permission checks). On macOS or Windows, run them in a Linux container, for example `docker run --rm -v "$PWD":/src -w /src golang:1.27.4 go test ./internal/agent/...`. |
 | Rules | `go test ./internal/server/rules/ ./internal/server/rulesfeed/` | Loads the shipped rules and runs every `rules-tests/*.yaml` through the real engine; feed bundle build, signing and verification. |
-| Drafting evaluation | `panoptes-server rules eval -rules rules -tests rules-tests -ids <a,b> -runs 1 -variants claude-haiku-5-5@medium` | Not part of CI and **spends real money**: drafts the reference rules with the listed models and scores them against the reference tests (metrics in [rules-feed.md](rules-feed.md#rules-eval)). Its unit tests use a fake provider and make no network calls. |
-| Matcher integration | `PANOPTES_TEST_GRYPE_DB=<dir> go test -tags integration ./internal/server/match/` | Needs a Grype DB; skips when none is available. |
+| Drafting evaluation | `holealign-server rules eval -rules rules -tests rules-tests -ids <a,b> -runs 1 -variants claude-haiku-5-5@medium` | Not part of CI and **spends real money**: drafts the reference rules with the listed models and scores them against the reference tests (metrics in [rules-feed.md](rules-feed.md#rules-eval)). Its unit tests use a fake provider and make no network calls. |
+| Matcher integration | `HOLEALIGN_TEST_GRYPE_DB=<dir> go test -tags integration ./internal/server/match/` | Needs a Grype DB; skips when none is available. |
 | Shell checks | `sh -n deploy/install.sh`, `shellcheck deploy/install.sh deploy/e2e/*.sh scripts/govulncheck.sh` | Also in CI. |
 | End to end | `deploy/e2e/run.sh` | Docker Compose: a Matrix homeserver, the server, three Debian hosts with the real agent; asserts alerts, routing, dedup, the fix flow and the web login. Needs Docker, `curl`, `jq`, `openssl`. See below. |
-| Privilege separation | `deploy/e2e/split-mode.sh` | Runs the collector as root and the sender as `panoptes` in a container against a fake server; checks that facts and inventory arrive through the socket and that the sender user cannot read `/etc/shadow`. |
+| Privilege separation | `deploy/e2e/split-mode.sh` | Runs the collector as root and the sender as `holealign` in a container against a fake server; checks that facts and inventory arrive through the socket and that the sender user cannot read `/etc/shadow`. |
 
 Add a unit test for every behaviour change. Rules get cases in `rules-tests/` (and a test in
 `internal/server/rules/` for engine behaviour); parsers get fixtures under
@@ -92,7 +92,7 @@ Add a unit test for every behaviour change. Rules get cases in `rules-tests/` (a
 ## Vulnerability check
 
 `make vulncheck` (also run in CI and by the release workflow) is `bash scripts/govulncheck.sh`: it builds
-`panoptes-agent` and `panoptes-server` and runs `govulncheck -mode=binary` on each (needs `govulncheck` and
+`holealign-agent` and `holealign-server` and runs `govulncheck -mode=binary` on each (needs `govulncheck` and
 `jq`; CI installs `golang.org/x/vuln/cmd/govulncheck@v1.9.0`). Source-mode `govulncheck ./...` does not finish
 in CI, so it is not used. The check fails on any finding that is not listed in `.govulncheck-allow` **for that
 binary**.
@@ -101,11 +101,11 @@ Format of `.govulncheck-allow` (one entry per line; `#` starts a comment; blank 
 
 ```
 ID BINARY  # reason, reviewed YYYY-MM-DD
-GO-2026-6905 panoptes-agent  # github.com/blakesmith/ar via Syft deb parser; no upstream fix; reviewed 2026-11-17
-GO-2026-6905 panoptes-server # same module via Syft; no upstream fix; reviewed 2026-11-18
+GO-2026-6905 holealign-agent  # github.com/blakesmith/ar via Syft deb parser; no upstream fix; reviewed 2026-11-17
+GO-2026-6905 holealign-server # same module via Syft; no upstream fix; reviewed 2026-11-18
 ```
 
-`BINARY` is `panoptes-agent` or `panoptes-server`. A line with only an ID is rejected as malformed. A finding
+`BINARY` is `holealign-agent` or `holealign-server`. A line with only an ID is rejected as malformed. A finding
 allowed for the agent still fails if it shows up in the server, so each binary is reviewed separately.
 Accept a finding only when it has no fix (or the fix is not available yet), explain why it is not reachable or
 mitigated, and date the review. Delete a line as soon as the finding is no longer reported (the script warns
@@ -133,22 +133,22 @@ upgrade.
 
 ## Bumping the rules repository
 
-The rules repository ([panoptes-rules](https://github.com/DonSosiska/panoptes-rules)) builds, tests and signs
-bundles with a `panoptes-server` built from this repository at the commit in its `PANOPTES_REF` file. That
+The rules repository ([holealign-rules](https://github.com/DonSosiska/holealign-rules)) builds, tests and signs
+bundles with a `holealign-server` built from this repository at the commit in its `HOLEALIGN_REF` file. That
 commit must be on `main` here. When a change here affects rules, update the rules repository as well:
 
 | You changed here | Do in the rules repository |
 |---|---|
-| A **fact** (name, format, new fact), a fact description, the CEL environment, `file.match` policy | Wait until the change is on `main` here. Bump `PANOPTES_REF` to a commit that contains it (`git ls-remote https://github.com/DonSosiska/panoptes refs/heads/main`), open a pull request; its validation rebuilds with the new binary. Then add rules that use the new fact. |
-| One of the eight **shipped rules** (`rules/`, `rules-tests/`) | Apply the identical change to `rules/` and `tests/` there; its CI fails when the copies differ. Bump `PANOPTES_REF` first if the change needs engine support. |
-| The **bundle format** or the validation rules | Bump `PANOPTES_REF`; consider `min_server_version`, because servers that are older than a bundle's requirement ignore it. |
+| A **fact** (name, format, new fact), a fact description, the CEL environment, `file.match` policy | Wait until the change is on `main` here. Bump `HOLEALIGN_REF` to a commit that contains it (`git ls-remote https://github.com/DonSosiska/holealign refs/heads/main`), open a pull request; its validation rebuilds with the new binary. Then add rules that use the new fact. |
+| One of the eight **shipped rules** (`rules/`, `rules-tests/`) | Apply the identical change to `rules/` and `tests/` there; its CI fails when the copies differ. Bump `HOLEALIGN_REF` first if the change needs engine support. |
+| The **bundle format** or the validation rules | Bump `HOLEALIGN_REF`; consider `min_server_version`, because servers that are older than a bundle's requirement ignore it. |
 
 A bundle whose `catalog` lists a fact an older server does not know is rejected by that server as a whole
 (it keeps its previous bundle and asks to be upgraded), so release the code first, and tell operators, before
 publishing rules that depend on it. Fact descriptions live in `factDescriptions` in
-`cmd/panoptes-server/main.go` and feed the LLM prompt (a test requires one per catalog fact except `agent.*`);
+`cmd/holealign-server/main.go` and feed the LLM prompt (a test requires one per catalog fact except `agent.*`);
 update them together with [contracts.md](contracts.md#3-fact-catalog) and [rules.md](rules.md#fact-catalog).
-`PANOPTES_REF` is a full 40-character SHA, not managed by Dependabot.
+`HOLEALIGN_REF` is a full 40-character SHA, not managed by Dependabot.
 
 ## Release process
 
@@ -163,7 +163,7 @@ using [GoReleaser](../.goreleaser.yaml). You do not build releases locally.
 4. The job refuses any tag that is not an ancestor of `origin/main`, then builds linux amd64 and arm64
    archives, `.deb` and `.rpm` packages, SPDX SBOMs (Syft) and `checksums.txt`; signs `checksums.txt` and the
    container images with keyless **cosign**; pushes the multi-arch image
-   `ghcr.io/donsosiska/panoptes-server:X.Y.Z` (and `latest` for final releases, not for pre-releases such as
+   `ghcr.io/donsosiska/holealign-server:X.Y.Z` (and `latest` for final releases, not for pre-releases such as
    `-rc1`); and attests build **provenance** for the archives and packages.
 5. Verify the result with [the commands in installation.md](installation.md#verifying-releases). Update
    [CHANGELOG.md](../CHANGELOG.md).
@@ -176,4 +176,4 @@ restricted to protected `v*` tags; also tag protection for `v*` and branch prote
 versions (cosign, Syft, GoReleaser) are pinned in the workflow; upgrade them deliberately. Action versions and
 base-image digests are pinned and updated by Dependabot. The rules feed has its own, separate release path
 in the rules repository ([rules-feed.md](rules-feed.md#how-the-public-feed-is-built-and-signed)); releasing
-Panoptes does not publish rules and publishing rules does not release Panoptes.
+Holealign does not publish rules and publishing rules does not release Holealign.

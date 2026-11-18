@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/DonSosiska/panoptes/internal/model"
+	"github.com/DonSosiska/holealign/internal/model"
 )
 
 // Regression: the cap used to run before evaluation, ranking an exploitable low-severity finding

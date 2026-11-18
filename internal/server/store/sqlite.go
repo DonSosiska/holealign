@@ -19,7 +19,7 @@ import (
 	// modernc.org/sqlite as well would panic ("Register called twice for driver sqlite").
 	_ "github.com/glebarez/go-sqlite"
 
-	"github.com/DonSosiska/panoptes/internal/model"
+	"github.com/DonSosiska/holealign/internal/model"
 )
 
 //go:embed migrations/*.sql

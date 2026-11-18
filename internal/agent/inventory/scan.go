@@ -19,8 +19,8 @@ import (
 	"github.com/anchore/syft/syft/sbom"
 	"github.com/anchore/syft/syft/source"
 
-	"github.com/DonSosiska/panoptes/internal/agent/config"
-	"github.com/DonSosiska/panoptes/internal/model"
+	"github.com/DonSosiska/holealign/internal/agent/config"
+	"github.com/DonSosiska/holealign/internal/model"
 )
 
 // Scan scans the host root filesystem and, when the Docker socket exists, every local image.

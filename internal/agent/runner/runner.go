@@ -12,10 +12,10 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/DonSosiska/panoptes/internal/agent/config"
-	"github.com/DonSosiska/panoptes/internal/agent/hostdata"
-	"github.com/DonSosiska/panoptes/internal/agent/transport"
-	"github.com/DonSosiska/panoptes/internal/model"
+	"github.com/DonSosiska/holealign/internal/agent/config"
+	"github.com/DonSosiska/holealign/internal/agent/hostdata"
+	"github.com/DonSosiska/holealign/internal/agent/transport"
+	"github.com/DonSosiska/holealign/internal/model"
 )
 
 // unauthorizedRetry is how long to wait after a 401 when no enroll token is available.
@@ -290,7 +290,7 @@ func (r *Runner) enroll(ctx context.Context) error {
 	})
 	if errors.Is(err, transport.ErrEnrollConflict) {
 		r.log.Error("server refused enrollment: host already exists and the previous key is missing or invalid; "+
-			"run `panoptes-server host allow-reenroll <hostname>` on the server; retrying hourly", "hostname", host)
+			"run `holealign-server host allow-reenroll <hostname>` on the server; retrying hourly", "hostname", host)
 	}
 	if err != nil {
 		return fmt.Errorf("enroll: %w", err)

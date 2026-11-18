@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/DonSosiska/panoptes/internal/model"
+	"github.com/DonSosiska/holealign/internal/model"
 )
 
 func TestCVSS3Score(t *testing.T) {
@@ -79,7 +79,7 @@ func newFakeAPIs(t *testing.T, vulns []fakeVuln, epss map[string]string) *fakeAP
 	count := func(r *http.Request) {
 		f.mu.Lock()
 		f.requests++
-		if r.Header.Get("User-Agent") != "panoptes-rules-bot" {
+		if r.Header.Get("User-Agent") != "holealign-rules-bot" {
 			f.uaOK = false
 		}
 		f.mu.Unlock()

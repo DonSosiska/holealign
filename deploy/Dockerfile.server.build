@@ -1,6 +1,6 @@
-# Builds panoptes-server from source, for people without goreleaser.
+# Builds holealign-server from source, for people without goreleaser.
 # Run from the repository root (the build context is the repo):
-#   docker build -f deploy/Dockerfile.server.build -t panoptes-server:dev .
+#   docker build -f deploy/Dockerfile.server.build -t holealign-server:dev .
 ARG GO_IMAGE=golang:1.27.4@sha256:fe517acaa580cc7915457080f850c37e618b3c1e750f98b58fc6429b605147a1
 
 FROM ${GO_IMAGE} AS build
@@ -10,19 +10,19 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" \
-        -o /out/panoptes-server ./cmd/panoptes-server \
- && mkdir -p /out/var/lib/panoptes
+        -o /out/holealign-server ./cmd/holealign-server \
+ && mkdir -p /out/var/lib/holealign
 
 FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
 
-COPY --from=build /out/panoptes-server /usr/bin/panoptes-server
-COPY rules/ /usr/share/panoptes/rules/
-COPY --from=build --chown=65532:65532 /out/var/lib/panoptes /var/lib/panoptes
+COPY --from=build /out/holealign-server /usr/bin/holealign-server
+COPY rules/ /usr/share/holealign/rules/
+COPY --from=build --chown=65532:65532 /out/var/lib/holealign /var/lib/holealign
 
-VOLUME /var/lib/panoptes
+VOLUME /var/lib/holealign
 # 8080 agent API, 8081 admin UI
 EXPOSE 8080 8081
 
 # -version works as: docker run --rm <image> -version
-ENTRYPOINT ["/usr/bin/panoptes-server"]
+ENTRYPOINT ["/usr/bin/holealign-server"]
 CMD ["serve"]

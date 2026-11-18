@@ -1,4 +1,4 @@
-# Panoptes contracts
+# Holealign contracts
 
 Single source of truth for interfaces between components. Go types live in
 `internal/model` and `internal/server/core`; this document explains their semantics.
@@ -11,7 +11,7 @@ Server stores only a SHA-256 hash of agent keys and enrollment tokens.
 
 | Method & path | Body → Response | Notes |
 |---|---|---|
-| `POST /api/v1/enroll` | `EnrollRequest` → `EnrollResponse` | `machine_id` must match `^[0-9a-f]{32,64}$` (agents send a sha256 hex) else 400; labels ≤ 32 entries matching `^[a-z0-9][a-z0-9._-]{0,63}$` else 400; hostname truncated to 253 chars, control, format (zero-width) and bidi characters stripped. 401 on unknown/revoked/expired token; 403 when the token's `max_hosts` is reached. **409** `{"error":"host exists; previous key required (admin: panoptes-server host allow-reenroll <host>)"}` when the `machine_id` is already enrolled and the request carries neither `Authorization: Bearer <current agent key of that host>` nor an admin `allow-reenroll` flag (cleared on use). A permitted re-enroll reuses the host record and rotates the key; it keeps the host's `token_name`, labels and `labels_locked` unless the new token itself carries labels (then the token's labels apply, its `max_hosts` is checked and the host moves to it). The admin permission (`reenroll_allowed_until`) expires (default 1 h). 429 only for **invalid** requests (unknown token, bad body/machine_id/labels): 10/min per client, where a client is an IPv4 address or an IPv6 /64; requests with a valid token are never counted against it (separate cap of 600/min per client). Bodies declaring `Content-Length` > 1 MiB get 413 before reading. |
+| `POST /api/v1/enroll` | `EnrollRequest` → `EnrollResponse` | `machine_id` must match `^[0-9a-f]{32,64}$` (agents send a sha256 hex) else 400; labels ≤ 32 entries matching `^[a-z0-9][a-z0-9._-]{0,63}$` else 400; hostname truncated to 253 chars, control, format (zero-width) and bidi characters stripped. 401 on unknown/revoked/expired token; 403 when the token's `max_hosts` is reached. **409** `{"error":"host exists; previous key required (admin: holealign-server host allow-reenroll <host>)"}` when the `machine_id` is already enrolled and the request carries neither `Authorization: Bearer <current agent key of that host>` nor an admin `allow-reenroll` flag (cleared on use). A permitted re-enroll reuses the host record and rotates the key; it keeps the host's `token_name`, labels and `labels_locked` unless the new token itself carries labels (then the token's labels apply, its `max_hosts` is checked and the host moves to it). The admin permission (`reenroll_allowed_until`) expires (default 1 h). 429 only for **invalid** requests (unknown token, bad body/machine_id/labels): 10/min per client, where a client is an IPv4 address or an IPv6 /64; requests with a valid token are never counted against it (separate cap of 600/min per client). Bodies declaring `Content-Length` > 1 MiB get 413 before reading. |
 | `POST /api/v1/checkin` | `CheckinRequest` → `CheckinResponse` | Every 5 min (default); per host a token bucket: burst 3, one token refilled per 20 s (else 429 + `Retry-After`). Updates labels, OS, facts, `last_checkin`. Labels sent here are ignored for hosts enrolled with a token that has labels. Facts after merge: ≤ 1000 keys, ≤ 1 MiB JSON, each value ≤ 64 KiB, else 413. The request body is limited to 8 MiB (413). `facts_complete: true` replaces the stored facts, `false` merges a diff in which a JSON `null` deletes a fact; an absent `labels` list keeps the stored labels. The response carries `fact_requests` (always a list), `want_inventory`, `want_full_facts` (a diff on the host's first check-in) and `next_checkin_seconds`, which the current server always leaves at 0 (the agent's own interval applies). |
 | `POST /api/v1/inventory` | `InventoryPayload` (gzip, `Content-Encoding: gzip`) → `202` | Max body 64 MiB decompressed (413; a `Content-Length` above it is refused before reading). Every target SBOM must be a CycloneDX JSON document: top-level `"bomFormat":"CycloneDX"` (exact, case-sensitive); keys that equal `components`/`bomFormat` only case-insensitively anywhere in the document are rejected; ≤ 50 000 components (nested ones counted); the matcher enforces the same package cap after decoding. Targets are validated **one by one**: a target that is invalid (unknown kind, empty name, `name` > 512 bytes, `image_id` > 128, > 200 containers or a container name > 256, not CycloneDX, duplicate) or oversized is **skipped**, the valid targets are stored and the response is `202 {"status":"accepted","skipped":[{"kind","name","reason"}]}` (`skipped` omitted when empty; repeated for an identical re-upload). Only payload-level errors (no/oversized `hash`, > 1000 targets, bad JSON/gzip) are 400/413, and `415` (with the `skipped` list) when no target is a CycloneDX document. The previous findings of a skipped target are kept (not resolved) and the skip is reported to the health loop (`pipeline_error`). A host whose uploads keep failing validation gets 429 (6 invalid uploads/min, checked before the body is read). Before the body is read every inventory request (identical-hash and over-limit ones included) is charged to a cheap per-host attempt bucket (`limits.inventory_attempt_burst` 6, refilled at `limits.inventory_attempts_per_minute` 10; 429 + `Retry-After`). At most one inventory decode runs per host at a time (a second concurrent upload gets 429 + `Retry-After`), and server-wide at most `limits.inventory_concurrent_decodes` (4) bodies are decoded at once; when all slots are taken the response is `503` + `Retry-After` (no queueing). The agent retries 429/503 later. Per host a token bucket: burst 3, one token refilled per 5 min (429 + `Retry-After` = seconds until the next token; the agent retries later). An inventory whose `hash` equals the stored one is answered `202` before the limiter, spends no token and does not re-match. Otherwise the server replaces all targets of the host and re-runs matching asynchronously. |
 | `GET /healthz` | → `200 ok` | No auth. Served on the agent and the admin listener. |
@@ -20,7 +20,7 @@ A readable per-endpoint description with field tables is in [api.md](api.md); th
 
 Any request failing Bearer authentication counts against a per-client limit (30/min, then 429); valid agents are never throttled by it. The per-client limiter maps (IPv4 address / IPv6 /64) are bounded LRUs: under key pressure the oldest idle entry is evicted, a new client is never denied for lack of space.
 
-Enrollment tokens (`panoptes-server token create <name> [-max-hosts N] [-expires 72h] [-labels prod,web]`):
+Enrollment tokens (`holealign-server token create <name> [-max-hosts N] [-expires 72h] [-labels prod,web]`):
 optional `max_hosts` (hosts that may enroll), `expires_at`, and `labels`. Token labels are **authoritative**:
 hosts enrolled with such a token get exactly these labels (the token name is stored on the host) and
 check-in labels are ignored, so alert routing cannot be steered by self-asserted labels.
@@ -32,14 +32,14 @@ Agents retry 5xx, 429 (honouring `Retry-After`) and network errors with exponent
 
 `CheckinResponse.WantInventory` is true when the server has no inventory whose hash equals `CheckinRequest.InventoryHash`.
 
-## 2. Agent configuration (`/etc/panoptes/agent.yaml`)
+## 2. Agent configuration (`/etc/holealign/agent.yaml`)
 
 ```yaml
-server_url: https://panoptes.example.com   # https required; no userinfo; redirects are never followed
+server_url: https://holealign.example.com   # https required; no userinfo; redirects are never followed
 allow_insecure_http: false      # true permits an http:// server_url (WARN logged; testing only)
 enroll_token: "pt_..."          # used only until enrolled; blanked in this file after the first successful check-in (below)
 labels: [prod, web, team-a]
-state_dir: /var/lib/panoptes-agent  # agent_id + agent_key stored here (0600)
+state_dir: /var/lib/holealign-agent  # agent_id + agent_key stored here (0600)
 checkin_interval: 5m
 inventory_interval: 6h          # safety-net full rescan; changes trigger earlier
 docker_socket: /var/run/docker.sock  # images are scanned if the socket exists
@@ -48,12 +48,12 @@ exclude_paths: [/proc, /sys, /dev, /run, /var/lib/docker, /var/lib/containerd, /
                 /mnt, /media, /var/lib/containers, /var/lib/kubelet, /var/lib/lxc, /var/lib/lxd, /home/*/.cache]
 host_scan_timeout: 10m          # per scan; a panic or timeout is an error, not a crash
 image_scan_timeout: 5m
-ca_file: /etc/panoptes/ca.pem   # optional PEM bundle; when set ONLY these roots are trusted (no system roots)
+ca_file: /etc/holealign/ca.pem   # optional PEM bundle; when set ONLY these roots are trusted (no system roots)
 server_cert_sha256: ["<64 hex>"] # optional; leaf SubjectPublicKeyInfo SHA-256 pins, checked in addition to chain validation
-client_cert: /etc/panoptes/client.pem  # optional mTLS client certificate; client_key must be set with it
-client_key: /etc/panoptes/client.key
-collector_socket: /run/panoptes/collector.sock  # privilege separation (below); unused in -mode all
-collector_user: panoptes        # uid allowed on the socket besides root; its group owns the socket
+client_cert: /etc/holealign/client.pem  # optional mTLS client certificate; client_key must be set with it
+client_key: /etc/holealign/client.key
+collector_socket: /run/holealign/collector.sock  # privilege separation (below); unused in -mode all
+collector_user: holealign        # uid allowed on the socket besides root; its group owns the socket
 ```
 
 ### Process modes and the collector socket
@@ -62,9 +62,9 @@ One binary, `-mode` flag: `all` (default; one process doing everything, used by 
 `collector` and `sender`. The process that parses untrusted local files as root has no network, and the process
 that talks to the network is not root.
 
-- **collector** (root, `panoptes-collector.service`, `PrivateNetwork=yes`, `IPAddressDeny=any`,
-  `RestrictAddressFamilies=AF_UNIX`): listens on `collector_socket` (`/run/panoptes/collector.sock`; directory
-  `0750 root:panoptes`, socket `0660 root:panoptes`). It applies every collection policy itself (file.match allow/deny
+- **collector** (root, `holealign-collector.service`, `PrivateNetwork=yes`, `IPAddressDeny=any`,
+  `RestrictAddressFamilies=AF_UNIX`): listens on `collector_socket` (`/run/holealign/collector.sock`; directory
+  `0750 root:holealign`, socket `0660 root:holealign`). It applies every collection policy itself (file.match allow/deny
   lists and budgets, binary trust checks, scan timeouts) and runs at most one inventory scan per 10 minutes whoever
   asks (later requests get the previous result). A package change reported by `changed` stays pending (and keeps
   being reported) until a real scan has run: while it is pending the cached inventory is bypassed, but never more
@@ -73,9 +73,9 @@ that talks to the network is not root.
   (`go list -deps` test). In a private network namespace `/proc/net` is empty, so `-mode collector` reads
   `sockets.listening` from `/proc/1/net/*` (the host namespace of PID 1); if that is unreadable the sockets facts are
   omitted (unknown), never reported empty.
-- **sender** (user `panoptes`, `panoptes-agent.service`, empty capability set, `NoNewPrivileges`): the whole runner
-  (enroll, check-in loop, clamping, backoff, credentials in `state_dir` owned by `panoptes`), but facts, inventory,
-  OS info and change detection come from the collector. `/etc/panoptes/agent.yaml` is `root:panoptes 0640`.
+- **sender** (user `holealign`, `holealign-agent.service`, empty capability set, `NoNewPrivileges`): the whole runner
+  (enroll, check-in loop, clamping, backoff, credentials in `state_dir` owned by `holealign`), but facts, inventory,
+  OS info and change detection come from the collector. `/etc/holealign/agent.yaml` is `root:holealign 0640`.
 - Socket protocol: one request per connection, one JSON line of at most 64 KiB, answered by one JSON document
   (gzip-compressed for `inventory`; errors are plain JSON). `SO_PEERCRED` uid must be 0 or the `collector_user`'s uid.
   A `facts` request is bounded to 2 minutes and cancelled when the client closes the connection. `accept`
@@ -94,11 +94,11 @@ that talks to the network is not root.
 | `{"op":"forget_enroll_token"}` | `{"ok":true}`; the root collector atomically rewrites the config file with `enroll_token: ""` |
 | anything else / too large / bad JSON | `{"ok":false,"error":"..."}` |
 
-`forget_enroll_token`: the enrollment token would otherwise stay readable by group `panoptes` in `agent.yaml` forever.
+`forget_enroll_token`: the enrollment token would otherwise stay readable by group `holealign` in `agent.yaml` forever.
 After a successful enrollment and the first successful check-in the sender asks the collector once; the collector
-rewrites the file (temp file in `/etc/panoptes/`, `fsync`, `rename`; other content, mode and owner/group are kept)
+rewrites the file (temp file in `/etc/holealign/`, `fsync`, `rename`; other content, mode and owner/group are kept)
 replacing only the top-level `enroll_token` value with `""`. It refuses any path that is not a regular file (not a
-symlink) directly in `/etc/panoptes/`, and the unit grants it `ReadWritePaths=-/etc/panoptes`. In `-mode all` the
+symlink) directly in `/etc/holealign/`, and the unit grants it `ReadWritePaths=-/etc/holealign`. In `-mode all` the
 process does the same itself when it runs as root (otherwise it logs a WARN and leaves the file; remove the token by
 hand). Consequence: after the token is gone the agent cannot re-enroll by itself (a 401 is retried hourly); a host
 that lost its credentials needs a fresh token in `agent.yaml`. At start the agent logs a WARN when `agent.yaml` or
@@ -111,19 +111,19 @@ request (`request too large` / `bad request`) the stored requests are cleared an
 them. A collector that answers with an error does not stop the check-in: it is sent with the facts still known
 plus `agent.collector_error`; only an unreachable socket skips the cycle.
 
-`panoptes-agent -print-facts` / `-print-inventory` / `-once` always run in-process.
+`holealign-agent -print-facts` / `-print-inventory` / `-once` always run in-process.
 
 Agentless mode: the server can run this same runner in-process for its own host (`local_agent`, §6); there the
 "sender" is the server process, the transport is an in-memory `RoundTripper` to the agent API, and the data source
-is either the collector socket above or `hostdata.Local`. `panoptes-agent -mode collector` on such a host still reads
-`/etc/panoptes/agent.yaml` (which requires a `server_url`; `deploy/install.sh --collector-only` writes a placeholder).
+is either the collector socket above or `hostdata.Local`. `holealign-agent -mode collector` on such a host still reads
+`/etc/holealign/agent.yaml` (which requires a `server_url`; `deploy/install.sh --collector-only` writes a placeholder).
 
 Server identity: TLS 1.2+, chain and host name are always verified (`InsecureSkipVerify` is never set). With `ca_file`
 only that bundle is trusted. With `server_cert_sha256` the presented leaf's SPKI SHA-256 must be in the list (colons
 and upper case are accepted); if `ca_file` is absent the chain is still validated against the system roots. A mismatch
 fails the handshake and logs the presented hash so an operator can pin it. Config validation rejects non-hex or
 wrong-length pins, an unreadable or certificate-less `ca_file`, and `client_cert` without `client_key`.
-`panoptes-agent -print-server-pin` connects to `server_url`, validates the chain normally and prints the leaf SPKI
+`holealign-agent -print-server-pin` connects to `server_url`, validates the chain normally and prints the leaf SPKI
 hash; it is a convenience, not trust-on-first-use. `deploy/install.sh` takes `--ca-file PATH` and `--server-pin HEX`
 (repeatable) and verifies the release with cosign (`checksums.txt.sig`/`.pem`) before trusting any checksum.
 
@@ -131,7 +131,7 @@ Agent hardening rules (not trusting the server): `next_checkin_seconds` is clamp
 `want_inventory` is honoured at most once per 10 min; after a failed scan the next attempt is delayed
 (check-in interval doubled per consecutive failure, max 6 h) and the error is reported as
 `agent.inventory_error`. On enrollment the agent sends a stored previous `agent_key` as
-`Authorization: Bearer`; on `409 Conflict` it logs an ERROR (operator: `panoptes-server host allow-reenroll
+`Authorization: Bearer`; on `409 Conflict` it logs an ERROR (operator: `holealign-server host allow-reenroll
 <hostname>`) and retries hourly. `machine_id` is `hex(sha256("panoptes-machine-id:" + /etc/machine-id))`.
 A `429` is not retried inside the transport backoff loop: it surfaces as `*transport.RateLimitedError`
 (`Retry-After` seconds or HTTP date, default 30 s, clamped to 5 s - 15 min). The run loop logs it at INFO, does not treat
@@ -197,7 +197,7 @@ Command execution rules for collectors: fixed argv (no shell), 10 s timeout (eac
   under an allowed root: `/etc/`, `/opt/*/conf/`, `/opt/*/etc/`, `/usr/local/etc/`. Otherwise the request is
   ignored (logged).
 - Hard denylist on the resolved physical (and logical) path, any component, case-insensitive: `shadow*`,
-  `gshadow*`, `passwd-`, `sudoers*`, `ssh/ssh_host_*`, `ssl/private`, `letsencrypt`, `pki`, `panoptes`,
+  `gshadow*`, `passwd-`, `sudoers*`, `ssh/ssh_host_*`, `ssl/private`, `letsencrypt`, `pki`, `holealign`,
   `krb5.keytab`, `*.key`, `*.pem`, `*.p12`, `*.pfx`, `*.jks`, `*.keystore`, `.htpasswd`, `*secret*`,
   `*credential*`, `*token*`, `NetworkManager`, `wireguard`, `openvpn`, `ppp`, `security`, `polkit-1`,
   `ipsec*`, `strongswan*`, `cloud`, `mysql/debian.cnf`, `*.env`. The server policy for rule `fact_requests` is
@@ -483,7 +483,7 @@ rule changes, the server (re)computes findings for affected hosts:
 with findings and are exempt from burst summarising. The web dashboard shows active feed/pipeline problems from kv
 `health.feed_stale`, `health.pipeline_errors` and `health.notify_errors`.
 
-## 6. Server configuration (`/etc/panoptes/server.yaml`, all keys optional)
+## 6. Server configuration (`/etc/holealign/server.yaml`, all keys optional)
 
 ```yaml
 listen: ":8080"                       # agent API: /api/v1/* and /healthz only
@@ -497,20 +497,20 @@ alerts:
   ops_rooms: []                       # Matrix rooms for server-level events; empty: matrix.default_rooms
 triage:
   epss_threshold: 0.1                 # 0..1; web UI tier: conditions_unknown with EPSS >= this needs attention
-data_dir: /var/lib/panoptes           # SQLite DB + Grype DB cache
+data_dir: /var/lib/holealign           # SQLite DB + Grype DB cache
 feeds:
   interval: 6h                        # vuln DB / KEV / EPSS refresh
-rules_dir: /usr/share/panoptes/rules  # optional: adds to / overrides the rules embedded in the binary
+rules_dir: /usr/share/holealign/rules  # optional: adds to / overrides the rules embedded in the binary
 rules:
   feed:                               # signed central rules feed (docs/rules-feed.md); off by default
-    enabled: false                    # env PANOPTES_RULES_FEED_ENABLED
+    enabled: false                    # env HOLEALIGN_RULES_FEED_ENABLED
     url: ""                           # latest.json, https:// (file:// for mirrors); empty = import only
     interval: 6h                      # >= 1m
     trusted_keys: []                  # base64 ed25519 public keys; required when enabled (list two while rotating)
     stale_after: 7d                   # feed_stale ("rules feed") when no poll succeeded for this long or 3 polls failed
 matrix:
   homeserver: https://matrix.example.com
-  access_token_env: PANOPTES_MATRIX_TOKEN
+  access_token_env: HOLEALIGN_MATRIX_TOKEN
   default_rooms: ["!abc:example.com"]   # used when no label route matches
   routes:                               # label -> rooms; web UI edits are stored in DB and merged
     - {label: prod, rooms: ["!prod:example.com"]}
@@ -518,10 +518,10 @@ llm:
   provider: none                      # none | anthropic | openai-compatible
   model: claude-sonnet-5-5
   base_url: ""                        # openai-compatible only, e.g. http://ollama:11434/v1
-  api_key_env: PANOPTES_LLM_API_KEY
+  api_key_env: HOLEALIGN_LLM_API_KEY
   daily_limit: 50                     # max drafting calls per day
 admin:
-  initial_password_env: PANOPTES_ADMIN_PASSWORD  # creates user "admin" on first start
+  initial_password_env: HOLEALIGN_ADMIN_PASSWORD  # creates user "admin" on first start
 retention:                            # 0 = keep forever; accepts "30d" and Go durations
   resolved_findings: 30d              # delete resolved findings after this age
   notifications: 90d                  # delete notification dedup rows after this age
@@ -532,9 +532,9 @@ limits:                               # 0 = unlimited
   inventory_attempt_burst: 6          # burst of that bucket
   inventory_concurrent_decodes: 4     # inventory bodies decoded at once, server-wide (excess -> 503)
 local_agent:                          # agentless mode: the server monitors its own host (see below)
-  enabled: false                      # env PANOPTES_LOCAL_AGENT_ENABLED
+  enabled: false                      # env HOLEALIGN_LOCAL_AGENT_ENABLED
   source: auto                        # collector | inprocess | auto
-  collector_socket: /run/panoptes/collector.sock
+  collector_socket: /run/holealign/collector.sock
   labels: [server]                    # authoritative (locked) labels of the local host
   checkin_interval: 5m                # >= 1m
   inventory_interval: 6h              # >= 1m
@@ -544,10 +544,10 @@ local_agent:                          # agentless mode: the server monitors its 
 ```
 
 Validation: with `rules.feed.enabled`, `rules.feed.trusted_keys` must hold at least one valid key and `rules.feed.url`
-must be `https://` or `file://`; `rules.feed.interval` is at least 1m. `*_env` names must match `^PANOPTES_[A-Z0-9_]+$` and `matrix.access_token_env`, `llm.api_key_env`,
+must be `https://` or `file://`; `rules.feed.interval` is at least 1m. `*_env` names must match `^HOLEALIGN_[A-Z0-9_]+$` and `matrix.access_token_env`, `llm.api_key_env`,
 `admin.initial_password_env` must be pairwise different; retention/limits must not be negative.
 The initial admin password needs ≥ 12 characters and may come from the file named by
-`PANOPTES_ADMIN_PASSWORD_FILE`. Startup logs a WARN when `public_url`, `matrix.homeserver` or `llm.base_url`
+`HOLEALIGN_ADMIN_PASSWORD_FILE`. Startup logs a WARN when `public_url`, `matrix.homeserver` or `llm.base_url`
 use `http://` for a non-loopback host, when the Grype DB is older than 5 days, when `trusted_proxies` has an entry wider
 than /16 (IPv4) or /48 (IPv6) or `0.0.0.0/0`/`::/0`, when `admin_listen` is non-loopback without admin TLS, and when
 the agent listener is non-loopback without `tls_cert` and without `trusted_proxies` (public-facing, no TLS-terminating proxy). The server runs with
@@ -558,24 +558,24 @@ serves the web UI and `/healthz` and not the agent API. With `admin_listen` empt
 port. `trusted_proxies`: only when the TCP peer is in the list is the client IP taken from the right-most
 `X-Forwarded-For` entry that is not itself a trusted proxy (used for rate limits and the audit log); a malformed or
 zoned (`fe80::1%eth0`) entry makes the peer address the client.
-`panoptes-server user set-password` needs at least 12 characters.
+`holealign-server user set-password` needs at least 12 characters.
 
 ### Agentless mode (`local_agent`)
 
-With `local_agent.enabled: true` the installed `panoptes-server` monitors **its own host** without a separately
-installed `panoptes-agent`; the host appears like any other host (findings, rules, Matrix alerts, silence alerts).
+With `local_agent.enabled: true` the installed `holealign-server` monitors **its own host** without a separately
+installed `holealign-agent`; the host appears like any other host (findings, rules, Matrix alerts, silence alerts).
 `internal/server/localagent` runs the normal agent runner (§2) in the server process and gives it an `http.Client`
 whose `RoundTripper` calls the agent API handler (the mux the agent listener serves) directly in memory (base URL
-`https://panoptes.local`, `RemoteAddr` `127.0.0.1:0`, nothing touches the network). Every server-side validation,
+`https://holealign.local`, `RemoteAddr` `127.0.0.1:0`, nothing touches the network). Every server-side validation,
 limit, authentication and pipeline path therefore applies exactly as for a remote agent; gzip request bodies work.
 
 - **Data source** (`local_agent.source`): `collector` connects to the root collector's unix socket
-  (`collector_socket`; recommended: the server stays unprivileged, the host runs only `panoptes-collector.service`);
+  (`collector_socket`; recommended: the server stays unprivileged, the host runs only `holealign-collector.service`);
   `inprocess` collects in the server process with the server's privileges (`hostdata.Local`; one WARN that facts may
   be incomplete when euid != 0; meant for dev and single-box setups; inside a container it scans the container, not
   the host); `auto` (default) uses `collector` when a probe request on the socket succeeds, otherwise `inprocess`,
   and logs the choice. The collector accepts only root and `collector_user` (SO_PEERCRED), so with `collector` the
-  server must run as that user (`panoptes`), not as a systemd `DynamicUser`.
+  server must run as that user (`holealign`), not as a systemd `DynamicUser`.
 - **data_dir is never scanned**: the in-process scanner always excludes `data_dir` (on top of `exclude_paths`).
   Closing any file descriptor of a file drops the process's POSIX locks on it, so a scanner that merely opens
   the server's own SQLite files would corrupt the database that the store holds open (observed in the e2e run).
@@ -588,7 +588,7 @@ limit, authentication and pipeline path therefore applies exactly as for a remot
   in kv `local_host`, which makes the web UI show a "local (built-in)" badge on the hosts list and the host page.
 - **Conflict rule**: if a host with the same machine id already exists that these credentials do not
   authenticate (e.g. a standalone agent was installed on this box first), the local agent does NOT take it over:
-  it logs one ERROR (`panoptes-server host delete <hostname>` and uninstall the agent, or disable `local_agent`)
+  it logs one ERROR (`holealign-server host delete <hostname>` and uninstall the agent, or disable `local_agent`)
   and does not start. A host this server provisioned itself is recovered after a crash mid-rotation.
 - **Lifecycle**: started after the pipeline and both listeners are up, stopped on shutdown; a panic or error is
   logged and the agent restarts with backoff (5 s doubling to 5 min); it never takes the server down. The local host
@@ -596,8 +596,8 @@ limit, authentication and pipeline path therefore applies exactly as for a remot
   host while the server runs is only noticed after a restart (the in-process agent retries unauthorised calls
   hourly).
 
-Environment variable `PANOPTES_CONFIG` points to the file; every scalar can be overridden by
-`PANOPTES_<SECTION>_<KEY>` (e.g. `PANOPTES_MATRIX_HOMESERVER`).
+Environment variable `HOLEALIGN_CONFIG` points to the file; every scalar can be overridden by
+`HOLEALIGN_<SECTION>_<KEY>` (e.g. `HOLEALIGN_MATRIX_HOMESERVER`).
 
 ## 7. Build constraints
 
@@ -605,8 +605,8 @@ Environment variable `PANOPTES_CONFIG` points to the file; every scalar can be o
   at start-up ("Register called twice"). The **server** links `github.com/glebarez/go-sqlite` (Grype and the
   store); it also links the agent's inventory scanner (Syft) for the built-in local agent (§6), and Syft's RPM
   cataloger then uses that same driver. `modernc.org/sqlite` is therefore imported **only** by the agent binary,
-  in `cmd/panoptes-agent/sqlite_driver.go` (never in `internal/agent/inventory` or any other library package).
-  `cmd/panoptes-server/sqlite_driver_test.go` asserts that the server's dependency graph does not contain
+  in `cmd/holealign-agent/sqlite_driver.go` (never in `internal/agent/inventory` or any other library package).
+  `cmd/holealign-server/sqlite_driver_test.go` asserts that the server's dependency graph does not contain
   `modernc.org/sqlite`, that the agent's does, and that `sql.Drivers()` lists `sqlite` exactly once.
 - Package boundaries: the server and the agent share only `internal/model`, with one exception: the built-in
   local agent, `internal/server/localagent` (imports `agent/{config,hostdata,runner,transport}`).

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/DonSosiska/panoptes/internal/agent/config"
+	"github.com/DonSosiska/holealign/internal/agent/config"
 )
 
 func TestSafeScanRecoversPanic(t *testing.T) {

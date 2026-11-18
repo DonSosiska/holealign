@@ -34,26 +34,26 @@ func heredoc(t *testing.T, script, variable string) string {
 // install.sh embeds the units; they must not drift from deploy/systemd.
 func TestInstallScriptEmbedsTheUnitFiles(t *testing.T) {
 	script := read(t, "deploy/install.sh")
-	if got, want := heredoc(t, script, "UNIT_PATH"), read(t, "deploy/systemd/panoptes-agent.service"); got != want {
-		t.Error("install.sh agent unit differs from deploy/systemd/panoptes-agent.service")
+	if got, want := heredoc(t, script, "UNIT_PATH"), read(t, "deploy/systemd/holealign-agent.service"); got != want {
+		t.Error("install.sh agent unit differs from deploy/systemd/holealign-agent.service")
 	}
-	if got, want := heredoc(t, script, "COLLECTOR_UNIT_PATH"), read(t, "deploy/systemd/panoptes-collector.service"); got != want {
-		t.Error("install.sh collector unit differs from deploy/systemd/panoptes-collector.service")
+	if got, want := heredoc(t, script, "COLLECTOR_UNIT_PATH"), read(t, "deploy/systemd/holealign-collector.service"); got != want {
+		t.Error("install.sh collector unit differs from deploy/systemd/holealign-collector.service")
 	}
 }
 
 func TestUnitIsolationDirectives(t *testing.T) {
-	collector := read(t, "deploy/systemd/panoptes-collector.service")
+	collector := read(t, "deploy/systemd/holealign-collector.service")
 	for _, d := range []string{"PrivateNetwork=yes", "IPAddressDeny=any", "RestrictAddressFamilies=AF_UNIX\n",
-		"RuntimeDirectory=panoptes", "RuntimeDirectoryMode=0750", "Group=panoptes", "UMask=0007", "-mode collector"} {
+		"RuntimeDirectory=holealign", "RuntimeDirectoryMode=0750", "Group=holealign", "UMask=0007", "-mode collector"} {
 		if !strings.Contains(collector, d) {
 			t.Errorf("collector unit lacks %q", d)
 		}
 	}
-	sender := read(t, "deploy/systemd/panoptes-agent.service")
-	for _, d := range []string{"User=panoptes", "Group=panoptes", "Requires=panoptes-collector.service", "CapabilityBoundingSet=\n",
+	sender := read(t, "deploy/systemd/holealign-agent.service")
+	for _, d := range []string{"User=holealign", "Group=holealign", "Requires=holealign-collector.service", "CapabilityBoundingSet=\n",
 		"NoNewPrivileges=yes", "ProtectSystem=strict", "ProtectHome=yes", "PrivateTmp=yes", "PrivateDevices=yes",
-		"StateDirectory=panoptes-agent", "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6", "SystemCallFilter=@system-service",
+		"StateDirectory=holealign-agent", "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6", "SystemCallFilter=@system-service",
 		"MemoryDenyWriteExecute=yes", "-mode sender"} {
 		if !strings.Contains(sender, d) {
 			t.Errorf("sender unit lacks %q", d)

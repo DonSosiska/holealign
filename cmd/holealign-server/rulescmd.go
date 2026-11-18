@@ -12,11 +12,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/DonSosiska/panoptes/internal/server/config"
-	"github.com/DonSosiska/panoptes/internal/server/rulesfeed"
+	"github.com/DonSosiska/holealign/internal/server/config"
+	"github.com/DonSosiska/holealign/internal/server/rulesfeed"
 )
 
-const rulesUsage = `usage: panoptes-server rules <command>
+const rulesUsage = `usage: holealign-server rules <command>
 
   keygen -out <file>                    create an ed25519 signing key (private key file, mode 0600)
   build  -rules <dir> -tests <dir> -seq N -out <dir>
@@ -40,7 +40,7 @@ const rulesUsage = `usage: panoptes-server rules <command>
                                         the reference tests (spends real money; prints a markdown summary)
 `
 
-// rulesCmd implements "panoptes-server rules ...". keygen, build, sign and verify need neither the
+// rulesCmd implements "holealign-server rules ...". keygen, build, sign and verify need neither the
 // configuration nor the database, so they work on a build machine with no server config.
 func rulesCmd(cfgPath string, args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
@@ -136,7 +136,7 @@ func rulesBuild(args []string, stdout, stderr io.Writer) error {
 	seq := fs.Uint64("seq", 0, "bundle sequence number (must be higher than every earlier bundle)")
 	outDir := fs.String("out", "", "output directory")
 	created := fs.String("created-at", "", "created_at for index.json, RFC 3339 (default: $SOURCE_DATE_EPOCH, else now); the same value makes the build reproducible")
-	minVer := fs.String("min-server-version", "", "optional minimum panoptes-server version, e.g. 0.5.0")
+	minVer := fs.String("min-server-version", "", "optional minimum holealign-server version, e.g. 0.5.0")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}

@@ -10,7 +10,7 @@ import (
 
 // BaseURL is the (never resolved) address the in-process agent uses. The agent transport insists
 // on https; nothing is sent over any network.
-const BaseURL = "https://panoptes.local"
+const BaseURL = "https://holealign.local"
 
 // loopbackAddr is the RemoteAddr the API handlers see, so IP limiters treat the local agent
 // like any other loopback client.

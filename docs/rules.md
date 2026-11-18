@@ -130,7 +130,7 @@ A rule is a YAML file. Unknown keys are errors. Every key:
 
 Whole-rule limits: 32 KiB as JSON. Expressions: cost limit 10 000, evaluation timeout 50 ms.
 
-All problems of a rule are reported together (`panoptes-server rules build`, the web UI's "Validate
+All problems of a rule are reported together (`holealign-server rules build`, the web UI's "Validate
 and save", and the log line `invalid rule skipped`).
 
 ## Test case reference
@@ -322,7 +322,7 @@ need them give `conditions_unknown`); the reason is listed in `agent.skipped`. S
 the agent, not exploitability (and the LLM is not offered them).
 
 Not every fact exists on every host. The honest way to see what a host reports is
-`panoptes-agent -print-facts`.
+`holealign-agent -print-facts`.
 
 ## file.match policy
 
@@ -475,16 +475,16 @@ finding's source would be `nginx-core` and the rule would not match, and the cas
 finding is matched by no rule, not by CVE-2099-0001-nginx".
 
 **5. Run the checks.** `rules build` validates the rule, runs the tests with the real engine and applies the
-coverage policy (needs only a `panoptes-server` binary, no configuration):
+coverage policy (needs only a `holealign-server` binary, no configuration):
 
 ```sh
-panoptes-server rules build -rules rules -tests tests -seq 1 -out /tmp/out
+holealign-server rules build -rules rules -tests tests -seq 1 -out /tmp/out
 # built /tmp/out/rules-1.tar.gz: 1 rules, 1 test files
 ```
 
 On a failure it prints every problem and writes no bundle.
 
-**6. Look at a real host.** `panoptes-agent -print-facts` on a machine with nginx shows what
+**6. Look at a real host.** `holealign-agent -print-facts` on a machine with nginx shows what
 `nginx.modules` and `nginx.directives` really contain (the literal spelling of the module name and the
 directive values). Adjust the rule when the facts differ from what you assumed. For a local trial,
 copy the rule into the server's `rules_dir`, restart, and read the verdict reason in the finding page.
@@ -535,12 +535,12 @@ copy the rule into the server's `rules_dir`, restart, and read the verdict reaso
 - [ ] Tests: at least one `exploitable`, one `affected_not_exploitable`, one missing-fact
       `conditions_unknown`, both package types if both are listed, and the image case.
 - [ ] No `file.match` request unless unavoidable; its path and pattern pass the policy and are narrow.
-- [ ] `panoptes-server rules build` passes locally.
+- [ ] `holealign-server rules build` passes locally.
 
 ## Where to send rules
 
 New rules for everyone belong in the rules repository,
-[DonSosiska/panoptes-rules](https://github.com/DonSosiska/panoptes-rules): a pull request with
+[DonSosiska/holealign-rules](https://github.com/DonSosiska/holealign-rules): a pull request with
 `rules/<id>.yaml` and `tests/<id>.yaml`. A merge is the review and is published, signed, to every server that
 trusts the feed ([rules-feed.md](rules-feed.md)). Rules only for your servers can live in your own
 `rules_dir`, in the database (web UI) or in [your own feed](rules-feed.md#running-your-own-feed).
@@ -548,17 +548,17 @@ trusts the feed ([rules-feed.md](rules-feed.md)). Rules only for your servers ca
 The eight rules shipped inside this repository (`rules/`, `rules-tests/`) exist in **both**
 repositories and are kept byte-identical; the rules repository's CI fails when they differ. Changing a
 shipped rule therefore needs a pull request in each repository: change `rules/` and `rules-tests/` here,
-then the same files in the rules repository (bump its `PANOPTES_REF` first if the change needs a newer
+then the same files in the rules repository (bump its `HOLEALIGN_REF` first if the change needs a newer
 binary, see [development.md](development.md#bumping-the-rules-repository)). Code changes (a new fact, a
 new CEL function, a policy change) go to this repository, see [CONTRIBUTING.md](../CONTRIBUTING.md).
 
 ## Testing a rule locally
 
-1. **See the facts.** `panoptes-agent -print-facts` prints exactly the JSON the server will see.
-2. **Validate and run the tests.** `panoptes-server rules build -rules <dir> -tests <dir> -seq 1 -out <tmp>`
+1. **See the facts.** `holealign-agent -print-facts` prints exactly the JSON the server will see.
+2. **Validate and run the tests.** `holealign-server rules build -rules <dir> -tests <dir> -seq 1 -out <tmp>`
    needs no server configuration. For the shipped rules `go test ./internal/server/rules/` does the same.
 3. **Try it in a server.** Put the YAML in `rules_dir` and restart. An invalid rule is skipped and logged
-   as `invalid rule skipped` with the reason (`journalctl -u panoptes-server | grep 'invalid rule'`). In the
+   as `invalid rule skipped` with the reason (`journalctl -u holealign-server | grep 'invalid rule'`). In the
    web UI, **Rules**, open the rule, edit the YAML and press "Validate and save": the same validation runs
    and every problem is listed.
 4. **See the verdict.** After saving or reloading, all hosts are re-evaluated. The finding page shows the

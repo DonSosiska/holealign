@@ -8,11 +8,11 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/DonSosiska/panoptes/internal/model"
-	"github.com/DonSosiska/panoptes/internal/server/rules"
+	"github.com/DonSosiska/holealign/internal/model"
+	"github.com/DonSosiska/holealign/internal/server/rules"
 )
 
-// Repository drafting: the prompt variant and reply parser used by "panoptes-server rules draft".
+// Repository drafting: the prompt variant and reply parser used by "holealign-server rules draft".
 // It shares the server drafter's system prompt (fact catalog, CEL environment, guidance, untrusted
 // data delimiters) and sanitising, but asks for a rule together with its test cases.
 

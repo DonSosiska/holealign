@@ -11,8 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/DonSosiska/panoptes/internal/server/config"
-	"github.com/DonSosiska/panoptes/internal/server/llm"
+	"github.com/DonSosiska/holealign/internal/server/config"
+	"github.com/DonSosiska/holealign/internal/server/llm"
 )
 
 const evalRule = `id: CVE-2099-0100-ref
@@ -57,8 +57,8 @@ func evalDirs(t *testing.T) (rulesDir, testsDir string) {
 }
 
 func TestRulesEvalCLI(t *testing.T) {
-	t.Setenv("PANOPTES_CONFIG", "")
-	for _, e := range []string{"PANOPTES_LLM_PROVIDER", "PANOPTES_LLM_MODEL", "PANOPTES_LLM_BASE_URL", "PANOPTES_LLM_API_KEY", "ANTHROPIC_API_KEY", "PANOPTES_LLM_EFFORT"} {
+	t.Setenv("HOLEALIGN_CONFIG", "")
+	for _, e := range []string{"HOLEALIGN_LLM_PROVIDER", "HOLEALIGN_LLM_MODEL", "HOLEALIGN_LLM_BASE_URL", "HOLEALIGN_LLM_API_KEY", "ANTHROPIC_API_KEY", "HOLEALIGN_LLM_EFFORT"} {
 		t.Setenv(e, "")
 	}
 	osv := httptest.NewServer(http.NotFoundHandler())

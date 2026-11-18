@@ -1,8 +1,8 @@
-# Panoptes server configuration, installed as /etc/panoptes/server.yaml.
+# Holealign server configuration, installed as /etc/holealign/server.yaml.
 # Every key is optional; the values shown are the defaults. Unknown keys are an error.
 # Reference for every key: docs/configuration.md.
 # Secrets are never stored here: they come from environment variables
-# (see server.env.example). Any scalar can also be set as PANOPTES_<SECTION>_<KEY>.
+# (see server.env.example). Any scalar can also be set as HOLEALIGN_<SECTION>_<KEY>.
 
 # Agent API listener (/api/v1/*, /healthz). Monitored hosts connect here; nothing else is served.
 listen: ":8080"
@@ -17,10 +17,10 @@ public_url: "http://localhost:8081"
 
 # Optional native TLS (both keys of a pair required; TLS 1.2 minimum). Alternative: terminate TLS
 # in a reverse proxy.
-# tls_cert: /etc/panoptes/agent.crt        # agent API
-# tls_key: /etc/panoptes/agent.key
-# admin_tls_cert: /etc/panoptes/admin.crt  # admin web UI
-# admin_tls_key: /etc/panoptes/admin.key
+# tls_cert: /etc/holealign/agent.crt        # agent API
+# tls_key: /etc/holealign/agent.key
+# admin_tls_cert: /etc/holealign/admin.crt  # admin web UI
+# admin_tls_key: /etc/holealign/admin.key
 
 # CIDRs / IPs of reverse proxies whose X-Forwarded-For header is trusted for the client address
 # (rate limiting, audit log). Empty: always the TCP peer address. Never list networks that
@@ -51,27 +51,27 @@ limits:
   inventory_concurrent_decodes: 4
 
 # SQLite database and Grype DB cache. Must match StateDirectory in the systemd unit.
-data_dir: /var/lib/panoptes
+data_dir: /var/lib/holealign
 
 # Optional extra/override rule YAML files. The eight shipped rules are embedded in the binary, so
 # this directory may be absent.
-rules_dir: /usr/share/panoptes/rules
+rules_dir: /usr/share/holealign/rules
 
 # Signed central rules feed (docs/rules-feed.md). Layers: built-in < feed < local (UI edits, LLM drafts).
-# Generate the signing key offline with `panoptes-server rules keygen -out <file>` and list its public key.
+# Generate the signing key offline with `holealign-server rules keygen -out <file>` and list its public key.
 rules:
   feed:
     enabled: false
-    # latest.json; https:// required (file:// for mirrors). Empty = only `panoptes-server rules import`.
+    # latest.json; https:// required (file:// for mirrors). Empty = only `holealign-server rules import`.
     url: ""
     interval: 6h
     # Base64 ed25519 public keys; required when enabled. List two keys while rotating.
     trusted_keys: []
     # Ready-to-use settings for the public feed (key_id 75eef42e119d4dda; canonical key:
-    # https://github.com/DonSosiska/panoptes-rules/blob/main/keys/rules-public.key).
+    # https://github.com/DonSosiska/holealign-rules/blob/main/keys/rules-public.key).
     # Compare the key with that file before you trust it, then replace the block above with:
     #   enabled: true
-    #   url: https://donsosiska.github.io/panoptes-rules/latest.json
+    #   url: https://donsosiska.github.io/holealign-rules/latest.json
     #   interval: 6h
     #   trusted_keys: ["UuFW4nYSCwI3xfHhwapVhYrjYhVO6i7yaxOTv9KFCuM="]
     #   stale_after: 7d
@@ -98,14 +98,14 @@ alerts:
 # Web UI triage: which unknown findings "need attention" (the rest is "background").
 triage:
   # conditions_unknown findings with EPSS >= this (0..1) need attention, besides KEV and
-  # Critical/High with a fix available. Env: PANOPTES_TRIAGE_EPSS_THRESHOLD.
+  # Critical/High with a fix available. Env: HOLEALIGN_TRIAGE_EPSS_THRESHOLD.
   epss_threshold: 0.1
 
 matrix:
   # Homeserver for alerts, e.g. https://matrix.example.com. Empty disables Matrix.
   homeserver: ""
   # Name of the environment variable holding the bot's access token.
-  access_token_env: PANOPTES_MATRIX_TOKEN
+  access_token_env: HOLEALIGN_MATRIX_TOKEN
   # Rooms used when no label route matches, e.g. ["!abc:example.com"].
   default_rooms: []
   # Label to rooms. Web UI edits are stored in the database and merged with these.
@@ -121,27 +121,27 @@ llm:
   # openai-compatible only, e.g. http://ollama:11434/v1
   base_url: ""
   # Name of the environment variable holding the API key.
-  api_key_env: PANOPTES_LLM_API_KEY
+  api_key_env: HOLEALIGN_LLM_API_KEY
   # Maximum rule-drafting calls per day.
   daily_limit: 50
 
-# Agentless mode: the server monitors its own host without a separate panoptes-agent. The host
+# Agentless mode: the server monitors its own host without a separate holealign-agent. The host
 # appears as a normal host (findings, rules, alerts, silence alerts) labelled "server" and marked
 # "local (built-in)" in the web UI. No enrollment token is used: the server creates the host record
 # itself and stores the agent key in <data_dir>/local-agent/credentials.json (0600).
 # If a standalone agent already enrolled this machine the server does NOT take the host over: it logs
-# an ERROR (delete that host with `panoptes-server host delete <hostname>` or disable local_agent).
+# an ERROR (delete that host with `holealign-server host delete <hostname>` or disable local_agent).
 local_agent:
-  # Off by default. Env: PANOPTES_LOCAL_AGENT_ENABLED.
+  # Off by default. Env: HOLEALIGN_LOCAL_AGENT_ENABLED.
   enabled: false
   # collector: read the host through the root collector's unix socket (recommended: the server stays
-  #            unprivileged, the host runs only panoptes-collector.service; install.sh --collector-only;
-  #            the server must run as the collector's user "panoptes", see panoptes-server.service).
+  #            unprivileged, the host runs only holealign-collector.service; install.sh --collector-only;
+  #            the server must run as the collector's user "holealign", see holealign-server.service).
   # inprocess: collect inside the server process with its own privileges (dev / single box). Fewer facts
   #            when not root (sshd -T, docker.sock ...; one WARN). In a container this scans the container.
   # auto:      collector when the socket answers, else inprocess (the choice is logged).
   source: auto
-  collector_socket: /run/panoptes/collector.sock
+  collector_socket: /run/holealign/collector.sock
   # Authoritative labels of the local host (locked like enrollment token labels). Changing them is
   # applied at the next server start.
   labels: [server]
@@ -154,11 +154,11 @@ local_agent:
   docker_socket: /var/run/docker.sock   # images are scanned if it exists and is readable
 
 # Names in *_env keys (matrix.access_token_env, llm.api_key_env, admin.initial_password_env) must
-# match ^PANOPTES_[A-Z0-9_]+$ and be pairwise different.
+# match ^HOLEALIGN_[A-Z0-9_]+$ and be pairwise different.
 # A WARN is logged at startup for http:// public_url / matrix.homeserver / llm.base_url on
 # non-loopback hosts.
 admin:
   # Name of the environment variable holding the password for user "admin" (min 12 characters).
-  # Used only when no web user exists yet (first start). PANOPTES_ADMIN_PASSWORD_FILE (a path)
+  # Used only when no web user exists yet (first start). HOLEALIGN_ADMIN_PASSWORD_FILE (a path)
   # is also honoured and takes precedence.
-  initial_password_env: PANOPTES_ADMIN_PASSWORD
+  initial_password_env: HOLEALIGN_ADMIN_PASSWORD

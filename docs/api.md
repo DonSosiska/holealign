@@ -2,13 +2,13 @@
 
 The HTTP API that agents use to talk to the server, and the commands and flags of the two binaries.
 The API is for agents: there is no public management API, administration is the web UI and the
-`panoptes-server` CLI. The formal contract, with every policy detail, is
+`holealign-server` CLI. The formal contract, with every policy detail, is
 [contracts.md section 1](contracts.md#1-agent--server-http-api-apiv1); the Go types are in
 `internal/model`. If this page and the code disagree, the code wins and this page is a bug.
 
 Contents: [Conventions](#conventions) - [Endpoints](#endpoints) - [Enrollment and re-enrollment](#enrollment-and-re-enrollment) -
 [Limits and status codes](#limits-and-status-codes) - [Agent behaviour](#agent-behaviour) -
-[panoptes-server](#panoptes-server) - [panoptes-agent](#panoptes-agent)
+[holealign-server](#holealign-server) - [holealign-agent](#holealign-agent)
 
 ## Conventions
 
@@ -39,7 +39,7 @@ Request (`EnrollRequest`):
 
 | Field | Type | Rules |
 |---|---|---|
-| `token` | string | Enrollment token from `panoptes-server token create` (or the web UI). Required. |
+| `token` | string | Enrollment token from `holealign-server token create` (or the web UI). Required. |
 | `hostname` | string | Truncated to 253 characters; control, format (zero-width) and bidi characters removed. |
 | `machine_id` | string | `^[0-9a-f]{32,64}$`. The agent sends `hex(sha256("panoptes-machine-id:" + /etc/machine-id))`. |
 | `labels` | list of strings | At most 32, each `^[a-z0-9][a-z0-9._-]{0,63}$`. Ignored when the token carries labels. |
@@ -129,7 +129,7 @@ Statuses: `202` accepted; `400` invalid gzip or JSON, missing or too long `hash`
 
 ## Enrollment and re-enrollment
 
-**First enrollment.** An administrator creates a token (`panoptes-server token create web-prod -labels
+**First enrollment.** An administrator creates a token (`holealign-server token create web-prod -labels
 prod,web -max-hosts 20 -expires 72h`). The agent posts `enroll` with the token. The server checks the
 hash, expiry and `max_hosts`, creates the host, stores the key hash and returns `agent_id` and `agent_key`.
 Token labels are **authoritative**: hosts enrolled with such a token get exactly those labels (the token name
@@ -141,10 +141,10 @@ same `machine_id` is already known, so the server requires one of:
 
 1. `Authorization: Bearer <the host's current agent key>` on the enroll request (the agent sends its stored
    key automatically), or
-2. an administrator's one-time permission: `panoptes-server host allow-reenroll <host> [-ttl 1h]`
+2. an administrator's one-time permission: `holealign-server host allow-reenroll <host> [-ttl 1h]`
    (default 1 h, at most 168 h; cleared on first use).
 
-Otherwise the answer is `409 {"error":"host exists; previous key required (admin: panoptes-server host
+Otherwise the answer is `409 {"error":"host exists; previous key required (admin: holealign-server host
 allow-reenroll <host>)"}`. A permitted re-enroll reuses the host record and **rotates the key**; it keeps
 the host's token name, labels and label lock unless the new token itself carries labels (then the token's
 labels apply, its `max_hosts` is checked, and the host moves to it). An agent that lost its credentials
@@ -178,7 +178,7 @@ failure limits.
 
 ## Agent behaviour
 
-What a well-behaved client does (this is what `panoptes-agent` does):
+What a well-behaved client does (this is what `holealign-agent` does):
 
 - Retry network errors and 5xx with exponential backoff (2 s base, jitter, cap 5 min).
 - A `429` is not retried inside the backoff loop: it is reported with the `Retry-After` value
@@ -188,14 +188,14 @@ What a well-behaved client does (this is what `panoptes-agent` does):
 - Clamp `next_checkin_seconds` to 60 s - 1 h; honour `want_inventory` at most once per 10 minutes.
 - Per request timeouts: 30 s, and 5 minutes for the inventory upload.
 
-## panoptes-server
+## holealign-server
 
 ```
-panoptes-server [-config file] [-version] [command]
+holealign-server [-config file] [-version] [command]
 ```
 
-`-config` defaults to `$PANOPTES_CONFIG`, else `/etc/panoptes/server.yaml`; it may also follow the
-command. `-version` prints the version. Configuration keys and `PANOPTES_*` overrides:
+`-config` defaults to `$HOLEALIGN_CONFIG`, else `/etc/holealign/server.yaml`; it may also follow the
+command. `-version` prints the version. Configuration keys and `HOLEALIGN_*` overrides:
 [configuration.md](configuration.md).
 
 | Command | Purpose |
@@ -222,15 +222,15 @@ directory first, so no root-owned files appear; if that is impossible they refus
 `sudo -u <service-user>`. `rules keygen|build|sign|verify|candidates|draft` need no configuration or database.
 Exit status: 0 success, 1 error, 2 usage.
 
-## panoptes-agent
+## holealign-agent
 
 ```
-panoptes-agent [flags]
+holealign-agent [flags]
 ```
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `-config <file>` | `$PANOPTES_AGENT_CONFIG`, else `/etc/panoptes/agent.yaml` | Agent configuration ([contracts.md section 2](contracts.md#2-agent-configuration-etcpanoptesagentyaml)). |
+| `-config <file>` | `$HOLEALIGN_AGENT_CONFIG`, else `/etc/holealign/agent.yaml` | Agent configuration ([contracts.md section 2](contracts.md#2-agent-configuration-etcholealignagentyaml)). |
 | `-mode all\|collector\|sender` | `all` | `all`: one process (containers, `-once`, tests). `collector`: root, no network, serves host data on a unix socket. `sender`: unprivileged, talks to the server and gets data from the collector. |
 | `-once` | off | One check-in and inventory upload, then exit. Waits out a `Retry-After` of up to 60 s once. |
 | `-print-facts` | off | Collect and print the facts as JSON; no server needed. |

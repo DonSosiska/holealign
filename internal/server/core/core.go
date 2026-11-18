@@ -1,13 +1,13 @@
 // Package core defines the plug points between server components so they can be
 // built independently. The pipeline (internal/server/match + api) depends only on
 // these interfaces; implementations live in rules/, notify/, llm/ and are wired in
-// cmd/panoptes-server.
+// cmd/holealign-server.
 package core
 
 import (
 	"context"
 
-	"github.com/DonSosiska/panoptes/internal/model"
+	"github.com/DonSosiska/holealign/internal/model"
 )
 
 // HostContext is everything a rule may look at for one host.

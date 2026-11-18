@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/DonSosiska/panoptes/internal/model"
+	"github.com/DonSosiska/holealign/internal/model"
 )
 
 type httptestResp = httptest.ResponseRecorder
@@ -299,7 +299,7 @@ func TestLongOrOddUsernameRejectedBeforeLimiters(t *testing.T) {
 }
 
 func logEnvIP(t *testing.T) (*env, *lockedBuf) {
-	e, logs := logEnv(t, "http://panoptes.test")
+	e, logs := logEnv(t, "http://holealign.test")
 	e.srv.ipOf = func(r *http.Request) string { return r.Header.Get("X-Test-IP") }
 	return e, logs
 }
@@ -494,7 +494,7 @@ func TestDraftRulePageWarnsAndTruncates(t *testing.T) {
 // --- origin / host ----------------------------------------------------------------------------
 
 func TestOriginAndHostPinnedToPublicURL(t *testing.T) {
-	e, _ := logEnv(t, "https://panoptes.example.com")
+	e, _ := logEnv(t, "https://holealign.example.com")
 	c := e.session("admin")
 	c.Name = e.srv.sessName
 	f := func() url.Values {
@@ -510,16 +510,16 @@ func TestOriginAndHostPinnedToPublicURL(t *testing.T) {
 		e.mux.ServeHTTP(w, r)
 		return w.Code
 	}
-	if got := post("https://panoptes.example.com", "panoptes.example.com"); got != 303 {
+	if got := post("https://holealign.example.com", "holealign.example.com"); got != 303 {
 		t.Fatalf("legit: %d", got)
 	}
-	if got := post("https://panoptes.example.com:443", "panoptes.example.com:443"); got != 303 {
+	if got := post("https://holealign.example.com:443", "holealign.example.com:443"); got != 303 {
 		t.Fatalf("explicit default port: %d", got)
 	}
-	if got := post("https://evil.example", "panoptes.example.com"); got != 403 {
+	if got := post("https://evil.example", "holealign.example.com"); got != 403 {
 		t.Errorf("foreign origin: %d", got)
 	}
-	if got := post("http://panoptes.example.com", "panoptes.example.com"); got != 403 {
+	if got := post("http://holealign.example.com", "holealign.example.com"); got != 403 {
 		t.Errorf("wrong scheme: %d", got)
 	}
 	// Origin equal to a spoofed Host: still rejected, the Host itself is wrong

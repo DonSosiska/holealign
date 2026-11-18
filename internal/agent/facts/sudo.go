@@ -3,7 +3,7 @@ package facts
 import (
 	"context"
 
-	"github.com/DonSosiska/panoptes/internal/model"
+	"github.com/DonSosiska/holealign/internal/model"
 )
 
 // parseSudoVersion extracts the version from `sudo -V` output.

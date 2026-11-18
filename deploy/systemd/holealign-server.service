@@ -1,35 +1,35 @@
 [Unit]
-Description=Panoptes server (vulnerability matching, exploitability rules, alerts)
+Description=Holealign server (vulnerability matching, exploitability rules, alerts)
 Wants=network-online.target
 After=network-online.target
 
 [Service]
 Type=simple
-# PANOPTES_CONFIG makes the file mandatory: install it (the package does) or remove this line.
-Environment=PANOPTES_CONFIG=/etc/panoptes/server.yaml
+# HOLEALIGN_CONFIG makes the file mandatory: install it (the package does) or remove this line.
+Environment=HOLEALIGN_CONFIG=/etc/holealign/server.yaml
 # Secrets (admin password, Matrix token, LLM key). The leading "-" means optional.
-EnvironmentFile=-/etc/panoptes/server.env
-ExecStart=/usr/bin/panoptes-server serve
+EnvironmentFile=-/etc/holealign/server.env
+ExecStart=/usr/bin/holealign-server serve
 Restart=on-failure
 RestartSec=5
 
-# Unprivileged dynamic user; /var/lib/panoptes is created and owned by it.
+# Unprivileged dynamic user; /var/lib/holealign is created and owned by it.
 DynamicUser=yes
 # Agentless mode with `local_agent.source: collector` (server.yaml): the server reads its own host
-# from panoptes-collector.service over /run/panoptes/collector.sock (root:panoptes 0660), so the
-# host needs ONLY that unit (install.sh --collector-only), no panoptes-agent. Reaching the socket
-# needs membership of group "panoptes":
-#SupplementaryGroups=panoptes
+# from holealign-collector.service over /run/holealign/collector.sock (root:holealign 0660), so the
+# host needs ONLY that unit (install.sh --collector-only), no holealign-agent. Reaching the socket
+# needs membership of group "holealign":
+#SupplementaryGroups=holealign
 # The collector additionally checks the caller's uid (SO_PEERCRED): only root and agent.yaml's
-# collector_user (default "panoptes") are accepted, which a DynamicUser uid never is. So also run
+# collector_user (default "holealign") are accepted, which a DynamicUser uid never is. So also run
 # the server as that static user (UNVERIFIED here, check on a real host: PrivateUsers=yes and
 # StateDirectory= with a static user):
 #DynamicUser=no
-#User=panoptes
-#Group=panoptes
+#User=holealign
+#Group=holealign
 # `source: inprocess` needs none of this, but then the server process itself runs the collectors with
 # its own (unprivileged, sandboxed) rights and sees less of the host.
-StateDirectory=panoptes
+StateDirectory=holealign
 StateDirectoryMode=0700
 UMask=0077
 

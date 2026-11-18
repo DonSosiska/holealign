@@ -27,9 +27,9 @@
 <div class="flash ok" role="status">
   <p><strong>Token "{{.NewTokenName}}" created.</strong> Copy it now; it will not be shown again.</p>
   <div class="copyrow"><pre class="code" id="newtoken">{{.NewToken}}</pre><button type="button" class="btn" data-copy="newtoken">Copy token</button></div>
-  <p>Add to <code>/etc/panoptes/agent.yaml</code> on the host:</p>
+  <p>Add to <code>/etc/holealign/agent.yaml</code> on the host:</p>
   <div class="copyrow"><pre class="code" id="snippet">{{.Snippet}}</pre><button type="button" class="btn" data-copy="snippet">Copy snippet</button></div>
-  <p class="muted">Then install and start the agent: <code>systemctl enable --now panoptes-agent</code>.</p>
+  <p class="muted">Then install and start the agent: <code>systemctl enable --now holealign-agent</code>.</p>
 </div>
 {{end}}
 {{if .TokenError}}<div class="flash err" role="alert">{{.TokenError}}</div>{{end}}

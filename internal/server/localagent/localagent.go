@@ -1,5 +1,5 @@
 // Package localagent is the server's built-in agent ("agentless mode"): the server monitors its
-// own host without a separately installed panoptes-agent.
+// own host without a separately installed holealign-agent.
 //
 // It runs the normal agent runner in-process and lets it talk to the server's own agent API
 // through an in-memory transport (HandlerTransport), so every server-side validation, limit and
@@ -8,7 +8,7 @@
 //
 // Importing this package links the agent's inventory scanner (Syft). Its SQLite driver is the one
 // the server already links through Grype; the agent binary registers modernc.org/sqlite in
-// cmd/panoptes-agent instead (a second registration would panic at start).
+// cmd/holealign-agent instead (a second registration would panic at start).
 package localagent
 
 import (
@@ -24,13 +24,13 @@ import (
 	"sort"
 	"time"
 
-	agentcfg "github.com/DonSosiska/panoptes/internal/agent/config"
-	"github.com/DonSosiska/panoptes/internal/agent/hostdata"
-	"github.com/DonSosiska/panoptes/internal/agent/runner"
-	"github.com/DonSosiska/panoptes/internal/agent/transport"
-	"github.com/DonSosiska/panoptes/internal/model"
-	"github.com/DonSosiska/panoptes/internal/server/config"
-	"github.com/DonSosiska/panoptes/internal/server/store"
+	agentcfg "github.com/DonSosiska/holealign/internal/agent/config"
+	"github.com/DonSosiska/holealign/internal/agent/hostdata"
+	"github.com/DonSosiska/holealign/internal/agent/runner"
+	"github.com/DonSosiska/holealign/internal/agent/transport"
+	"github.com/DonSosiska/holealign/internal/model"
+	"github.com/DonSosiska/holealign/internal/server/config"
+	"github.com/DonSosiska/holealign/internal/server/store"
 )
 
 const (
@@ -51,7 +51,7 @@ const (
 )
 
 // ErrConflict is returned when a host with this machine's id already exists and the server
-// has no claim on it (typically a standalone panoptes-agent was installed here first).
+// has no claim on it (typically a standalone holealign-agent was installed here first).
 var ErrConflict = errors.New("a host with this machine's id already exists and is not the built-in local host")
 
 // Options configure the local agent.
@@ -203,7 +203,7 @@ func (a *Agent) run(ctx context.Context) error {
 		if errors.Is(err, ErrConflict) {
 			a.log.Error("local agent NOT started: "+err.Error()+". "+
 				"A standalone agent (or an earlier enrollment) already owns this machine. Either remove that host "+
-				"(`panoptes-server host delete <hostname>`, and stop/uninstall panoptes-agent) and restart the server, "+
+				"(`holealign-server host delete <hostname>`, and stop/uninstall holealign-agent) and restart the server, "+
 				"or set local_agent.enabled: false.", "machine_id", info.MachineID)
 		}
 		return err
@@ -283,7 +283,7 @@ func (a *Agent) inProcess(cfg agentcfg.Config, why string) hostdata.Source {
 	if os.Geteuid() != 0 {
 		a.log.Warn("local agent collects inside the server process without root privileges (euid != 0): "+
 			"facts may be incomplete (e.g. sshd -T, nginx -T, docker.sock, other users' sockets) and the inventory "+
-			"may miss unreadable files; use local_agent.source: collector with panoptes-collector.service for full coverage",
+			"may miss unreadable files; use local_agent.source: collector with holealign-collector.service for full coverage",
 			"euid", os.Geteuid())
 	}
 	return hostdata.NewLocal(cfg, false)

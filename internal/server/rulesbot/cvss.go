@@ -1,4 +1,4 @@
-// Package rulesbot holds the logic behind "panoptes-server rules candidates|draft", the commands
+// Package rulesbot holds the logic behind "holealign-server rules candidates|draft", the commands
 // a rules repository's CI bot uses to pick CVEs worth a rule and to draft a rule plus tests.
 package rulesbot
 

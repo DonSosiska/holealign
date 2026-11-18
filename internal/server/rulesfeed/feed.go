@@ -16,8 +16,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/DonSosiska/panoptes/internal/model"
-	"github.com/DonSosiska/panoptes/internal/server/store"
+	"github.com/DonSosiska/holealign/internal/model"
+	"github.com/DonSosiska/holealign/internal/server/store"
 )
 
 // kv keys written by the feed (RFC 3339 values, except seq and failures).
@@ -292,7 +292,7 @@ func (f *Feed) fetch(ctx context.Context, u *url.URL, max int64) ([]byte, error)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "panoptes-server")
+	req.Header.Set("User-Agent", "holealign-server")
 	var c http.Client
 	if f.o.Client != nil {
 		c = *f.o.Client

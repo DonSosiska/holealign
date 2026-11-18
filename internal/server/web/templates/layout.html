@@ -4,14 +4,14 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
-<title>{{template "title" .}} - Panoptes</title>
+<title>{{template "title" .}} - Holealign</title>
 <link rel="stylesheet" href="/static/style.css">
 <script src="/static/app.js" defer></script>
 </head>
 <body>
 {{if .User}}
 <header class="top">
-  <a class="brand" href="/">Panoptes</a>
+  <a class="brand" href="/">Holealign</a>
   <nav>
     <a href="/" {{if eq .Nav "dashboard"}}class="active"{{end}}>Dashboard</a>
     <a href="/hosts" {{if or (eq .Nav "hosts") (eq .Nav "host")}}class="active"{{end}}>Hosts</a>

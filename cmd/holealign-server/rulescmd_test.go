@@ -13,7 +13,7 @@ const (
 )
 
 func TestRulesCLIFlow(t *testing.T) {
-	t.Setenv("PANOPTES_CONFIG", "")
+	t.Setenv("HOLEALIGN_CONFIG", "")
 	t.Setenv("SOURCE_DATE_EPOCH", "")
 	dir := t.TempDir()
 	keyFile := filepath.Join(dir, "rules.key")
@@ -124,7 +124,7 @@ func TestRulesBuildRefusesBadInput(t *testing.T) {
 }
 
 func TestRulesImportNeedsTrustedKeys(t *testing.T) {
-	t.Setenv("PANOPTES_CONFIG", "")
+	t.Setenv("HOLEALIGN_CONFIG", "")
 	cfg := filepath.Join(t.TempDir(), "server.yaml")
 	if err := os.WriteFile(cfg, []byte("data_dir: "+t.TempDir()+"\n"), 0o600); err != nil {
 		t.Fatal(err)

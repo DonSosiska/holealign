@@ -11,9 +11,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/DonSosiska/panoptes/internal/server/config"
-	"github.com/DonSosiska/panoptes/internal/server/llm"
-	"github.com/DonSosiska/panoptes/internal/server/rules"
+	"github.com/DonSosiska/holealign/internal/server/config"
+	"github.com/DonSosiska/holealign/internal/server/llm"
+	"github.com/DonSosiska/holealign/internal/server/rules"
 )
 
 func TestFactCatalogDescriptions(t *testing.T) {
@@ -71,8 +71,8 @@ const cliReply = `{"rule":{"title":"t","facts":["sshd.config"],"exploitable_if":
 {"name":"off","finding":{"package":"openssh-server"},"facts":{"sshd.config":{"permitrootlogin":"no"}},"want":"affected_not_exploitable"}]}`
 
 func TestRulesDraftCLI(t *testing.T) {
-	t.Setenv("PANOPTES_CONFIG", "")
-	for _, e := range []string{"PANOPTES_LLM_PROVIDER", "PANOPTES_LLM_MODEL", "PANOPTES_LLM_BASE_URL", "PANOPTES_LLM_API_KEY", "ANTHROPIC_API_KEY"} {
+	t.Setenv("HOLEALIGN_CONFIG", "")
+	for _, e := range []string{"HOLEALIGN_LLM_PROVIDER", "HOLEALIGN_LLM_MODEL", "HOLEALIGN_LLM_BASE_URL", "HOLEALIGN_LLM_API_KEY", "ANTHROPIC_API_KEY"} {
 		t.Setenv(e, "")
 	}
 	osv := httptest.NewServer(http.NotFoundHandler()) // no advisory: drafting from candidate data
@@ -130,7 +130,7 @@ func TestRulesDraftCLI(t *testing.T) {
 }
 
 func TestRulesCandidatesCLI(t *testing.T) {
-	t.Setenv("PANOPTES_CONFIG", "")
+	t.Setenv("HOLEALIGN_CONFIG", "")
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/querybatch", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"results":[{"vulns":[{"id":"CVE-2099-0200","modified":"2099-01-10T00:00:00Z"}]}]}`))

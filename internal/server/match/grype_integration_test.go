@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/DonSosiska/panoptes/internal/model"
+	"github.com/DonSosiska/holealign/internal/model"
 )
 
 // A minimal CycloneDX SBOM as Syft would write it: Debian 12 with a vulnerable openssh-server.
@@ -31,9 +31,9 @@ const sbomOpenSSH = `{
 }`
 
 // Run with: go test -tags integration ./internal/server/match -run Integration -v
-// PANOPTES_TEST_GRYPE_DB may point at a persistent cache dir to avoid re-downloading (~100+ MB).
+// HOLEALIGN_TEST_GRYPE_DB may point at a persistent cache dir to avoid re-downloading (~100+ MB).
 func TestIntegrationOpenSSHRegreSSHion(t *testing.T) {
-	dir := os.Getenv("PANOPTES_TEST_GRYPE_DB")
+	dir := os.Getenv("HOLEALIGN_TEST_GRYPE_DB")
 	if dir == "" {
 		dir = t.TempDir()
 	}

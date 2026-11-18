@@ -1,50 +1,50 @@
 #!/bin/sh
-# Panoptes agent installer (Linux with systemd, root required).
+# Holealign agent installer (Linux with systemd, root required).
 #
-#   curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/DonSosiska/panoptes/main/deploy/install.sh | \
-#     sudo PANOPTES_ENROLL_TOKEN=pt_xxx sh -s -- --server https://panoptes.example.com --labels prod,web
+#   curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/DonSosiska/holealign/main/deploy/install.sh | \
+#     sudo HOLEALIGN_ENROLL_TOKEN=pt_xxx sh -s -- --server https://holealign.example.com --labels prod,web
 #
 # Options:
-#   --server URL      panoptes-server base URL (https://, no user:password@). Required on first install.
-#   --token-file PATH read the enrollment token (from `panoptes-server token create`) from PATH.
+#   --server URL      holealign-server base URL (https://, no user:password@). Required on first install.
+#   --token-file PATH read the enrollment token (from `holealign-server token create`) from PATH.
 #   --token TOKEN     enrollment token; visible in `ps` and shell history, prefer --token-file or
-#                     the PANOPTES_ENROLL_TOKEN environment variable. One of the three is required
+#                     the HOLEALIGN_ENROLL_TOKEN environment variable. One of the three is required
 #                     on first install.
 #   --allow-insecure-http  accept an http:// --server (testing only).
 #   --labels a,b      comma-separated labels (optional).
 #   --ca-file PATH    PEM bundle of the CA(s) that sign the server certificate. It is copied to
-#                     /etc/panoptes/ca.pem and, when set, ONLY these roots are trusted.
+#                     /etc/holealign/ca.pem and, when set, ONLY these roots are trusted.
 #   --server-pin HEX  pin the server: hex SHA-256 of the server certificate's SubjectPublicKeyInfo
-#                     (see `panoptes-agent -print-server-pin`). Repeatable.
+#                     (see `holealign-agent -print-server-pin`). Repeatable.
 #   --skip-signature-check  install without verifying the release signature (not recommended).
 #                     Without this flag the install aborts if cosign is not installed.
 #   --version VER     release to install, e.g. 1.2.3 or v1.2.3 (default: latest; the tag is resolved
 #                     first and printed). The cosign identity is pinned to exactly this tag.
 #   --min-version X.Y.Z  refuse to install a release older than this (default: no minimum).
 #   --allow-downgrade install a release older than the one that is installed (refused by default).
-#   --binary PATH     install this local panoptes-agent binary instead of downloading (air-gapped).
-#   --collector-only  install only the root collector (panoptes-collector.service) and the "panoptes"
+#   --binary PATH     install this local holealign-agent binary instead of downloading (air-gapped).
+#   --collector-only  install only the root collector (holealign-collector.service) and the "holealign"
 #                     group/user: no sender, no --server / token needed. For a host whose
-#                     panoptes-server runs the built-in local agent with `local_agent.source: collector`
+#                     holealign-server runs the built-in local agent with `local_agent.source: collector`
 #                     (agentless mode, see the README). Writes a minimal agent.yaml when none exists.
-#   --force           overwrite an existing /etc/panoptes/agent.yaml.
+#   --force           overwrite an existing /etc/holealign/agent.yaml.
 #                     With --uninstall, also remove the config and state.
 #   --uninstall       stop the service and remove the unit and binary (/usr/bin and the old
 #                     /usr/local/bin location).
 #   -h, --help        show this help.
 #
 # Environment:
-#   PANOPTES_REPO     GitHub repository to download from (default: DonSosiska/panoptes).
-#   PANOPTES_ENROLL_TOKEN  enrollment token (alternative to --token-file).
+#   HOLEALIGN_REPO     GitHub repository to download from (default: DonSosiska/holealign).
+#   HOLEALIGN_ENROLL_TOKEN  enrollment token (alternative to --token-file).
 #
 # The token is written to the config file only and is never printed. The root collector removes
 # it from the file after the first successful check-in (a host that lost its credentials then
 # needs a fresh token).
-# The systemd units below are identical to deploy/systemd/panoptes-agent.service and
-# panoptes-collector.service (a test compares them). Keep them in sync.
+# The systemd units below are identical to deploy/systemd/holealign-agent.service and
+# holealign-collector.service (a test compares them). Keep them in sync.
 #
-# Privilege separation: panoptes-collector (root, no network) reads the host and serves it on
-# /run/panoptes/collector.sock; panoptes-agent (user "panoptes") talks to the server.
+# Privilege separation: holealign-collector (root, no network) reads the host and serves it on
+# /run/holealign/collector.sock; holealign-agent (user "holealign") talks to the server.
 #
 # Release verification: checksums.txt is verified with cosign (keyless Sigstore signature
 # made by this repository's release workflow for exactly the tag being installed) before any
@@ -53,10 +53,10 @@
 
 set -eu
 
-REPO="${PANOPTES_REPO:-DonSosiska/panoptes}"
+REPO="${HOLEALIGN_REPO:-DonSosiska/holealign}"
 VERSION="latest"
 SERVER=""
-TOKEN="${PANOPTES_ENROLL_TOKEN:-}"
+TOKEN="${HOLEALIGN_ENROLL_TOKEN:-}"
 TOKEN_FILE=""
 ALLOW_HTTP=0
 LABELS=""
@@ -70,17 +70,17 @@ FORCE=0
 UNINSTALL=0
 COLLECTOR_ONLY=0
 
-BIN_PATH="/usr/bin/panoptes-agent"
-OLD_BIN_PATH="/usr/local/bin/panoptes-agent" # group-writable on some distros; removed on install/uninstall
-CA_DEST="/etc/panoptes/ca.pem"
-CONF_DIR="/etc/panoptes"
-CONF_FILE="/etc/panoptes/agent.yaml"
-UNIT_NAME="panoptes-agent"
-UNIT_DEST="/etc/systemd/system/panoptes-agent.service"
-COLLECTOR_UNIT_NAME="panoptes-collector"
-COLLECTOR_UNIT_DEST="/etc/systemd/system/panoptes-collector.service"
-SVC_USER="panoptes"
-STATE_DIR="/var/lib/panoptes-agent"
+BIN_PATH="/usr/bin/holealign-agent"
+OLD_BIN_PATH="/usr/local/bin/holealign-agent" # group-writable on some distros; removed on install/uninstall
+CA_DEST="/etc/holealign/ca.pem"
+CONF_DIR="/etc/holealign"
+CONF_FILE="/etc/holealign/agent.yaml"
+UNIT_NAME="holealign-agent"
+UNIT_DEST="/etc/systemd/system/holealign-agent.service"
+COLLECTOR_UNIT_NAME="holealign-collector"
+COLLECTOR_UNIT_DEST="/etc/systemd/system/holealign-collector.service"
+SVC_USER="holealign"
+STATE_DIR="/var/lib/holealign-agent"
 
 die() {
     printf 'error: %s\n' "$*" >&2
@@ -109,7 +109,7 @@ while [ $# -gt 0 ]; do
             SERVER="$2"; shift 2 ;;
         --token)
             [ $# -ge 2 ] || die "--token needs a value"
-            printf 'warning: --token is visible in the process list and shell history; use --token-file or PANOPTES_ENROLL_TOKEN\n' >&2
+            printf 'warning: --token is visible in the process list and shell history; use --token-file or HOLEALIGN_ENROLL_TOKEN\n' >&2
             TOKEN="$2"; shift 2 ;;
         --token-file)
             [ $# -ge 2 ] || die "--token-file needs a path"
@@ -151,7 +151,7 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-printf '%s\n' "$REPO" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' || die "PANOPTES_REPO must look like owner/name"
+printf '%s\n' "$REPO" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' || die "HOLEALIGN_REPO must look like owner/name"
 
 [ "$(id -u)" -eq 0 ] || die "must run as root (use sudo)"
 [ "$(uname -s)" = "Linux" ] || die "only Linux is supported"
@@ -177,7 +177,7 @@ is_version() {
 }
 
 # svc_user_ok succeeds when SVC_USER is a plain system account: uid 100-999 and no login shell.
-# A pre-existing "panoptes" that is a real user (or a low static system id) must not be taken
+# A pre-existing "holealign" that is a real user (or a low static system id) must not be taken
 # over: the collector shares its group and the sender runs as it.
 svc_user_ok() {
     _uid="$(id -u "$SVC_USER" 2>/dev/null)" || return 1
@@ -219,7 +219,7 @@ if [ "$UNINSTALL" -eq 1 ]; then
     else
         log "kept $CONF_FILE and $STATE_DIR (use --uninstall --force to remove them)"
     fi
-    log "panoptes-agent removed"
+    log "holealign-agent removed"
     exit 0
 fi
 
@@ -251,7 +251,7 @@ if [ "$WRITE_CONFIG" -eq 1 ] && [ "$COLLECTOR_ONLY" -eq 0 ]; then
         [ -f "$TOKEN_FILE" ] || die "--token-file: file not found: $TOKEN_FILE"
         TOKEN="$(tr -d ' \t\r\n' < "$TOKEN_FILE")"
     fi
-    [ -n "$TOKEN" ] || die "an enrollment token is required (--token-file PATH or PANOPTES_ENROLL_TOKEN)"
+    [ -n "$TOKEN" ] || die "an enrollment token is required (--token-file PATH or HOLEALIGN_ENROLL_TOKEN)"
     case "$TOKEN" in
         *[!A-Za-z0-9_-]*) die "--token has an invalid format" ;;
     esac
@@ -436,10 +436,10 @@ else
     VER="${TAG#v}"
     log "release to install: $TAG"
     check_version_policy "$VER"
-    ASSET="panoptes-agent_${VER}_linux_${ARCH}.tar.gz"
+    ASSET="holealign-agent_${VER}_linux_${ARCH}.tar.gz"
     BASE="https://github.com/$REPO/releases/download/$TAG"
 
-    log "downloading panoptes-agent $TAG ($ARCH)"
+    log "downloading holealign-agent $TAG ($ARCH)"
     curl --proto '=https' --tlsv1.2 -fsSL -o "$TMP/$ASSET" "$BASE/$ASSET" || die "download failed: $ASSET"
     curl --proto '=https' --tlsv1.2 -fsSL -o "$TMP/checksums.txt" "$BASE/checksums.txt" || die "download failed: checksums.txt"
     if [ "$SKIP_SIG" -eq 0 ]; then
@@ -455,8 +455,8 @@ else
     [ "$actual" = "$expected" ] || die "sha256 mismatch for $ASSET (expected $expected, got $actual)"
     log "sha256 verified"
 
-    tar -xzf "$TMP/$ASSET" -C "$TMP" panoptes-agent
-    install -o root -g root -m 0755 "$TMP/panoptes-agent" "$BIN_PATH"
+    tar -xzf "$TMP/$ASSET" -C "$TMP" holealign-agent
+    install -o root -g root -m 0755 "$TMP/holealign-agent" "$BIN_PATH"
 fi
 # an older install put the binary in /usr/local/bin; do not leave a stale copy behind
 rm -f "$OLD_BIN_PATH"
@@ -486,9 +486,9 @@ if [ "$WRITE_CONFIG" -eq 1 ]; then
         # The config parser insists on a server_url, but -mode collector never contacts it.
         cat > "$tmp_conf" <<EOF
 # Written by install.sh --collector-only: this host runs only the collector for the built-in
-# local agent of panoptes-server (local_agent.source: collector). server_url is required by the
+# local agent of holealign-server (local_agent.source: collector). server_url is required by the
 # config parser and is never contacted in -mode collector.
-server_url: "https://panoptes.invalid"
+server_url: "https://holealign.invalid"
 state_dir: $STATE_DIR
 EOF
     else
@@ -537,26 +537,26 @@ UNIT_PATH="$UNIT_DEST.new.$$"
 trap 'rm -f "$COLLECTOR_UNIT_PATH" "$UNIT_PATH"; rm -rf "${TMP:?}"' EXIT INT TERM
 cat > "$COLLECTOR_UNIT_PATH" <<'EOF'
 [Unit]
-Description=Panoptes collector (root, no network: reads host state, serves it on a unix socket)
-Documentation=https://github.com/DonSosiska/panoptes/blob/main/docs/contracts.md
+Description=Holealign collector (root, no network: reads host state, serves it on a unix socket)
+Documentation=https://github.com/DonSosiska/holealign/blob/main/docs/contracts.md
 After=docker.service
 
 [Service]
 Type=simple
 # Root, because it must run sshd -T, nginx -T, read all package databases and docker.sock.
 # It parses untrusted local files (configs, package databases, container images), so it has
-# NO network: it only listens on /run/panoptes/collector.sock. The network-facing half is
-# panoptes-agent.service, which runs unprivileged as user "panoptes".
+# NO network: it only listens on /run/holealign/collector.sock. The network-facing half is
+# holealign-agent.service, which runs unprivileged as user "holealign".
 User=root
-# Group panoptes + UMask 0007 + RuntimeDirectoryMode 0750: /run/panoptes is root:panoptes 0750 and the
-# socket root:panoptes 0660, so only root and the panoptes user can reach it (the collector also
+# Group holealign + UMask 0007 + RuntimeDirectoryMode 0750: /run/holealign is root:holealign 0750 and the
+# socket root:holealign 0660, so only root and the holealign user can reach it (the collector also
 # checks SO_PEERCRED).
-Group=panoptes
-ExecStart=/usr/bin/panoptes-agent -mode collector -config /etc/panoptes/agent.yaml
+Group=holealign
+ExecStart=/usr/bin/holealign-agent -mode collector -config /etc/holealign/agent.yaml
 Restart=always
 RestartSec=10
 
-RuntimeDirectory=panoptes
+RuntimeDirectory=holealign
 RuntimeDirectoryMode=0750
 UMask=0007
 
@@ -602,14 +602,14 @@ SystemCallFilter=~@privileged @resources @mount
 # A denied system call returns EPERM instead of killing the process with SIGSYS (the default
 # action). Reasons: the Go runtime calls prlimit64 (@resources) at start and ignores a failure;
 # the collector chowns its socket (@chown is part of @privileged), which Listen() skips when the
-# socket already has the right group/mode (Group=panoptes + UMask=0007) and tolerates EPERM
+# socket already has the right group/mode (Group=holealign + UMask=0007) and tolerates EPERM
 # otherwise; openat2 is missing from the @file-system set of older systemd versions and the file.match
 # opener falls back to openat on ENOSYS/EPERM. Do not remove this line without testing on a real
 # host: a killed collector means no facts at all.
 SystemCallErrorNumber=EPERM
 # NOTE: child processes (sshd -T, nginx -T, php -i, apachectl, systemctl, ...) inherit
 # these limits. Verify on a real host that every collector still works
-# (run `panoptes-agent -print-facts` under `systemd-run` with the same properties).
+# (run `holealign-agent -print-facts` under `systemd-run` with the same properties).
 #
 # NOTE (nginx, UNVERIFIED here, check on a real host): `nginx -T` parses the whole config and, like
 # `nginx -t`, opens every access_log/error_log named in it for WRITING and creates its temp
@@ -618,14 +618,14 @@ SystemCallErrorNumber=EPERM
 # already passes `-q -e /dev/null` (nginx >= 1.19.5), which only replaces the compile-time default
 # error log. It does NOT use `-g 'pid ...; error_log ...;'`: `pid` is a non-repeatable directive and
 # fails with "directive is duplicate" on configs that set their own. If the dump is missing, check
-# `panoptes-agent -print-facts` under systemd-run with these properties and add the directories
+# `holealign-agent -print-facts` under systemd-run with these properties and add the directories
 # named in the errors, e.g. ReadWritePaths=-/var/log/nginx -/var/lib/nginx -/var/cache/nginx
 # (this widens the root collector's write access, so add only what is needed).
 
-# `forget_enroll_token` rewrites /etc/panoptes/agent.yaml (temp file + rename in the same
+# `forget_enroll_token` rewrites /etc/holealign/agent.yaml (temp file + rename in the same
 # directory) to blank the enrollment token after the first successful check-in. The leading "-"
 # ignores a missing directory.
-ReadWritePaths=-/etc/panoptes
+ReadWritePaths=-/etc/holealign
 
 # Resource limits: scans must not disturb the host.
 Nice=10
@@ -644,27 +644,27 @@ mv -f "$COLLECTOR_UNIT_PATH" "$COLLECTOR_UNIT_DEST"
 if [ "$COLLECTOR_ONLY" -eq 0 ]; then
 cat > "$UNIT_PATH" <<'EOF'
 [Unit]
-Description=Panoptes agent (unprivileged sender: talks to the server)
-Documentation=https://github.com/DonSosiska/panoptes/blob/main/docs/contracts.md
+Description=Holealign agent (unprivileged sender: talks to the server)
+Documentation=https://github.com/DonSosiska/holealign/blob/main/docs/contracts.md
 Wants=network-online.target
-Requires=panoptes-collector.service
-After=network-online.target panoptes-collector.service
+Requires=holealign-collector.service
+After=network-online.target holealign-collector.service
 
 [Service]
 Type=simple
 # Unprivileged: the only process with network access. It gets facts and inventory from the root
-# collector (panoptes-collector.service) over /run/panoptes/collector.sock and never reads
+# collector (holealign-collector.service) over /run/holealign/collector.sock and never reads
 # untrusted local files itself.
-User=panoptes
-Group=panoptes
-ExecStart=/usr/bin/panoptes-agent -mode sender -config /etc/panoptes/agent.yaml
+User=holealign
+Group=holealign
+ExecStart=/usr/bin/holealign-agent -mode sender -config /etc/holealign/agent.yaml
 Restart=always
 RestartSec=10
 
-# State (agent_id, agent_key) lives in /var/lib/panoptes-agent, owned by panoptes; state_dir in
-# agent.yaml must match. /etc/panoptes/agent.yaml is root:panoptes 0640 (group-readable by this
-# service; it holds the enroll token). ca_file/client_cert/client_key must be readable by group panoptes.
-StateDirectory=panoptes-agent
+# State (agent_id, agent_key) lives in /var/lib/holealign-agent, owned by holealign; state_dir in
+# agent.yaml must match. /etc/holealign/agent.yaml is root:holealign 0640 (group-readable by this
+# service; it holds the enroll token). ca_file/client_cert/client_key must be readable by group holealign.
+StateDirectory=holealign-agent
 StateDirectoryMode=0700
 UMask=0077
 
@@ -716,16 +716,16 @@ systemctl daemon-reload
 if [ "$COLLECTOR_ONLY" -eq 1 ]; then
     systemctl enable --now "$COLLECTOR_UNIT_NAME"
     systemctl restart "$COLLECTOR_UNIT_NAME"
-    log "panoptes-collector (root, no network) is running; socket /run/panoptes/collector.sock"
-    log "set local_agent.enabled: true and source: collector in server.yaml (the server must run as user $SVC_USER, see deploy/systemd/panoptes-server.service)"
+    log "holealign-collector (root, no network) is running; socket /run/holealign/collector.sock"
+    log "set local_agent.enabled: true and source: collector in server.yaml (the server must run as user $SVC_USER, see deploy/systemd/holealign-server.service)"
     exit 0
 fi
 systemctl enable --now "$COLLECTOR_UNIT_NAME" "$UNIT_NAME"
 # Restart so an upgraded binary or a rewritten config takes effect.
 systemctl restart "$COLLECTOR_UNIT_NAME" "$UNIT_NAME"
 
-log "panoptes-collector (root, no network) and panoptes-agent (user $SVC_USER) are running"
-log "follow the logs with: journalctl -u panoptes-agent -u panoptes-collector -f"
+log "holealign-collector (root, no network) and holealign-agent (user $SVC_USER) are running"
+log "follow the logs with: journalctl -u holealign-agent -u holealign-collector -f"
 
 }
 

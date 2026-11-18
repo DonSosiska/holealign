@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/DonSosiska/panoptes/internal/agent/hostdata"
-	"github.com/DonSosiska/panoptes/internal/model"
+	"github.com/DonSosiska/holealign/internal/agent/hostdata"
+	"github.com/DonSosiska/holealign/internal/model"
 )
 
 // gateBackend blocks Facts and Inventory until released, and counts calls.

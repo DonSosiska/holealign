@@ -11,7 +11,7 @@ func TestAlertsAndListenerDefaultsAndEnv(t *testing.T) {
 	if _, err := load(filepath.Join(t.TempDir(), "absent.yaml"), none); err == nil {
 		t.Fatal("explicit missing file must fail")
 	}
-	t.Setenv("PANOPTES_CONFIG", "")
+	t.Setenv("HOLEALIGN_CONFIG", "")
 	cfg, err := load("", none)
 	if err != nil {
 		t.Fatal(err)
@@ -23,11 +23,11 @@ func TestAlertsAndListenerDefaultsAndEnv(t *testing.T) {
 		t.Fatalf("alert defaults: %+v", cfg.Alerts)
 	}
 	env := map[string]string{
-		"PANOPTES_ALERTS_AGENT_SILENT_AFTER": "0",
-		"PANOPTES_ALERTS_FEED_STALE_AFTER":   "72h",
-		"PANOPTES_ALERTS_OPS_ROOMS":          "!a:x, !b:x",
-		"PANOPTES_ADMIN_LISTEN":              "0.0.0.0:8081",
-		"PANOPTES_TRUSTED_PROXIES":           "10.0.0.0/8,192.168.1.1",
+		"HOLEALIGN_ALERTS_AGENT_SILENT_AFTER": "0",
+		"HOLEALIGN_ALERTS_FEED_STALE_AFTER":   "72h",
+		"HOLEALIGN_ALERTS_OPS_ROOMS":          "!a:x, !b:x",
+		"HOLEALIGN_ADMIN_LISTEN":              "0.0.0.0:8081",
+		"HOLEALIGN_TRUSTED_PROXIES":           "10.0.0.0/8,192.168.1.1",
 	}
 	cfg, err = load("", func(k string) (string, bool) { v, ok := env[k]; return v, ok })
 	if err != nil {
@@ -37,7 +37,7 @@ func TestAlertsAndListenerDefaultsAndEnv(t *testing.T) {
 		cfg.AdminListen != "0.0.0.0:8081" || len(cfg.TrustedProxies) != 2 {
 		t.Fatalf("env overrides: %+v", cfg)
 	}
-	for k, v := range map[string]string{"PANOPTES_TRUSTED_PROXIES": "not-an-ip", "PANOPTES_ALERTS_FEED_STALE_AFTER": "-1h"} {
+	for k, v := range map[string]string{"HOLEALIGN_TRUSTED_PROXIES": "not-an-ip", "HOLEALIGN_ALERTS_FEED_STALE_AFTER": "-1h"} {
 		k, v := k, v
 		if _, err := load("", func(n string) (string, bool) { return v, n == k }); err == nil {
 			t.Errorf("%s=%q accepted", k, v)

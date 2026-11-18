@@ -1,4 +1,4 @@
-// Package notify delivers Panoptes events to Matrix rooms (docs/contracts.md §5, §6).
+// Package notify delivers Holealign events to Matrix rooms (docs/contracts.md §5, §6).
 package notify
 
 import (
@@ -20,8 +20,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/DonSosiska/panoptes/internal/model"
-	"github.com/DonSosiska/panoptes/internal/server/core"
+	"github.com/DonSosiska/holealign/internal/model"
+	"github.com/DonSosiska/holealign/internal/server/core"
 )
 
 // Config is the matrix section of the server configuration. AccessToken is already
@@ -541,7 +541,7 @@ func retryAfter(body []byte) time.Duration {
 func (m *Matrix) newTxnID() string {
 	var b [6]byte
 	_, _ = rand.Read(b[:])
-	return fmt.Sprintf("panoptes-%d-%d-%s", time.Now().UnixNano(), m.txnSeq.Add(1), hex.EncodeToString(b[:]))
+	return fmt.Sprintf("holealign-%d-%d-%s", time.Now().UnixNano(), m.txnSeq.Add(1), hex.EncodeToString(b[:]))
 }
 
 func sleepCtx(ctx context.Context, d time.Duration) error {

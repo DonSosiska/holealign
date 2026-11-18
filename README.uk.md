@@ -1,11 +1,15 @@
-# Panoptes
+# Holealign
 
-[![ci](https://github.com/DonSosiska/panoptes/actions/workflows/ci.yml/badge.svg)](https://github.com/DonSosiska/panoptes/actions/workflows/ci.yml)
+[![ci](https://github.com/DonSosiska/holealign/actions/workflows/ci.yml/badge.svg)](https://github.com/DonSosiska/holealign/actions/workflows/ci.yml)
 Ліцензія: [PolyForm Noncommercial 1.0.0](LICENSE) (source-available, не відкритий код)
 
 [English](README.md) | Українська
 
-Panoptes знаходить вразливості на Linux-хостах і визначає, чи вони **справді експлуатовані за
+> Назва походить від моделі швейцарського сиру: кожен шар захисту має дірки, а інцидент стається
+> лише тоді, коли дірки в усіх шарах співпадають. Вразливий пакет — одна дірка, увімкнена функція —
+> друга, відкрита конфігурація — третя. Holealign показує, коли вони вишиковуються в одну лінію.
+
+Holealign знаходить вразливості на Linux-хостах і визначає, чи вони **справді експлуатовані за
 конфігурації саме цього хоста**. Агенти на ваших хостах надсилають на центральний сервер перелік
 програмного забезпечення (SBOM) і набір фактів про конфігурацію. Сервер зіставляє вразливості через
 Grype (разом із даними CISA KEV та EPSS), перевіряє CEL-правила на фактах і сповіщає кімнати
@@ -22,11 +26,11 @@ Matrix/Element, обрані за мітками хостів. Це один б�
 інша libc. Команди або тонуть у списку, або перестають його читати, і єдина важлива знахідка губиться
 серед решти.
 
-## Чим Panoptes відрізняється
+## Чим Holealign відрізняється
 
-Panoptes додатково читає сам хост. regreSSHion (CVE-2024-6387) експлуатований лише в системах із glibc,
+Holealign додатково читає сам хост. regreSSHion (CVE-2024-6387) експлуатований лише в системах із glibc,
 де `LoginGraceTime` не дорівнює `0`. На хості з musl або з `LoginGraceTime 0` знахідку записано як
-`affected_not_exploitable`, і нікого не будять сповіщенням. Коли Panoptes не може визначити (немає
+`affected_not_exploitable`, і нікого не будять сповіщенням. Коли Holealign не може визначити (немає
 правила або бракує факту), вердикт `conditions_unknown`, а ніколи не «безпечно». Правила, яких ще немає,
 може чернеткою написати LLM; чернетка залишається неактивною й ніколи не знижує вердикт, доки її не
 схвалить людина.
@@ -74,14 +78,14 @@ Panoptes додатково читає сам хост. regreSSHion (CVE-2024-63
 ## Архітектура
 
 ```
-  Хост Linux, що моніториться (будь-яка кількість)  Сервер Panoptes
+  Хост Linux, що моніториться (будь-яка кількість)  Сервер Holealign
  +-------------------------------------+        +----------------------------------------+
- | panoptes-collector (root, БЕЗ мережі)|        | API агентів :8080 /api/v1/* /healthz   |
+ | holealign-collector (root, БЕЗ мережі)|        | API агентів :8080 /api/v1/* /healthz   |
  |   sshd -T, nginx -T, sysctl, /proc, |        |   enroll, check-in, inventory          |
  |   сканування Syft, file.match       |        |                                        |
  |        |  unix-сокет                | HTTPS  | SQLite + база Grype    (data_dir)      |
- | panoptes-agent sender (користувач   |------->| конвеєр: Grype -> CEL-правила -> вердикт|
- |   "panoptes", єдиний із доступом    | push,  |                                        |
+ | holealign-agent sender (користувач   |------->| конвеєр: Grype -> CEL-правила -> вердикт|
+ |   "holealign", єдиний із доступом    | push,  |                                        |
  |   до мережі)                        | лише   | адмінка    :8081 (за замовч. loopback) |
  +-------------------------------------+ вихід. |        ^  SSH-тунель / VPN / проксі    |
    жодного вхідного з'єднання до хоста  з'єдн. |        |                               |
@@ -109,11 +113,11 @@ Panoptes додатково читає сам хост. regreSSHion (CVE-2024-63
 агент) описано в [docs/quickstart.md](docs/quickstart.md). Коротко, щоб спробувати сервер і один агент:
 
 ```sh
-git clone https://github.com/DonSosiska/panoptes.git
-cd panoptes/deploy
-cp server.env.example .env       # задайте PANOPTES_ADMIN_PASSWORD (щонайменше 12 символів)
+git clone https://github.com/DonSosiska/holealign.git
+cd holealign/deploy
+cp server.env.example .env       # задайте HOLEALIGN_ADMIN_PASSWORD (щонайменше 12 символів)
 docker compose up -d --build
-docker compose exec panoptes-server panoptes-server token create first -labels prod,web -max-hosts 5 -expires 72h
+docker compose exec holealign-server holealign-server token create first -labels prod,web -max-hosts 5 -expires 72h
 ```
 
 Агенти вимагають `https://`: поставте TLS перед портом 8080 ([варіанти TLS](docs/installation.md#tls)).
@@ -121,10 +125,10 @@ docker compose exec panoptes-server panoptes-server token create first -labels p
 прочитайте його й запустіть, передавши токен через файл:
 
 ```sh
-V=X.Y.Z    # версія релізу зі сторінки https://github.com/DonSosiska/panoptes/releases
-curl --proto '=https' --tlsv1.2 -fsSLO https://raw.githubusercontent.com/DonSosiska/panoptes/v$V/deploy/install.sh
+V=X.Y.Z    # версія релізу зі сторінки https://github.com/DonSosiska/holealign/releases
+curl --proto '=https' --tlsv1.2 -fsSLO https://raw.githubusercontent.com/DonSosiska/holealign/v$V/deploy/install.sh
 less install.sh
-sudo sh install.sh --version $V --server https://panoptes.example.com --token-file /root/panoptes.token
+sudo sh install.sh --version $V --server https://holealign.example.com --token-file /root/holealign.token
 ```
 
 Встановлювач перевіряє підпис релізу через [cosign](https://docs.sigstore.dev/cosign/system_config/installation/)
@@ -168,13 +172,13 @@ sudo sh install.sh --version $V --server https://panoptes.example.com --token-fi
 
 ## Пакети та збірка з вихідного коду
 
-Архіви релізів, пакети `.deb`/`.rpm` і образ сервера `ghcr.io/donsosiska/panoptes-server` публікуються
+Архіви релізів, пакети `.deb`/`.rpm` і образ сервера `ghcr.io/donsosiska/holealign-server` публікуються
 з тегів `v*`. `make build` збирає бінарні файли в `bin/`; `make docker` збирає образ сервера з вихідного
 коду. Див. [docs/development.md](docs/development.md).
 
 ## Ліцензія
 
-Panoptes є **source-available** за ліцензією [PolyForm Noncommercial License
+Holealign є **source-available** за ліцензією [PolyForm Noncommercial License
 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0/) (див. [LICENSE](LICENSE)). Ви можете
 використовувати, змінювати й поширювати його для будь-якої некомерційної мети: особисте використання,
 дослідження, освіта, хобі-проєкти, а також використання благодійними організаціями, навчальними
@@ -184,5 +188,5 @@ Panoptes є **source-available** за ліцензією [PolyForm Noncommercial
 
 **Комерційне використання** (наприклад, використання комерційною компанією у своїй діяльності) ліцензія
 не охоплює, воно потребує окремої ліцензії. Комерційне ліцензування доступне за запитом: зв'яжіться з
-мейнтейнером через [GitHub](https://github.com/DonSosiska/panoptes) (не публікуйте конфіденційні
+мейнтейнером через [GitHub](https://github.com/DonSosiska/holealign) (не публікуйте конфіденційні
 подробиці у публічному issue).
