@@ -175,3 +175,17 @@ func TestOpenAICompatible(t *testing.T) {
 		t.Fatalf("auth header should be absent, got %q", gotAuth)
 	}
 }
+
+func TestAnthropicClientsShared(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "shared-test")
+	a := newAnthropic(config.LLM{Provider: "anthropic", Model: "claude-sonnet-5-5", BaseURL: "http://127.0.0.1:1"})
+	b := newAnthropic(config.LLM{Provider: "anthropic", Model: "claude-haiku-5-5", BaseURL: "http://127.0.0.1:1", Effort: "high"})
+	if a.client != b.client {
+		t.Fatal("providers with the same credentials must share one client (one token cache)")
+	}
+	t.Setenv("ANTHROPIC_API_KEY", "other")
+	c := newAnthropic(config.LLM{Provider: "anthropic", Model: "claude-haiku-5-5", BaseURL: "http://127.0.0.1:1"})
+	if c.client == a.client {
+		t.Fatal("different credentials must not share a client")
+	}
+}

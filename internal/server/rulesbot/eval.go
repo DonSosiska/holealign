@@ -465,6 +465,10 @@ type Stats struct {
 	Unsafe    int
 	Missed    int
 	Unknown   int
+	// Decisive is the mean, over successful drafts, of matched / (compared - unknown): agreement on
+	// the cases where the draft gave a definite verdict. DecisiveN counts the drafts it averages.
+	Decisive  float64
+	DecisiveN int
 	Attempts  float64 // mean per run
 	Tokens    float64 // mean per run, all kinds
 	USDTotal  float64
@@ -492,6 +496,10 @@ func aggregate(rs []RunResult) Stats {
 				s.Unsafe += r.Score.Unsafe
 				s.Missed += r.Score.MissedExploitable
 				s.Unknown += r.Score.Unknown
+				if d := r.Score.Compared - r.Score.Unknown; d > 0 {
+					s.Decisive += float64(r.Score.Matched) / float64(d)
+					s.DecisiveN++
+				}
 				if r.Score.Compared > 0 {
 					agr += r.Score.Agreement
 					s.Scored++
@@ -501,6 +509,9 @@ func aggregate(rs []RunResult) Stats {
 	}
 	if s.Scored > 0 {
 		s.Agreement = agr / float64(s.Scored)
+	}
+	if s.DecisiveN > 0 {
+		s.Decisive /= float64(s.DecisiveN)
 	}
 	if s.Runs > 0 {
 		s.Attempts = float64(att) / float64(s.Runs)
@@ -552,7 +563,7 @@ func (r *Report) Markdown() string {
 		b.WriteString("\n")
 	}
 	b.WriteString("## Variants compared\n\n")
-	b.WriteString("| Variant | Runs | Success rate | Mean agreement | Unsafe | Missed exploitable | Unknown instead | Est. USD per success | Total est. USD |\n|---|---|---|---|---|---|---|---|---|\n")
+	b.WriteString("| Variant | Runs | Success rate | Mean agreement | Decisive agreement | Unsafe | Missed exploitable | Unknown instead | Est. USD per success | Total est. USD |\n|---|---|---|---|---|---|---|---|---|---|\n")
 	for _, v := range r.Variants {
 		var rs []RunResult
 		for _, x := range r.Results {
@@ -565,9 +576,9 @@ func (r *Report) Markdown() string {
 		if s.Runs > 0 {
 			rate = float64(s.Successes) / float64(s.Runs)
 		}
-		fmt.Fprintf(&b, "| %s | %d | %s | %s | %d | %d | %d | %s | %s |\n", v, s.Runs, pct(rate, s.Runs > 0),
-			pct(s.Agreement, s.Scored > 0), s.Unsafe, s.Missed, s.Unknown, usdCell(s.USDPerOK, s.USDKnown, s.Successes > 0), usdCell(s.USDTotal, s.USDKnown, true))
+		fmt.Fprintf(&b, "| %s | %d | %s | %s | %s | %d | %d | %d | %s | %s |\n", v, s.Runs, pct(rate, s.Runs > 0),
+			pct(s.Agreement, s.Scored > 0), pct(s.Decisive, s.DecisiveN > 0), s.Unsafe, s.Missed, s.Unknown, usdCell(s.USDPerOK, s.USDKnown, s.Successes > 0), usdCell(s.USDTotal, s.USDKnown, true))
 	}
-	b.WriteString("\nUnsafe: compared reference cases that want exploitable or conditions_unknown where the draft says affected_not_exploitable or not_affected. Agreement is averaged over successful drafts with at least one compared case. Unknown instead: mismatches where the draft says conditions_unknown because it reads a fact the reference case does not provide (conservative, not wrong).\n")
+	b.WriteString("\nUnsafe: compared reference cases that want exploitable or conditions_unknown where the draft says affected_not_exploitable or not_affected. Agreement is averaged over successful drafts with at least one compared case. Decisive agreement: agreement over the cases where the draft gave a definite verdict (the unknown-instead cases left out). Unknown instead: mismatches where the draft says conditions_unknown because it reads a fact the reference case does not provide (conservative, not wrong).\n")
 	return b.String()
 }
