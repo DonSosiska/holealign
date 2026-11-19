@@ -100,8 +100,115 @@ func ParseTests(data []byte) ([]TestCase, error) {
 		if c.Finding.Vuln == "" || c.Finding.Package == "" {
 			return nil, fmt.Errorf("case %q: finding.vuln and finding.package are required", c.Name)
 		}
+		if err := validateTestFacts(c.Facts); err != nil {
+			return nil, fmt.Errorf("case %q: %w", c.Name, err)
+		}
 	}
 	return cases, nil
+}
+
+// validateTestFacts checks that every fact key in a test case exists in the catalog (or is a
+// file.match:* fact) and that its YAML value matches the declared catalog type. This prevents
+// synthetic tests from passing on invented fact names, wrong value shapes, or wrong key casing.
+func validateTestFacts(facts map[string]any) error {
+	keys := make([]string, 0, len(facts))
+	for k := range facts {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		ft, ok := FactTypeOf(k)
+		if !ok {
+			return fmt.Errorf("facts: unknown fact %q (not in the fact catalog)", k)
+		}
+		v := facts[k]
+		if v == nil {
+			continue
+		}
+		if err := checkFactValue(k, ft, v); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func checkFactValue(name string, ft FactType, v any) error {
+	switch ft {
+	case TString:
+		if _, ok := v.(string); !ok {
+			return fmt.Errorf("fact %q: want string, got %T", name, v)
+		}
+	case TBool:
+		if _, ok := v.(bool); !ok {
+			return fmt.Errorf("fact %q: want bool, got %T", name, v)
+		}
+	case TStringList:
+		xs, ok := v.([]any)
+		if !ok {
+			return fmt.Errorf("fact %q: want list<string>, got %T", name, v)
+		}
+		for i, x := range xs {
+			if _, ok := x.(string); !ok {
+				return fmt.Errorf("fact %q[%d]: want string, got %T", name, i, x)
+			}
+		}
+	case TIntList:
+		xs, ok := v.([]any)
+		if !ok {
+			return fmt.Errorf("fact %q: want list<int>, got %T", name, v)
+		}
+		for i, x := range xs {
+			switch n := x.(type) {
+			case int, int64, uint64:
+			case float64:
+				if float64(int64(n)) != n {
+					return fmt.Errorf("fact %q[%d]: want int, got %v", name, i, n)
+				}
+			default:
+				return fmt.Errorf("fact %q[%d]: want int, got %T", name, i, x)
+			}
+		}
+	case TStringMap:
+		m, ok := v.(map[string]any)
+		if !ok {
+			return fmt.Errorf("fact %q: want map<string,string>, got %T", name, v)
+		}
+		for mk, mv := range m {
+			if name == "sshd.config" && mk != strings.ToLower(mk) {
+				return fmt.Errorf("fact %q: key %q must be lowercase (sshd -T keys are lowercased)", name, mk)
+			}
+			if _, ok := mv.(string); !ok {
+				return fmt.Errorf("fact %q[%q]: want string, got %T", name, mk, mv)
+			}
+		}
+	case TMapOfList:
+		m, ok := v.(map[string]any)
+		if !ok {
+			return fmt.Errorf("fact %q: want map<string,list<string>>, got %T", name, v)
+		}
+		for mk, mv := range m {
+			xs, ok := mv.([]any)
+			if !ok {
+				return fmt.Errorf("fact %q[%q]: want list<string>, got %T", name, mk, mv)
+			}
+			for i, x := range xs {
+				if _, ok := x.(string); !ok {
+					return fmt.Errorf("fact %q[%q][%d]: want string, got %T", name, mk, i, x)
+				}
+			}
+		}
+	case TObjectList:
+		xs, ok := v.([]any)
+		if !ok {
+			return fmt.Errorf("fact %q: want list<map>, got %T", name, v)
+		}
+		for i, x := range xs {
+			if _, ok := x.(map[string]any); !ok {
+				return fmt.Errorf("fact %q[%d]: want map, got %T", name, i, x)
+			}
+		}
+	}
+	return nil
 }
 
 // RunTests evaluates every case with a real Engine built from rules only (no DB, no feed) and

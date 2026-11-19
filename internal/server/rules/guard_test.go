@@ -92,7 +92,7 @@ func TestDraftCannotOverrideReviewed(t *testing.T) {
 	d.ExploitableIf = "false"
 	db := &fakeDB{rules: []model.Rule{d}}
 	e := New(files, db)
-	hf := map[string]any{"os.libc": "glibc", "sshd.config": map[string]any{"logingracetime": "120"}}
+	hf := map[string]any{"os.libc": "glibc", "sshd.config": map[string]any{"logingracetime": "120"}, "services.active": []any{"ssh"}}
 	ev := eval(t, e, "CVE-2024-6387", "openssh-server", "deb", hf)
 	want(t, ev, model.VerdictExploitable)
 	if ev.RuleStatus != model.RuleReviewed || ev.Rule.ID != "CVE-2024-6387" {

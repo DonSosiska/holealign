@@ -38,12 +38,13 @@ type Option func(*Engine)
 func WithEvalTimeout(d time.Duration) Option { return func(e *Engine) { e.timeout = d } }
 
 type compiled struct {
-	rule     model.Rule
-	exploit  cel.Program
-	notAff   cel.Program
-	layer    int      // layerBuiltin < layerFeed < layerDB
-	declared []string // facts that must be present
-	refs     []factRef
+	rule       model.Rule
+	exploit    cel.Program
+	notAff     cel.Program
+	notAffDeps []string // facts referenced by not_affected_if (may be empty for package-only exclusions)
+	layer      int      // layerBuiltin < layerFeed < layerDB
+	declared   []string // facts that must be present
+	refs       []factRef
 	redact   bool // rule reads file.match facts: never echo values in errors
 	// readsHost reports that the rule reads host facts: facts/fact_requests, any facts[...]
 	// reference or any host.* variable. Such a rule cannot be judged for container images.
@@ -149,6 +150,13 @@ func (e *Engine) Reload(ctx context.Context) error {
 		if r.NotAffectedIf != "" {
 			if c.notAff, r2, root2, err = compileBoolAST(r.NotAffectedIf); err != nil {
 				return nil, err
+			}
+			seenDep := map[string]bool{}
+			for _, ref := range r2 {
+				if !seenDep[ref.Name] {
+					seenDep[ref.Name] = true
+					c.notAffDeps = append(c.notAffDeps, ref.Name)
+				}
 			}
 		}
 		c.refs = mergeRefs(r1, r2)
@@ -386,37 +394,52 @@ func (e *Engine) evaluate(ctx context.Context, c *compiled, hc core.HostContext,
 		return ev
 	}
 	var missing []string
+	missingSet := map[string]bool{}
 	act := map[string]any{}
 	for _, n := range c.declared {
 		v, ok := facts[n]
 		if !ok || v == nil {
 			missing = append(missing, n)
+			missingSet[n] = true
 			continue
 		}
 		act[n] = normalize(v)
-	}
-	if len(missing) > 0 {
-		ev.Verdict = model.VerdictConditionsUnknown
-		ev.Reason = "missing facts: " + strings.Join(missing, ", ")
-		return ev
 	}
 
 	vars := map[string]any{"facts": act, "pkg": pkgVars(f), "host": hostVars(hc.Host)}
 	ectx, cancel := context.WithTimeout(ctx, e.timeout)
 	defer cancel()
 
+	// Evaluate not_affected_if first whenever every fact it references is present. A package-only
+	// exclusion (such as openssh-client on a host without sshd.config) can therefore return
+	// affected_not_exploitable instead of conditions_unknown. Draft rules remain clamped to
+	// conditions_unknown by Evaluate().
 	if c.notAff != nil {
-		b, err := evalBool(ectx, c.notAff, vars)
-		if err != nil {
-			ev.Verdict = model.VerdictConditionsUnknown
-			ev.Reason = "not_affected_if error: " + errText(c, err)
-			return ev
+		notAffReady := true
+		for _, n := range c.notAffDeps {
+			if missingSet[n] {
+				notAffReady = false
+				break
+			}
 		}
-		if b {
-			ev.Verdict = model.VerdictNotExploitable
-			ev.Reason = "not_affected_if matched: " + describe(c, act)
-			return ev
+		if notAffReady {
+			b, err := evalBool(ectx, c.notAff, vars)
+			if err != nil {
+				ev.Verdict = model.VerdictConditionsUnknown
+				ev.Reason = "not_affected_if error: " + errText(c, err)
+				return ev
+			}
+			if b {
+				ev.Verdict = model.VerdictNotExploitable
+				ev.Reason = "not_affected_if matched: " + describe(c, act)
+				return ev
+			}
 		}
+	}
+	if len(missing) > 0 {
+		ev.Verdict = model.VerdictConditionsUnknown
+		ev.Reason = "missing facts: " + strings.Join(missing, ", ")
+		return ev
 	}
 	b, err := evalBool(ectx, c.exploit, vars)
 	if err != nil {
