@@ -26,13 +26,12 @@ const (
 // hookServer is a fake webhook receiver. Tests reach it through a transport that sends every
 // request, whatever its URL, to the test server, so the real (validated) URL can be configured.
 type hookServer struct {
-	t       *testing.T
-	srv     *httptest.Server
-	mu      sync.Mutex
-	reqs    []hookReq
-	script  func(call int, w http.ResponseWriter, r *http.Request)
-	client  *http.Client
-	handled func()
+	t      *testing.T
+	srv    *httptest.Server
+	mu     sync.Mutex
+	reqs   []hookReq
+	script func(call int, w http.ResponseWriter, r *http.Request)
+	client *http.Client
 }
 
 type hookReq struct {

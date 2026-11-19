@@ -253,13 +253,14 @@ func exploitableMsg() Message {
 }
 
 func TestEmailDestinations(t *testing.T) {
-	for _, in := range []string{"email:ops@example.com", "email:a.b+tag@sub.example.co.uk", "email:o_p-s%1@ex-ample.org"} {
+	for _, in := range []string{"email:ops@example.com", "email:a.b+tag@sub.example.co.uk", "email:o_p-s+1@ex-ample.org"} {
 		if err := ValidateDestination(in); err != nil {
 			t.Errorf("%q: %v", in, err)
 		}
 	}
 	for _, in := range []string{
 		"email:", "email:ops", "email:ops@", "email:@example.com", "email:ops@example", "email:ops@@example.com", "email:a@b@example.com",
+		"email:o_p-s%1@ex-ample.org", "email:victim%evil.com@example.com",
 		"email:Ops Team <ops@example.com>", "email:<ops@example.com>", "email:\"ops\"@example.com", "email:ops@example.com,evil@example.net",
 		"email:ops@example.com;evil@example.net", "email:ops@example.com evil@example.net", "email:ops@[127.0.0.1]", "email:ops@127.0.0.1",
 		"email:.ops@example.com", "email:ops.@example.com", "email:o..ps@example.com", "email:ops@-example.com", "email:ops@example..com",
@@ -447,7 +448,7 @@ func TestEmailHeaderInjectionInSubject(t *testing.T) {
 	s := newFakeSMTP(t, nil)
 	e := s.channel(t, nil)
 	msg := Message{ID: "id\r\nBcc: evil@example.net", Lines: []Line{
-		{txt("Alert\r\nBcc: evil@example.net\r\nX-Evil: 1 Subject: x\x00\x07 on "), bold("web‮01")},
+		{txt("Alert\r\nBcc: evil@example.net\r\nX-Evil: 1\u2028Subject: x\x00\x07 on "), bold("web\u202e01")},
 		{txt("body")},
 	}}
 	if err := e.Send(context.Background(), "ops@example.com", msg); err != nil {
@@ -466,7 +467,7 @@ func TestEmailHeaderInjectionInSubject(t *testing.T) {
 		t.Errorf("subjects = %v", got)
 	}
 	subj, _ := new(mime.WordDecoder).DecodeHeader(m.Header.Get("Subject"))
-	if strings.ContainsAny(subj, "\r\n\x00\x07 ‮") || !strings.Contains(subj, "Alert Bcc: evil@example.net") {
+	if strings.ContainsAny(subj, "\r\n\x00\x07\u2028\u202e") || !strings.Contains(subj, "Alert Bcc: evil@example.net") {
 		t.Errorf("subject = %q", subj)
 	}
 	if strings.ContainsAny(m.Header.Get("Message-ID"), "\r\n ") || len(m.Header["Message-Id"]) != 1 {

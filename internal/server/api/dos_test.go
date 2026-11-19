@@ -129,7 +129,7 @@ func TestCheckinOSBlockStoredCleaned(t *testing.T) {
 	er := e.enroll(t, "m")
 	big := strings.Repeat("a", 1<<20)
 	req := model.CheckinRequest{OS: model.OSInfo{
-		ID: "Debian", VersionID: "12.1", PrettyName: "Evil‮ OS\x00" + big, Kernel: "6.1​.0" + big, Arch: "amd64" + big,
+		ID: "Debian", VersionID: "12.1", PrettyName: "Evil\u202e OS\x00" + big, Kernel: "6.1\u200b.0" + big, Arch: "amd64" + big,
 	}}
 	if resp, body := e.do(t, "POST", "/api/v1/checkin", er.AgentKey, req, nil); resp.StatusCode != 200 {
 		t.Fatalf("checkin: %d %s", resp.StatusCode, body)
@@ -141,21 +141,21 @@ func TestCheckinOSBlockStoredCleaned(t *testing.T) {
 	if h.OS.ID != "" || h.OS.VersionID != "12.1" {
 		t.Fatalf("id/version: %+v", h.OS)
 	}
-	if len(h.OS.PrettyName) > 128 || strings.ContainsAny(h.OS.PrettyName, "‮\x00") || len(h.OS.Kernel) > 128 || strings.Contains(h.OS.Kernel, "​") || len(h.OS.Arch) > 64 {
+	if len(h.OS.PrettyName) > 128 || strings.ContainsAny(h.OS.PrettyName, "\u202e\x00") || len(h.OS.Kernel) > 128 || strings.Contains(h.OS.Kernel, "\u200b") || len(h.OS.Arch) > 64 {
 		t.Fatalf("not cleaned: %d %d %d", len(h.OS.PrettyName), len(h.OS.Kernel), len(h.OS.Arch))
 	}
 }
 
 func TestCleanOS(t *testing.T) {
 	long := strings.Repeat("x", 5000)
-	got := cleanOS(model.OSInfo{ID: "debian", VersionID: "12.4", PrettyName: "Debian‮ GNU\x00/Linux​ " + long, Kernel: "6.1.0-⁦x" + long, Arch: long})
+	got := cleanOS(model.OSInfo{ID: "debian", VersionID: "12.4", PrettyName: "Debian\u202e GNU\x00/Linux\u200b " + long, Kernel: "6.1.0-\u2066x" + long, Arch: long})
 	if got.ID != "debian" || got.VersionID != "12.4" {
 		t.Fatalf("id/version: %+v", got)
 	}
-	if len([]rune(got.PrettyName)) != 128 || strings.ContainsAny(got.PrettyName, "‮\x00​") || !strings.HasPrefix(got.PrettyName, "Debian GNU/Linux ") {
+	if len([]rune(got.PrettyName)) != 128 || strings.ContainsAny(got.PrettyName, "\u202e\x00\u200b") || !strings.HasPrefix(got.PrettyName, "Debian GNU/Linux ") {
 		t.Fatalf("pretty: %q", got.PrettyName)
 	}
-	if len([]rune(got.Kernel)) != 128 || strings.Contains(got.Kernel, "⁦") || len(got.Arch) != 64 {
+	if len([]rune(got.Kernel)) != 128 || strings.Contains(got.Kernel, "\u2066") || len(got.Arch) != 64 {
 		t.Fatalf("kernel/arch: %q %d", got.Kernel, len(got.Arch))
 	}
 	// ids outside the conservative charset are dropped, not rejected
@@ -164,7 +164,7 @@ func TestCleanOS(t *testing.T) {
 			t.Fatalf("%q kept: %+v", bad, g)
 		}
 	}
-	if g := cleanOS(model.OSInfo{ID: "ubuntu​"}); g.ID != "ubuntu" {
+	if g := cleanOS(model.OSInfo{ID: "ubuntu\u200b"}); g.ID != "ubuntu" {
 		t.Fatalf("zero-width stripped then validated: %q", g.ID)
 	}
 	if g := cleanOS(model.OSInfo{ID: strings.Repeat("a", 100)}); len(g.ID) != 64 {
@@ -172,12 +172,34 @@ func TestCleanOS(t *testing.T) {
 	}
 }
 
+type stepReader struct {
+	r     io.Reader
+	steps []func()
+}
+
+func (s *stepReader) Read(p []byte) (int, error) {
+	if len(s.steps) > 0 {
+		fn := s.steps[0]
+		s.steps = s.steps[1:]
+		if fn != nil {
+			fn()
+		}
+	}
+	return s.r.Read(p)
+}
+
 func TestSlowBodyReaderRejectsTrickle(t *testing.T) {
 	now := time.Now()
 	sr := &slowBodyReader{
-		r:       strings.NewReader("abcdefghij"),
+		r: &stepReader{
+			r: strings.NewReader("abcdefghij"),
+			steps: []func(){
+				func() { now = now.Add(2 * time.Second) },
+				nil,
+				func() { now = now.Add(4 * time.Second) },
+			},
+		},
 		now:     func() time.Time { return now },
-		start:   now,
 		grace:   5 * time.Second,
 		minRate: 1024,
 	}
@@ -185,7 +207,12 @@ func TestSlowBodyReaderRejectsTrickle(t *testing.T) {
 	if n, err := sr.Read(buf); err != nil || n != 2 {
 		t.Fatalf("within grace: n=%d err=%v", n, err)
 	}
-	now = now.Add(6 * time.Second) // 4 bytes in 6s << 1024 B/s
+	// External pause outside Read (e.g. server CPU decoding) must not trigger errSlowBody.
+	now = now.Add(10 * time.Second)
+	if n, err := sr.Read(buf); err != nil || n != 2 {
+		t.Fatalf("pause outside Read mischarged as slow upload: n=%d err=%v", n, err)
+	}
+	// Read blocking past grace at 6 B / 6 s << 1024 B/s -> errSlowBody.
 	if _, err := sr.Read(buf); !errors.Is(err, errSlowBody) {
 		t.Fatalf("trickle after grace: got %v, want errSlowBody", err)
 	}
@@ -197,7 +224,7 @@ type fakeHostReqEval struct {
 	host []model.FactRequest
 }
 
-func (f fakeHostReqEval) FactRequests() []model.FactRequest                     { return f.all }
+func (f fakeHostReqEval) FactRequests() []model.FactRequest                   { return f.all }
 func (f fakeHostReqEval) FactRequestsFor([]model.Finding) []model.FactRequest { return f.host }
 
 func TestFactRequestsForHostPrioritizesMatchingRules(t *testing.T) {

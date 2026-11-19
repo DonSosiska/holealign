@@ -153,6 +153,9 @@ func TestReauthRequired(t *testing.T) {
 	e.addUser("admin", "pw-long-enough")
 	e.addUser("bob", "bob-long-password")
 	ctx := context.Background()
+	if w := e.post("/settings/tokens", url.Values{"name": {"existing-tok"}}, e.session("admin")); w.Code != 200 {
+		t.Fatalf("seed token: %d", w.Code)
+	}
 	cases := []struct {
 		path string
 		form url.Values
@@ -161,6 +164,7 @@ func TestReauthRequired(t *testing.T) {
 		{"/settings/users/bob/password", url.Values{"password": {"changed-password-1"}}},
 		{"/settings/users/bob/delete", url.Values{}},
 		{"/settings/tokens", url.Values{"name": {"t1"}}},
+		{"/settings/tokens/existing-tok/revoke", url.Values{}},
 	}
 	for _, tc := range cases {
 		for _, cur := range []string{"", "wrong-password"} {
@@ -182,8 +186,8 @@ func TestReauthRequired(t *testing.T) {
 	if u, _ := e.st.GetUser(ctx, "bob"); !store.CheckPassword(u.PasswordHash, "bob-long-password") {
 		t.Error("password changed without re-auth")
 	}
-	if toks, _ := e.st.ListEnrollTokens(ctx); len(toks) != 0 {
-		t.Error("token created without re-auth")
+	if toks, _ := e.st.ListEnrollTokens(ctx); len(toks) != 1 || toks[0].Revoked {
+		t.Errorf("token state changed without re-auth: %+v", toks)
 	}
 	if _, err := e.st.GetUser(ctx, "bob"); err != nil {
 		t.Error("bob deleted without re-auth")

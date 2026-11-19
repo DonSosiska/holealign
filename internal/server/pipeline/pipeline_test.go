@@ -220,9 +220,7 @@ func TestUnknownCriticalOnlyForKEVOrCritical(t *testing.T) {
 	if ev := e.run(t); len(ev) != 0 {
 		t.Fatalf("unknown_critical re-sent: %+v", ev)
 	}
-	// reason-only change (verdict stays unknown) must not re-send
-	e.ev.mu.Lock()
-	e.ev.mu.Unlock()
+	// re-running with unchanged unknown verdict must not re-send
 	if ev := e.run(t); len(ev) != 0 {
 		t.Fatalf("%+v", ev)
 	}

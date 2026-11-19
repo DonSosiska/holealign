@@ -239,7 +239,7 @@ func (env *Env) apacheIncludesTrusted() bool {
 		return false
 	}
 	for _, l := range locs {
-		if !env.treeOK("apache include", l) {
+		if !env.treeOKStrict("apache include", l) {
 			return false
 		}
 	}

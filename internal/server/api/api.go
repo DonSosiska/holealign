@@ -513,21 +513,25 @@ var (
 // slowBodyReader guards an inventory body read against slow-body / trickle attacks that would
 // otherwise pin a global decodeSem slot for the full HTTP ReadTimeout.
 type slowBodyReader struct {
-	r       io.Reader
-	rc      *http.ResponseController
-	now     func() time.Time
-	start   time.Time
-	idle    time.Duration
-	grace   time.Duration
-	minRate int64
-	total   int64
+	r        io.Reader
+	rc       *http.ResponseController
+	now      func() time.Time
+	readTime time.Duration
+	idle     time.Duration
+	grace    time.Duration
+	minRate  int64
+	total    int64
 }
 
 func (s *slowBodyReader) Read(p []byte) (int, error) {
 	if s.idle > 0 && s.rc != nil {
 		_ = s.rc.SetReadDeadline(time.Now().Add(s.idle))
 	}
+	t0 := s.now()
 	n, err := s.r.Read(p)
+	if d := s.now().Sub(t0); d > 0 {
+		s.readTime += d
+	}
 	s.total += int64(n)
 	if err != nil {
 		var ne net.Error
@@ -536,11 +540,8 @@ func (s *slowBodyReader) Read(p []byte) (int, error) {
 		}
 		return n, err
 	}
-	if s.minRate > 0 && s.grace >= 0 {
-		elapsed := s.now().Sub(s.start)
-		if elapsed >= s.grace && float64(s.total) < elapsed.Seconds()*float64(s.minRate) {
-			return n, errSlowBody
-		}
+	if s.minRate > 0 && s.grace >= 0 && s.readTime >= s.grace && float64(s.total) < s.readTime.Seconds()*float64(s.minRate) {
+		return n, errSlowBody
 	}
 	return n, nil
 }
@@ -620,7 +621,6 @@ func (s *server) handleInventory(w http.ResponseWriter, r *http.Request) {
 			r:       rawBody,
 			rc:      rc,
 			now:     s.Now,
-			start:   s.Now(),
 			idle:    s.InventoryReadIdleTimeout,
 			grace:   s.InventoryRateGrace,
 			minRate: s.InventoryMinReadRate,

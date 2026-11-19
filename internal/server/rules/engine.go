@@ -45,7 +45,7 @@ type compiled struct {
 	layer      int      // layerBuiltin < layerFeed < layerDB
 	declared   []string // facts that must be present
 	refs       []factRef
-	redact   bool // rule reads file.match facts: never echo values in errors
+	redact     bool // rule reads file.match facts: never echo values in errors
 	// readsHost reports that the rule reads host facts: facts/fact_requests, any facts[...]
 	// reference or any host.* variable. Such a rule cannot be judged for container images.
 	readsHost bool

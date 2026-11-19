@@ -332,15 +332,14 @@ func (a *Agent) Provision(ctx context.Context, machineID string) error {
 		a.log.Warn("local agent credentials unreadable; provisioning again", "err", err)
 	}
 
+	localRecovery := false
 	if existing != nil && prevHash == "" {
 		// Not authenticated by our credentials. Only a host this server provisioned itself (marker)
 		// may be taken over again, e.g. after a crash between writing credentials and the DB update.
 		if marked != existing.ID {
 			return fmt.Errorf("%w (host %s %q)", ErrConflict, existing.ID, existing.Hostname)
 		}
-		if err := st.SetReenrollAllowedUntil(ctx, existing.ID, time.Now().Add(time.Minute)); err != nil {
-			return fmt.Errorf("recover local host: %w", err)
-		}
+		localRecovery = true
 	}
 
 	key, hash, err := store.NewSecret("pa_")
@@ -357,7 +356,7 @@ func (a *Agent) Provision(ctx context.Context, machineID string) error {
 	}
 	host, err := st.EnrollHost(ctx, store.EnrollParams{
 		MachineID: machineID, Hostname: hostname, Labels: labels, AgentVersion: a.o.Version, KeyHash: hash,
-		PreviousKeyHash: prevHash, TokenName: TokenName, TokenLabels: labels,
+		PreviousKeyHash: prevHash, LocalRecovery: localRecovery, TokenName: TokenName, TokenLabels: labels,
 	})
 	if errors.Is(err, store.ErrReenrollDenied) {
 		return fmt.Errorf("%w", ErrConflict)

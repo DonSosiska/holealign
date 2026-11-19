@@ -171,7 +171,7 @@ func (env *Env) sshdIncludesTrusted() bool {
 		return false
 	}
 	for _, l := range locs {
-		if !env.treeOK("sshd include", l) {
+		if !env.treeOKStrict("sshd include", l) {
 			return false
 		}
 	}

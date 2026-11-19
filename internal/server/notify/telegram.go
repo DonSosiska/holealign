@@ -131,13 +131,18 @@ func (t *Telegram) Send(ctx context.Context, target string, msg Message) error {
 			RetryAfter int `json:"retry_after"`
 		} `json:"parameters"`
 	}
-	_ = json.Unmarshal(data, &out)
+	var uerr error
+	if len(data) > 0 {
+		uerr = json.Unmarshal(data, &out)
+	}
 	desc := clBase(stripSecret(out.Description, t.token))
 	if len(desc) > 120 {
 		desc = desc[:120]
 	}
 
 	switch code := resp.StatusCode; {
+	case code >= 200 && code < 300 && uerr != nil:
+		return &SendError{Status: code, Permanent: true, Err: fmt.Errorf("telegram: invalid response JSON: %w", uerr)}
 	case code >= 200 && code < 300 && (out.OK || len(data) == 0):
 		return nil
 	case code >= 200 && code < 300:

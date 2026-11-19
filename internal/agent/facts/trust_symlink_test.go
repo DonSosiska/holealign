@@ -144,6 +144,67 @@ func TestTreeTrustedRejectsUntrustedGrandparent(t *testing.T) {
 	}
 }
 
+func TestTreeTrustedRejectsEmptyGlobDirOwnedOrWritable(t *testing.T) {
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := symlinkTargetTrust
+	symlinkTargetTrust = func(p string) error { return binaryTrustAbove(p, base) }
+	t.Cleanup(func() { symlinkTargetTrust = old })
+
+	emptyDir := filepath.Join(base, "conf.d")
+	if err := os.MkdirAll(emptyDir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(emptyDir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	pat := filepath.Join(emptyDir, "*.conf")
+	if err := treeTrusted([]string{pat}); err == nil {
+		t.Fatal("treeTrusted accepted empty world-writable glob directory")
+	}
+	if err := treeTrustedStrict([]string{pat}); err == nil {
+		t.Fatal("treeTrustedStrict accepted empty world-writable glob directory")
+	}
+}
+
+func TestTreeTrustedStrictRejectsNonexistentIncludeUnderWritableParent(t *testing.T) {
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := symlinkTargetTrust
+	symlinkTargetTrust = func(p string) error { return binaryTrustAbove(p, base) }
+	t.Cleanup(func() { symlinkTargetTrust = old })
+
+	writableParent := filepath.Join(base, "user-home")
+	if err := os.MkdirAll(writableParent, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(writableParent, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	pat := filepath.Join(writableParent, "not-yet-created", "*.conf")
+	if err := treeTrustedStrict([]string{pat}); err == nil {
+		t.Fatal("treeTrustedStrict accepted nonexistent include under world-writable ancestor")
+	}
+	// Non-glob nonexistent include path under a writable parent is also rejected in strict mode.
+	filePat := filepath.Join(writableParent, "future.conf")
+	if err := treeTrustedStrict([]string{filePat}); err == nil {
+		t.Fatal("treeTrustedStrict accepted nonexistent literal include under world-writable ancestor")
+	}
+}
+
+func TestTreeTrustedRejectsBadGlob(t *testing.T) {
+	if err := treeTrusted([]string{"/etc/["}); err == nil {
+		t.Fatal("malformed glob pattern accepted")
+	}
+	if err := treeTrustedStrict([]string{"/etc/["}); err == nil {
+		t.Fatal("malformed glob pattern accepted by strict check")
+	}
+}
+
 func itoa(i int) string {
 	if i == 0 {
 		return "0"

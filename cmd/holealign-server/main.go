@@ -309,7 +309,11 @@ func wire(cfg *config.Config, st store.Store, log *slog.Logger, trig *lateTrigge
 	if len(cfg.Webhook.Endpoints) > 0 {
 		eps := map[string]notify.WebhookEndpoint{}
 		for name, e := range cfg.Webhook.Endpoints {
-			eps[name] = notify.WebhookEndpoint{URL: e.URL, Secret: os.Getenv(cfg.WebhookSecretEnv(name)), Headers: e.Headers, AllowHTTP: e.AllowHTTP}
+			u := e.URL
+			if e.URLEnv != "" {
+				u = os.Getenv(e.URLEnv)
+			}
+			eps[name] = notify.WebhookEndpoint{URL: u, Secret: os.Getenv(cfg.WebhookSecretEnv(name)), Headers: e.Headers, AllowHTTP: e.AllowHTTP}
 		}
 		if ch, err := notify.NewWebhookChannel(eps, nil); err != nil {
 			log.Error("webhook channel disabled", "err", err)

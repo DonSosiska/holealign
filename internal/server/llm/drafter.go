@@ -18,20 +18,19 @@ import (
 )
 
 const (
-	queueSize   = 256
-	failedTTL   = 7 * 24 * time.Hour
+	queueSize      = 256
+	failedTTL      = 7 * 24 * time.Hour
 	kvFailedPfx    = "llm.failed."
 	kvCallsPfx     = "llm.calls."
 	kvHostCallsPfx = "llm.hostcalls." // + day + "." + host: persisted per-host daily LLM calls
 	kvCoolPfx      = "llm.cooldown."
-	kvHostPfx   = "llm.enqhost." // + day + "." + host: persisted per-host enqueue counter
-	kvEnqPfx    = "llm.enq."     // + day: persisted global enqueue counter
+	kvHostPfx      = "llm.enqhost." // + day + "." + host: persisted per-host enqueue counter
+	kvEnqPfx       = "llm.enq."     // + day: persisted global enqueue counter
 
 	cooldownTTL          = 6 * time.Hour
 	completeTimeout      = 120 * time.Second
 	maxEnqueuePerHostDay = 100
 	maxEnqueuePerDay     = 1000
-	retryAfterOtherHost  = 24 * time.Hour
 	maxSelectors         = 50
 	maxTitleChars        = 200
 	maxExplanationChars  = 600
@@ -222,40 +221,73 @@ func RuleID(vulnID, pkg string) string {
 	return vulnID + "-" + b.String()
 }
 
+func failKey(key, hostID string) string {
+	if hostID != "" {
+		return kvFailedPfx + key + "|" + hostID
+	}
+	return kvFailedPfx + key
+}
+
+func (d *Drafter) idTaken(ctx context.Context, id string) (bool, error) {
+	if d.d.Rules != nil {
+		for _, r := range d.d.Rules() {
+			if r.ID == id {
+				return true, nil
+			}
+		}
+	}
+	if _, err := d.d.Store.GetRule(ctx, id); err == nil {
+		return true, nil
+	} else if !errors.Is(err, store.ErrNotFound) {
+		return false, err
+	}
+	return false, nil
+}
+
 func (d *Drafter) handle(ctx context.Context, f model.Finding) {
 	log := d.d.Logger.With("vuln", f.VulnID, "package", f.PackageName)
 	key := keyOf(f)
 	id := RuleID(f.VulnID, SourceOf(f))
 	now := d.d.Now()
 
-	// A generated ID that equals a shipped (file) rule or any existing rule ID
-	// must never cost an LLM call (the draft could not be stored anyway).
-	if d.d.Rules != nil {
-		for _, r := range d.d.Rules() {
-			if r.ID == id {
-				return
-			}
-		}
-	}
-
-	if _, err := d.d.Store.GetRule(ctx, id); err == nil {
-		return // exists (including rejected)
-	} else if !errors.Is(err, store.ErrNotFound) {
-		log.Warn("llm: rule lookup failed", "err", err)
-		return
-	}
 	if cov, err := d.covered(ctx, f); err != nil {
 		log.Warn("llm: rule listing failed", "err", err)
 		return
 	} else if cov {
 		return
 	}
-	if v, err := d.d.Store.KVGet(ctx, kvFailedPfx+key); err == nil {
-		if t, host, perr := parseFailed(v); perr == nil {
-			age := now.Sub(t)
-			// A failure caused by one host's content blocks retries for 7 days
-			// only for that host; another host may retry after 24 hours.
-			if age < failedTTL && (host == f.HostID || age < retryAfterOtherHost) {
+
+	// If another host forged upstream in PURL to claim CVE-<v>-<upstream> with non-matching
+	// selectors, fall back to the finding's own package name rather than skipping legitimate hosts.
+	taken, err := d.idTaken(ctx, id)
+	if err != nil {
+		log.Warn("llm: rule lookup failed", "err", err)
+		return
+	}
+	if taken {
+		alt := RuleID(f.VulnID, f.PackageName)
+		if f.PackageName == "" || alt == id {
+			return
+		}
+		altTaken, err := d.idTaken(ctx, alt)
+		if err != nil {
+			log.Warn("llm: rule lookup failed", "err", err)
+			return
+		}
+		if altTaken {
+			return
+		}
+		id = alt
+	}
+
+	// Per-host failure isolation: one host's validation failure/refusal never blocks another host.
+	for _, fk := range []string{failKey(key, f.HostID), kvFailedPfx + key} {
+		v, err := d.d.Store.KVGet(ctx, fk)
+		if err != nil {
+			continue
+		}
+		if t, host, perr := parseFailed(v); perr == nil && now.Sub(t) < failedTTL {
+			if fk != kvFailedPfx+key || host == f.HostID {
 				return
 			}
 		}
@@ -333,7 +365,7 @@ func (d *Drafter) handle(ctx context.Context, f model.Finding) {
 			}
 			return
 		}
-		rule, err := d.parse(reply, f, siblings, id)
+		rule, err := d.parse(reply, f, siblings, id, advisory)
 		if err == nil {
 			err = d.d.Validator.Validate(rule)
 		}
@@ -355,12 +387,12 @@ func (d *Drafter) handle(ctx context.Context, f model.Finding) {
 	d.markFailed(ctx, key, f.HostID, "validation", now)
 }
 
-// markFailed records a content-caused failure (validation or refusal) as
-// "<RFC3339>|<kind>|<host>". Provider/API errors are never recorded here: they
-// only set the short per-key cooldown.
+// markFailed records a content-caused failure (validation or refusal) scoped per host as
+// "<RFC3339>|<kind>|<host>". Provider/API errors are never recorded here: they only set the
+// short per-key cooldown.
 func (d *Drafter) markFailed(ctx context.Context, key, host, kind string, now time.Time) {
 	v := now.UTC().Format(time.RFC3339) + "|" + kind + "|" + host
-	if err := d.d.Store.KVSet(ctx, kvFailedPfx+key, v, now); err != nil {
+	if err := d.d.Store.KVSet(ctx, failKey(key, host), v, now); err != nil {
 		d.d.Logger.Warn("llm: recording failure", "err", err)
 	}
 }
@@ -444,7 +476,7 @@ func (d *Drafter) takeCall(ctx context.Context, hostID string, now time.Time, lo
 	return true
 }
 
-func (d *Drafter) parse(reply string, f model.Finding, siblings []model.PackageSelector, id string) (model.Rule, error) {
+func (d *Drafter) parse(reply string, f model.Finding, siblings []model.PackageSelector, id, advisory string) (model.Rule, error) {
 	var r model.Rule
 	obj, err := extractJSON(reply)
 	if err != nil {
@@ -493,6 +525,20 @@ func (d *Drafter) parse(reply string, f model.Finding, siblings []model.PackageS
 	r.Explanation = cleanText(r.Explanation, maxExplanationChars)
 	r.Fix.Upgrade = cleanText(r.Fix.Upgrade, maxFixChars)
 	r.Fix.Mitigation = cleanText(r.Fix.Mitigation, maxFixChars)
+	// References must appear verbatim in the advisory text (anti prompt-injection).
+	var refs []string
+	for _, u := range r.References {
+		u = strings.TrimSpace(u)
+		if u != "" && advisory != "" && strings.Contains(advisory, u) &&
+			(strings.HasPrefix(u, "https://") || strings.HasPrefix(u, "http://")) &&
+			len(u) <= 300 && !strings.ContainsAny(u, " \t\r\n") && !contains(refs, u) {
+			refs = append(refs, u)
+		}
+	}
+	if len(refs) > 10 {
+		refs = refs[:10]
+	}
+	r.References = refs
 	for i := range r.FactRequests {
 		if r.FactRequests[i].Collector == "" {
 			r.FactRequests[i].Collector = "file.match"

@@ -20,6 +20,23 @@ var (
 	reNginxWithFlag = regexp.MustCompile(`--with-([A-Za-z0-9_-]+)(?:\s|$)`)
 )
 
+// parseNginxConfigPaths extracts --conf-path and --prefix from `nginx -V` output.
+func parseNginxConfigPaths(out []byte) (confPath, prefix string) {
+	for _, line := range strings.Split(string(out), "\n") {
+		if _, rest, ok := strings.Cut(line, "configure arguments:"); ok {
+			line = rest
+		}
+		for _, tok := range splitQuotedFields(line) {
+			if v, ok := strings.CutPrefix(tok, "--conf-path="); ok && confPath == "" {
+				confPath = strings.TrimSpace(v)
+			} else if v, ok := strings.CutPrefix(tok, "--prefix="); ok && prefix == "" {
+				prefix = strings.TrimSpace(v)
+			}
+		}
+	}
+	return confPath, prefix
+}
+
 // parseNginxModules extracts the --with-<name> flags from `nginx -V` output
 // (names without the "--with-" prefix). Flags with values (--with-cc-opt=...)
 // are not modules and are skipped.
@@ -212,7 +229,7 @@ var reNginxFileLoad = regexp.MustCompile(`(?:^|[\s;{}])([A-Za-z0-9_]+_by_lua_fil
 
 // addExternalFile records the location(s) an absolute or prefix-relative path may denote when
 // they lie outside the verified config roots.
-func addExternalFile(external map[string]bool, roots []string, arg string) {
+func addExternalFile(external map[string]bool, roots, bases []string, arg string) {
 	if arg == "" || strings.ContainsAny(arg, "$\x00") {
 		return
 	}
@@ -222,7 +239,7 @@ func addExternalFile(external map[string]bool, roots []string, arg string) {
 		}
 		return
 	}
-	for _, b := range loadModuleBases {
+	for _, b := range bases {
 		if p := path.Join(b, arg); !underAnyRoot(p, roots) {
 			external[p] = true
 		}
@@ -275,17 +292,39 @@ func underAnyRoot(p string, roots []string) bool {
 // locations OUTSIDE those roots that nginx -T would read or load as root. Bounded to
 // nginxIncMaxFiles files of nginxIncMaxBytes each; more is an error (fail closed).
 func nginxExternalLocations(fsys fs.FS) ([]string, error) {
-	return nginxExternalLocationsIn(fsys, nginxConfigRoots)
+	return nginxExternalLocationsWith(fsys, nginxConfigRoots, nil, loadModuleBases)
 }
 
 func nginxExternalLocationsIn(fsys fs.FS, roots []string) ([]string, error) {
+	return nginxExternalLocationsWith(fsys, roots, nil, loadModuleBases)
+}
+
+func nginxInitialQueue(roots, entryFiles []string) []string {
+	var queue []string
+	seen := map[string]bool{}
+	add := func(p string) {
+		p = path.Clean(p)
+		if !seen[p] {
+			seen[p] = true
+			queue = append(queue, p)
+		}
+	}
+	for _, root := range roots {
+		add(root + "/nginx.conf")
+	}
+	for _, f := range entryFiles {
+		if f != "" {
+			add(f)
+		}
+	}
+	return queue
+}
+
+func nginxExternalLocationsWith(fsys fs.FS, roots, entryFiles, modBases []string) ([]string, error) {
 	if fsys == nil {
 		return nil, nil
 	}
-	var queue []string
-	for _, root := range roots {
-		queue = append(queue, root+"/nginx.conf")
-	}
+	queue := nginxInitialQueue(roots, entryFiles)
 	prefixOf := func(file string) string {
 		for _, r := range roots {
 			if strings.HasPrefix(file, r+"/") {
@@ -325,7 +364,7 @@ func nginxExternalLocationsIn(fsys fs.FS, roots []string) ([]string, error) {
 			if m[1] == "js_import" {
 				arg = fields[len(fields)-1] // `js_import name from path;`
 			}
-			addExternalFile(external, roots, strings.Trim(arg, `"'`))
+			addExternalFile(external, roots, modBases, strings.Trim(arg, `"'`))
 		}
 		for _, m := range reNginxIncludeDir.FindAllStringSubmatch(text, -1) {
 			arg := strings.Trim(m[2], `"'`)
@@ -333,7 +372,7 @@ func nginxExternalLocationsIn(fsys fs.FS, roots []string) ([]string, error) {
 				continue
 			}
 			if m[1] == "load_module" {
-				addExternalFile(external, roots, arg)
+				addExternalFile(external, roots, modBases, arg)
 				continue
 			}
 			p := arg
@@ -370,17 +409,17 @@ func nginxExternalLocationsIn(fsys fs.FS, roots []string) ([]string, error) {
 	return out, nil
 }
 
-// nginxIncludesTrusted verifies, with the same tree trust check, every location outside the
+// nginxIncludesTrusted verifies, with strict tree trust checks, every location outside the
 // verified roots that the config includes; false (recorded in agent.skipped) means nginx -T
 // must not run.
-func (env *Env) nginxIncludesTrusted() bool {
-	locs, err := nginxExternalLocations(env.FS)
+func (env *Env) nginxIncludesTrusted(roots, entryFiles, modBases []string) bool {
+	locs, err := nginxExternalLocationsWith(env.FS, roots, entryFiles, modBases)
 	if err != nil {
 		env.skip("nginx: " + err.Error())
 		return false
 	}
 	for _, l := range locs {
-		if !env.treeOK("nginx include", l) {
+		if !env.treeOKStrict("nginx include", l) {
 			return false
 		}
 	}
@@ -426,14 +465,11 @@ func isNginxIsolationErr(out string) bool {
 // parseNginxStaticConfig reads and parses the verified nginx configuration graph directly from
 // fsys without executing nginx. Used only as a fallback after treeOK and nginxIncludesTrusted
 // succeeded and `nginx -T` failed due to collector isolation (PrivateNetwork / ProtectSystem).
-func parseNginxStaticConfig(fsys fs.FS, roots []string) (map[string][]string, bool) {
+func parseNginxStaticConfig(fsys fs.FS, roots, entryFiles []string) (map[string][]string, bool) {
 	if fsys == nil {
 		return nil, false
 	}
-	var queue []string
-	for _, root := range roots {
-		queue = append(queue, root+"/nginx.conf")
-	}
+	queue := nginxInitialQueue(roots, entryFiles)
 	prefixOf := func(file string) string {
 		for _, r := range roots {
 			if strings.HasPrefix(file, r+"/") {
@@ -524,11 +560,32 @@ func collectNginx(ctx context.Context, env *Env) model.Facts {
 		return f
 	}
 
+	roots := append([]string(nil), nginxConfigRoots...)
+	modBases := append([]string(nil), loadModuleBases...)
+	var entryFiles []string
+
 	if out, err := env.run(ctx, "nginx", "-V"); err == nil {
 		f["nginx.modules"] = parseNginxModules(out)
+		confPath, prefix := parseNginxConfigPaths(out)
+		if prefix != "" && strings.HasPrefix(prefix, "/") {
+			if p := path.Clean(prefix); !underAnyRoot(p, modBases) {
+				modBases = append(modBases, p)
+			}
+		}
+		if confPath != "" && strings.HasPrefix(confPath, "/") {
+			confPath = path.Clean(confPath)
+			confDir := path.Dir(confPath)
+			if !underAnyRoot(confPath, nginxConfigRoots) {
+				if !env.treeOKStrict("nginx conf-path", confDir, confPath) {
+					return f
+				}
+				roots = append(roots, confDir)
+			}
+			entryFiles = append(entryFiles, confPath)
+		}
 	}
 
-	if !env.nginxIncludesTrusted() {
+	if !env.nginxIncludesTrusted(roots, entryFiles, modBases) {
 		return f
 	}
 
@@ -550,7 +607,7 @@ func collectNginx(ctx context.Context, env *Env) model.Facts {
 		f["nginx.directives"] = dirs
 		f["nginx.http2"] = nginxHTTP2(dirs)
 	} else if isNginxIsolationErr(string(out)) {
-		if dirs, ok := parseNginxStaticConfig(env.FS, nginxConfigRoots); ok {
+		if dirs, ok := parseNginxStaticConfig(env.FS, roots, entryFiles); ok {
 			f["nginx.directives"] = dirs
 			f["nginx.http2"] = nginxHTTP2(dirs)
 		}

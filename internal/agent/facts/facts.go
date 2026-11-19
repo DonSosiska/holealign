@@ -25,6 +25,12 @@ type Env struct {
 	// group/world-writable before the agent runs a tool that parses them as
 	// root; nil = trust everything (tests).
 	TreeTrust func(roots []string) error
+	// TreeTrustStrict is like TreeTrust, used for explicitly configured or
+	// included paths (e.g. nginx include globs, custom --conf-path): when a
+	// pattern has no matches or its static prefix does not exist yet, the
+	// nearest existing ancestor up to "/" is still verified. Nil falls back to
+	// TreeTrust.
+	TreeTrustStrict func(roots []string) error
 
 	// NetDir is the FS-relative directory with tcp/tcp6/udp/udp6 for the sockets collector
 	// ("" = "proc/net"). /proc/net is per network namespace; see Options.HostNetNS.
@@ -56,11 +62,12 @@ var builtinCollectors = []collector{
 
 func defaultEnv() *Env {
 	return &Env{
-		Runner:       execRunner{},
-		FS:           rootFS,
-		DockerSocket: "/var/run/docker.sock",
-		SafeOpen:     safeOpen,
-		TreeTrust:    treeTrusted,
+		Runner:          execRunner{},
+		FS:              rootFS,
+		DockerSocket:    "/var/run/docker.sock",
+		SafeOpen:        safeOpen,
+		TreeTrust:       treeTrusted,
+		TreeTrustStrict: treeTrustedStrict,
 	}
 }
 

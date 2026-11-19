@@ -481,7 +481,8 @@ func extract(tarball []byte) (map[string][]byte, error) {
 			return nil, fmt.Errorf("archive has more than %d entries", MaxEntries)
 		}
 		name := hdr.Name
-		if hdr.Typeflag != tar.TypeReg && hdr.Typeflag != tar.TypeRegA { //nolint:staticcheck // legacy regular-file flag
+		//lint:ignore SA1019 legacy regular-file flag
+		if hdr.Typeflag != tar.TypeReg && hdr.Typeflag != tar.TypeRegA {
 			return nil, fmt.Errorf("entry %q is not a regular file (type %q)", name, string(hdr.Typeflag))
 		}
 		if name != IndexName && !entryNameRe.MatchString(name) {

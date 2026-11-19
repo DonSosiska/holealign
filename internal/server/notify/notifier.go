@@ -59,10 +59,12 @@ const (
 	defaultBackoff  = 500 * time.Millisecond
 	maxRespBody     = 64 << 10
 
-	problemEvery   = 10 * time.Minute // log / callback at most this often per (destination, status)
-	partialTTL     = time.Hour        // remember destinations an event already reached while another failed
-	partialMax     = 4096
-	maxTrackedProb = 512
+	problemEvery        = 10 * time.Minute // log / callback at most this often per (destination, status)
+	partialTTL          = time.Hour        // remember destinations an event already reached while another failed
+	partialMax          = 4096
+	maxTrackedProb      = 512
+	maxParallelDests    = 8
+	destDeliveryTimeout = 2 * time.Minute // total per-destination budget across retry attempts
 )
 
 // critical reports whether losing an event of this kind silently is unacceptable: a permanent
@@ -77,15 +79,16 @@ func critical(k model.EventKind) bool {
 
 // Notifier implements core.Notifier by fanning events out to channels.
 type Notifier struct {
-	channels  map[string]Channel // by scheme
-	defaults  []string
-	ops       []string
-	cfgRoutes []Route
-	routes    RouteSource
-	backoff   time.Duration // base for exponential backoff between attempts
-	idSeq     atomic.Uint64
-	onProblem func(dest string, status int, kind model.EventKind, permanent bool)
-	now       func() time.Time
+	channels    map[string]Channel // by scheme
+	defaults    []string
+	ops         []string
+	cfgRoutes   []Route
+	routes      RouteSource
+	backoff     time.Duration // base for exponential backoff between attempts
+	destTimeout time.Duration // per-destination delivery deadline across retries
+	idSeq       atomic.Uint64
+	onProblem   func(dest string, status int, kind model.EventKind, permanent bool)
+	now         func() time.Time
 
 	pmu     sync.Mutex
 	seen    map[string]time.Time // (destination,status) -> last time it was logged / reported
@@ -100,13 +103,14 @@ func New(cfg Config, routes RouteSource, channels ...Channel) (*Notifier, error)
 		return nil, errors.New("notify: no channel configured")
 	}
 	n := &Notifier{
-		channels:  map[string]Channel{},
-		routes:    routes,
-		backoff:   defaultBackoff,
-		onProblem: cfg.OnDeliveryProblem,
-		now:       time.Now,
-		seen:      map[string]time.Time{},
-		partial:   map[string]time.Time{},
+		channels:    map[string]Channel{},
+		routes:      routes,
+		backoff:     defaultBackoff,
+		destTimeout: destDeliveryTimeout,
+		onProblem:   cfg.OnDeliveryProblem,
+		now:         time.Now,
+		seen:        map[string]time.Time{},
+		partial:     map[string]time.Time{},
 	}
 	for _, c := range channels {
 		if _, dup := n.channels[c.Scheme()]; dup {
@@ -262,28 +266,61 @@ func (n *Notifier) Notify(ctx context.Context, events []model.Event) error {
 		}
 	}
 
-	var okRecs []okRec
-	for di, dest := range order {
+	type destResult struct {
+		bad []group
+		oks []okRec
+		err error
+	}
+	results := make([]destResult, len(order))
+	timeout := n.destTimeout
+	if timeout <= 0 {
+		timeout = destDeliveryTimeout
+	}
+	runDest := func(di int, dest string) {
 		if err := ctx.Err(); err != nil {
-			errs = append(errs, err)
-			for _, d := range order[di:] {
-				for _, g := range byDest[d] {
-					for _, i := range g.idx {
-						failed[i] = true
-					}
-				}
-			}
-			break
+			results[di] = destResult{bad: byDest[dest], err: err}
+			return
 		}
-		bad, oks, err := n.sendDest(ctx, dest, byDest[dest])
-		okRecs = append(okRecs, oks...)
-		for _, g := range bad {
+		dctx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		bad, oks, err := n.sendDest(dctx, dest, byDest[dest])
+		if err != nil {
+			err = fmt.Errorf("destination %s: %w", dest, err)
+		}
+		results[di] = destResult{bad: bad, oks: oks, err: err}
+	}
+	if len(order) == 1 {
+		runDest(0, order[0])
+	} else if len(order) > 1 {
+		sem := make(chan struct{}, maxParallelDests)
+		var wg sync.WaitGroup
+		for di, dest := range order {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				select {
+				case sem <- struct{}{}:
+					defer func() { <-sem }()
+				case <-ctx.Done():
+					results[di] = destResult{bad: byDest[dest], err: ctx.Err()}
+					return
+				}
+				runDest(di, dest)
+			}()
+		}
+		wg.Wait()
+	}
+
+	var okRecs []okRec
+	for _, res := range results {
+		okRecs = append(okRecs, res.oks...)
+		for _, g := range res.bad {
 			for _, i := range g.idx {
 				failed[i] = true
 			}
 		}
-		if err != nil {
-			errs = append(errs, fmt.Errorf("destination %s: %w", dest, err))
+		if res.err != nil {
+			errs = append(errs, res.err)
 		}
 	}
 	// Messages that reached their destination while the same event failed elsewhere must not be

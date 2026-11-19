@@ -41,9 +41,9 @@ func TestRenderHealthKinds(t *testing.T) {
 }
 
 func TestRenderHealthEscapesAndTruncates(t *testing.T) {
-	ev := hostEv(model.EventAgentSilent, "<img src=x onerror=1>\nevil", "h1", nil, "<b>x</b>‮"+strings.Repeat("A", 1000))
+	ev := hostEv(model.EventAgentSilent, "<img src=x onerror=1>\nevil", "h1", nil, "<b>x</b>\u202e"+strings.Repeat("A", 1000))
 	plain, h := renderGroup([]model.Event{ev})
-	if strings.Contains(h, "<img") || strings.Contains(h, "<b>x") || strings.Contains(plain, "‮") {
+	if strings.Contains(h, "<img") || strings.Contains(h, "<b>x") || strings.Contains(plain, "\u202e") {
 		t.Fatalf("not neutralised: %q / %q", plain, h)
 	}
 	if len([]rune(plain)) > 300+60 {

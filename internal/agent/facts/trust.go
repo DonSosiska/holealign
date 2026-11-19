@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 )
 
@@ -57,6 +58,9 @@ func binaryTrustAbove(resolved, top string) error {
 	if err := pathTrust(resolved); err != nil {
 		return err
 	}
+	if resolved == top || resolved == filepath.Dir(resolved) {
+		return nil
+	}
 	for d := filepath.Dir(resolved); ; d = filepath.Dir(d) {
 		if err := pathTrust(d); err != nil {
 			return err
@@ -71,16 +75,127 @@ func binaryTrustAbove(resolved, top string) error {
 // temporary directories are not under root-owned parents).
 var symlinkTargetTrust = binaryTrust
 
-// treeTrusted checks every root (globs allowed; missing roots are skipped), all of its
-// ancestor directories up to "/" and everything below it (at most maxTrustEntries entries
-// in total; more fails closed). A symbolic link is checked at its target (and the target's
-// ancestors); when the target is a directory its whole tree is walked with the same
-// checks, so a symlinked conf.d cannot smuggle in files the agent never looked at.
+func globHasMeta(pat string) bool {
+	return strings.ContainsAny(pat, "*?[\\")
+}
+
+// staticPrefix returns the longest directory/file prefix of pat that contains no glob metacharacters.
+func staticPrefix(pat string) string {
+	vol := filepath.VolumeName(pat)
+	rest := pat[len(vol):]
+	sep := string(filepath.Separator)
+	abs := strings.HasPrefix(rest, sep)
+	if abs {
+		rest = rest[len(sep):]
+	}
+	var kept []string
+	for _, seg := range strings.Split(rest, sep) {
+		if seg == "" {
+			continue
+		}
+		if globHasMeta(seg) {
+			break
+		}
+		kept = append(kept, seg)
+	}
+	joined := strings.Join(kept, sep)
+	if abs {
+		return filepath.Clean(vol + sep + joined)
+	}
+	if joined == "" {
+		return vol + "."
+	}
+	return filepath.Clean(vol + joined)
+}
+
+func nearestExisting(p string) (string, bool) {
+	for cur := filepath.Clean(p); ; cur = filepath.Dir(cur) {
+		if _, err := os.Lstat(cur); err == nil {
+			return cur, true
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return "", false
+		}
+	}
+}
+
+func checkPrefixTrust(pat string, strict bool) error {
+	pref := staticPrefix(pat)
+	if target, err := filepath.EvalSymlinks(pref); err == nil {
+		return symlinkTargetTrust(target)
+	}
+	if _, err := os.Lstat(pref); err == nil {
+		// Dangling symlink at pref: check its parent directory, and in strict mode its target's nearest ancestor.
+		if err := symlinkTargetTrust(filepath.Dir(pref)); err != nil {
+			return err
+		}
+		if !strict {
+			return nil
+		}
+		if link, rerr := os.Readlink(pref); rerr == nil {
+			if !filepath.IsAbs(link) {
+				link = filepath.Join(filepath.Dir(pref), link)
+			}
+			if anc, ok := nearestExisting(link); ok {
+				if resolved, eerr := filepath.EvalSymlinks(anc); eerr == nil {
+					return symlinkTargetTrust(resolved)
+				}
+				return symlinkTargetTrust(anc)
+			}
+		}
+		return nil
+	}
+	if !strict {
+		return nil
+	}
+	if anc, ok := nearestExisting(pref); ok {
+		if resolved, eerr := filepath.EvalSymlinks(anc); eerr == nil {
+			return symlinkTargetTrust(resolved)
+		}
+		return symlinkTargetTrust(anc)
+	}
+	return nil
+}
+
+// treeTrusted checks every root (globs allowed; missing default candidate roots are skipped), all
+// of its ancestor directories up to "/" and everything below it (at most maxTrustEntries entries in
+// total; more fails closed). When a glob pattern matches nothing (e.g. an empty directory), its
+// static prefix (if existing) and ancestors are still checked. A symbolic link is checked at its
+// target (and the target's ancestors); when the target is a directory its whole tree is walked with
+// the same checks, so a symlinked conf.d cannot smuggle in files the agent never looked at.
 // Directories are walked once (os.SameFile), which also ends symlink loops.
 func treeTrusted(roots []string) error {
+	return treeTrustedMode(roots, false)
+}
+
+// treeTrustedStrict is like treeTrusted, but for explicitly referenced include/config paths it also
+// walks up to the nearest existing ancestor when the target path or glob prefix does not yet exist.
+func treeTrustedStrict(roots []string) error {
+	return treeTrustedMode(roots, true)
+}
+
+func treeTrustedMode(roots []string, strict bool) error {
 	w := &trustWalker{}
 	for _, pat := range roots {
-		matches, _ := filepath.Glob(pat)
+		if _, err := filepath.Match(pat, ""); err != nil {
+			return fmt.Errorf("%s: invalid glob: %w", pat, err)
+		}
+		hasMeta := globHasMeta(pat)
+		if hasMeta {
+			if err := checkPrefixTrust(pat, strict); err != nil {
+				return err
+			}
+		}
+		matches, err := filepath.Glob(pat)
+		if err != nil {
+			return fmt.Errorf("%s: invalid glob: %w", pat, err)
+		}
+		if len(matches) == 0 && !hasMeta && strict {
+			if err := checkPrefixTrust(pat, true); err != nil {
+				return err
+			}
+		}
 		for _, root := range matches {
 			parent := filepath.Dir(root)
 			if resolved, err := filepath.EvalSymlinks(parent); err == nil {
@@ -164,10 +279,24 @@ func (w *trustWalker) walk(top, label string) error {
 // treeOK verifies the config trees of a tool before the agent executes it as
 // root; on failure the reason is recorded in the agent.skipped fact.
 func (env *Env) treeOK(label string, roots ...string) bool {
-	if env.TreeTrust == nil {
+	return env.checkTree(env.TreeTrust, label, roots...)
+}
+
+// treeOKStrict verifies explicitly referenced include/config locations, checking
+// empty glob prefixes and nonexistent targets' nearest existing ancestors.
+func (env *Env) treeOKStrict(label string, roots ...string) bool {
+	fn := env.TreeTrustStrict
+	if fn == nil {
+		fn = env.TreeTrust
+	}
+	return env.checkTree(fn, label, roots...)
+}
+
+func (env *Env) checkTree(fn func(roots []string) error, label string, roots ...string) bool {
+	if fn == nil {
 		return true
 	}
-	if err := env.TreeTrust(roots); err != nil {
+	if err := fn(roots); err != nil {
 		env.skip(label + ": " + err.Error())
 		return false
 	}

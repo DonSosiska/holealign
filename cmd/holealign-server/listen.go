@@ -66,7 +66,7 @@ func newServer(name, addr string, h http.Handler, tc *tls.Config) namedServer {
 		TLSConfig:         tc,
 		MaxHeaderBytes:    64 << 10,
 		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       5 * time.Minute, // inventory uploads up to 64 MiB
+		ReadTimeout:       60 * time.Second, // /api/v1/inventory extends its read deadline via slowBodyReader
 		WriteTimeout:      2 * time.Minute,
 		IdleTimeout:       2 * time.Minute,
 	}}

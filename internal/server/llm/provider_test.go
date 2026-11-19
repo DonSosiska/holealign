@@ -45,9 +45,11 @@ func TestAnthropicSonnetBetaFallback(t *testing.T) {
 	var c captured
 	srv := anthropicServer(t, &c, "end_turn", `{"ok":true}`)
 	defer srv.Close()
-	p, _ := NewProvider(config.LLM{Provider: "anthropic", Model: "claude-sonnet-5-5", BaseURL: srv.URL, APIKeyEnv: "NOPE_UNSET"})
 	t.Setenv("ANTHROPIC_API_KEY", "k")
-	p, _ = NewProvider(config.LLM{Provider: "anthropic", Model: "claude-sonnet-5-5", BaseURL: srv.URL, APIKeyEnv: "NOPE_UNSET"})
+	p, err := NewProvider(config.LLM{Provider: "anthropic", Model: "claude-sonnet-5-5", BaseURL: srv.URL, APIKeyEnv: "NOPE_UNSET"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	out, err := p.Complete(context.Background(), "sys", "usr")
 	if err != nil || out != `{"ok":true}` {
 		t.Fatalf("out=%q err=%v", out, err)

@@ -43,7 +43,7 @@
 <td>{{if .ExpiresAt.IsZero}}<span class="muted">never</span>{{else}}{{ts .ExpiresAt}}{{end}}</td>
 <td>{{if .Labels}}{{range $i, $l := .Labels}}{{if $i}}, {{end}}{{$l}}{{end}}{{else}}<span class="muted">-</span>{{end}}</td>
 <td>{{if .Revoked}}<span class="badge v-neutral">revoked</span>{{else if tokenExpired .}}<span class="badge v-neutral">expired</span>{{else if tokenFull .}}<span class="badge v-neutral">exhausted</span>{{else}}<span class="badge v-resolved">active</span>{{end}}</td>
-<td>{{if not .Revoked}}<form method="post" action="/settings/tokens/{{.Name}}/revoke" data-confirm="Revoke this token?"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button type="submit" class="danger small">Revoke</button></form>{{end}}</td></tr>
+<td>{{if not .Revoked}}<form method="post" action="/settings/tokens/{{.Name}}/revoke" class="inline" data-confirm="Revoke this token?"><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="password" name="current_password" placeholder="your current password" autocomplete="current-password" required><button type="submit" class="danger small">Revoke</button></form>{{end}}</td></tr>
 {{end}}</tbody></table></div>
 {{else}}<p class="empty">No tokens yet.</p>{{end}}
 <form method="post" action="/settings/tokens" class="inline">

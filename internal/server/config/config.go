@@ -420,6 +420,9 @@ func (c *Config) validate() error {
 	}
 	for _, name := range sortedKeys(c.Webhook.Endpoints) {
 		secretEnvs = append(secretEnvs, struct{ key, val string }{"webhook.endpoints." + name + ".secret_env", c.WebhookSecretEnv(name)})
+		if uenv := c.Webhook.Endpoints[name].URLEnv; uenv != "" {
+			secretEnvs = append(secretEnvs, struct{ key, val string }{"webhook.endpoints." + name + ".url_env", uenv})
+		}
 	}
 	// *_env values name environment variables; restrict them so a config file cannot be used to
 	// read arbitrary variables (HOME, AWS_*, ...) or to reuse the admin password as another secret.

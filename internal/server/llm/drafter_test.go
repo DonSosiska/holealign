@@ -343,7 +343,7 @@ func TestParseDedupesAndSortsPackages(t *testing.T) {
 	e := newEnv(t, 50)
 	f := model.Finding{VulnID: "CVE-2030-0002", PackageName: "tar", PackageType: "deb"}
 	reply := `{"title":"t","packages":[{"name":"tar","type":"deb"},{"name":"tar","type":"deb"},{"name":"tar","type":"deb"}],"exploitable_if":"true"}`
-	r, err := e.dr.parse(reply, f, nil, "id")
+	r, err := e.dr.parse(reply, f, nil, "id", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -353,7 +353,7 @@ func TestParseDedupesAndSortsPackages(t *testing.T) {
 
 	// model-supplied selectors outside {finding, siblings} are dropped
 	reply = `{"title":"t","packages":[{"name":"*"},{"name":"zlib"},{"name":"tar","type":"rpm"},{"name":"t*","type":"deb"}],"exploitable_if":"true"}`
-	r, err = e.dr.parse(reply, f, nil, "id")
+	r, err = e.dr.parse(reply, f, nil, "id", "")
 	if err != nil {
 		t.Fatal(err)
 	}

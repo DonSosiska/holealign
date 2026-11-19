@@ -182,16 +182,29 @@ func TestEvalFileMatchLimits(t *testing.T) {
 
 func TestMaskSecrets(t *testing.T) {
 	tests := map[string]string{
-		"password = hunter2":           "password = ***",
-		"Token: abc123":                "Token: ***",
-		"secret=xyz":                   "secret=***",
-		"auth_basic off;":              "auth_basic off;",
-		"ssl_certificate_key /etc/x.k": "ssl_certificate_key /etc/x.k",
-		"proxy_pass http://x":          "proxy_pass http://x",
+		"password = hunter2":                         "password = ***",
+		"Token: abc123":                              "Token: ***",
+		"secret=xyz":                                 "secret=***",
+		"auth_basic off;":                            "auth_basic off;",
+		"ssl_certificate_key /etc/x.k":               "ssl_certificate_key /etc/x.k",
+		"proxy_pass http://x":                        "proxy_pass http://x",
+		"alice:{SHA}W6ph5Mm5Pz8GgiULbPgzG37mj9g=":    "alice:***",
+		"createUser svc SHA myauthpass AES privpass": "createUser ***",
 	}
 	for in, want := range tests {
 		if got := maskSecrets(in); got != want {
 			t.Errorf("maskSecrets(%q) = %q, want %q", in, got, want)
+		}
+	}
+	for _, crypt := range []string{
+		"alice:$6$salt$hash",
+		"alice:{SHA}W6ph5Mm5Pz8GgiULbPgzG37mj9g=",
+		"alice:{SSHA}abc123def",
+		"alice:abCDef0123456",
+		"createUser svc SHA myauthpass AES privpass",
+	} {
+		if !isCryptLine(crypt) {
+			t.Errorf("isCryptLine(%q) = false, want true", crypt)
 		}
 	}
 }

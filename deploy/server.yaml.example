@@ -143,7 +143,7 @@ matrix:
 # webhook:
 #   endpoints:
 #     siem:
-#       url: https://siem.example.com/holealign/ingest
+#       url: https://siem.example.com/holealign/ingest   # or url_env: HOLEALIGN_WEBHOOK_SIEM_URL if the URL carries a token
 #       secret_env: HOLEALIGN_WEBHOOK_SIEM_SECRET
 #       headers: {Authorization: "Bearer change-me"}   # optional; values live in this file
 #       allow_http: false

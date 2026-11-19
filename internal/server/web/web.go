@@ -19,7 +19,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -107,14 +106,15 @@ type Server struct {
 }
 
 const (
-	cookieName     = "holealign_session"
-	loginCSRFName  = "holealign_login"
-	sessionTTL     = 12 * time.Hour // absolute session lifetime
-	sessionIdle    = time.Hour      // idle timeout
-	sessionRefresh = 5 * time.Minute
-	minPasswordLen = 12
-	pageSize       = 50
-	staleAfter     = 30 * time.Minute
+	cookieName       = "holealign_session"
+	loginCSRFName    = "holealign_login"
+	sessionTTL       = 12 * time.Hour // absolute session lifetime
+	sessionIdle      = time.Hour      // idle timeout
+	sessionRefresh   = 5 * time.Minute
+	minPasswordLen   = 12
+	maxPasswordBytes = 72 // bcrypt input limit
+	pageSize         = 50
+	staleAfter       = 30 * time.Minute
 )
 
 // New builds the UI server and parses the embedded templates.
@@ -599,31 +599,6 @@ func validVerdict(v model.Verdict) bool {
 		}
 	}
 	return false
-}
-
-func verdictRank(v model.Verdict) int {
-	for i, x := range allVerdicts {
-		if x == v {
-			return i
-		}
-	}
-	return len(allVerdicts)
-}
-
-func sortFindings(f []model.Finding) {
-	sort.SliceStable(f, func(i, j int) bool {
-		a, b := f[i], f[j]
-		if ra, rb := verdictRank(a.Verdict), verdictRank(b.Verdict); ra != rb {
-			return ra < rb
-		}
-		if a.KEV != b.KEV {
-			return a.KEV
-		}
-		if a.CVSS != b.CVSS {
-			return a.CVSS > b.CVSS
-		}
-		return a.VulnID < b.VulnID
-	})
 }
 
 func (s *Server) hostNames(ctx context.Context) (map[string]string, []model.Host, error) {

@@ -37,22 +37,23 @@ const (
 func init() { registerChannel(emailScheme, ValidMailbox) }
 
 var (
-	mailLocalRe = regexp.MustCompile(`^[A-Za-z0-9_%+-]+(\.[A-Za-z0-9_%+-]+)*$`)
+	mailLocalRe = regexp.MustCompile(`^[A-Za-z0-9_+-]+(\.[A-Za-z0-9_+-]+)*$`)
 	mailLabelRe = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$`)
 	hostNameRe  = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$`)
 )
 
 // ValidMailbox checks a single RFC 5321 mailbox "local@domain" strictly: no display name, no angle
 // brackets, no quoted local part, no comments, no address literal, ASCII only. The local part is
-// dot-separated atoms of letters, digits and "_%+-" (at most 64 bytes); the domain has at least
-// two LDH labels, the last not numeric (at most 253 bytes).
+// dot-separated atoms of letters, digits and "_+-" (at most 64 bytes); "%" is excluded to prevent
+// SMTP percent-hack relays from rerouting allowed_domains addresses. The domain has at least two
+// LDH labels, the last not numeric (at most 253 bytes).
 func ValidMailbox(addr string) error {
 	local, domain, ok := strings.Cut(addr, "@")
 	switch {
 	case !ok || strings.Contains(domain, "@"):
 		return errors.New("not an email address (expected local@domain.tld)")
 	case len(addr) > 254 || len(local) == 0 || len(local) > 64 || !mailLocalRe.MatchString(local):
-		return errors.New("not a plain email address (no display name, quotes or special characters; local part up to 64 characters of a-z 0-9 . _ % + -)")
+		return errors.New("not a plain email address (no display name, quotes or special characters; local part up to 64 characters of a-z 0-9 . _ + -)")
 	case len(domain) > 253:
 		return errors.New("email domain is too long")
 	}

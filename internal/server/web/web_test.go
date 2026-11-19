@@ -707,7 +707,10 @@ func TestEnrollTokenShownOnce(t *testing.T) {
 	if w := e.post("/settings/tokens", url.Values{"name": {"bad name <x>"}}, c); w.Code != 422 {
 		t.Errorf("invalid name: %d", w.Code)
 	}
-	// revoke
+	// revoke requires re-authentication
+	if w := e.postNoAuth("/settings/tokens/fleet-a/revoke", url.Values{}, c); w.Code != 403 {
+		t.Fatalf("revoke without reauth: %d", w.Code)
+	}
 	if w := e.post("/settings/tokens/fleet-a/revoke", nil, c); w.Code != 303 {
 		t.Fatalf("revoke: %d", w.Code)
 	}
@@ -724,6 +727,9 @@ func TestUsers(t *testing.T) {
 	if w := e.post("/settings/users", url.Values{"username": {"bob"}, "password": {"short"}}, c); w.Code != 422 {
 		t.Errorf("short pw: %d", w.Code)
 	}
+	if w := e.post("/settings/users", url.Values{"username": {"bob"}, "password": {strings.Repeat("a", 73)}}, c); w.Code != 422 {
+		t.Errorf("over-72B pw: %d", w.Code)
+	}
 	if w := e.post("/settings/users", url.Values{"username": {"bob"}, "password": {"long-enough-1"}}, c); w.Code != 303 {
 		t.Fatalf("add: %d", w.Code)
 	}
@@ -736,6 +742,9 @@ func TestUsers(t *testing.T) {
 	}
 	if w := e.post("/settings/users/bob/password", url.Values{"password": {"abc"}}, c); w.Code != 422 {
 		t.Errorf("short change: %d", w.Code)
+	}
+	if w := e.post("/settings/users/bob/password", url.Values{"password": {strings.Repeat("a", 73)}}, c); w.Code != 422 {
+		t.Errorf("over-72B change: %d", w.Code)
 	}
 	if w := e.post("/settings/users/bob/password", url.Values{"password": {"new-password-9"}}, c); w.Code != 303 {
 		t.Fatalf("change: %d", w.Code)

@@ -2,9 +2,14 @@ package notify
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/DonSosiska/holealign/internal/model"
 )
@@ -228,5 +233,96 @@ func TestBurstFairShareAcrossHosts(t *testing.T) {
 	}
 	if honestInKeep != 2 {
 		t.Fatalf("honest host groups in top %d = %d, want 2 (noisy host crowded out honest host)", burstKeep, honestInKeep)
+	}
+}
+
+type mockChannel struct {
+	scheme string
+	fn     func(ctx context.Context, target string, msg Message) error
+}
+
+func (m *mockChannel) Scheme() string           { return m.scheme }
+func (m *mockChannel) ValidTarget(string) error { return nil }
+func (m *mockChannel) Send(ctx context.Context, target string, msg Message) error {
+	return m.fn(ctx, target, msg)
+}
+
+func TestParallelDestinationDelivery(t *testing.T) {
+	fastArrived := make(chan struct{})
+	releaseSlow := make(chan struct{})
+	defer close(releaseSlow)
+
+	var fastCount atomic.Int32
+	slowCh := &mockChannel{
+		scheme: "slack",
+		fn: func(ctx context.Context, _ string, _ Message) error {
+			select {
+			case <-releaseSlow:
+				return nil
+			case <-ctx.Done():
+				return &SendError{Err: ctx.Err()}
+			}
+		},
+	}
+	fastCh := &mockChannel{
+		scheme: "telegram",
+		fn: func(context.Context, string, Message) error {
+			fastCount.Add(1)
+			select {
+			case <-fastArrived:
+			default:
+				close(fastArrived)
+			}
+			return nil
+		},
+	}
+	n, err := New(Config{Default: []string{"slack:" + slackChan, "telegram:" + tgChat}}, nil, slowCh, fastCh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n.backoff = time.Millisecond
+	n.destTimeout = 80 * time.Millisecond
+
+	done := make(chan error, 1)
+	go func() {
+		done <- n.Notify(context.Background(), []model.Event{testEvent(model.EventExploitable, "CVE-1", "h")})
+	}()
+
+	// Fast destination must complete well before the slow destination's per-dest deadline expires.
+	select {
+	case <-fastArrived:
+	case <-time.After(50 * time.Millisecond):
+		t.Fatal("fast destination was blocked behind slow destination")
+	}
+
+	err = <-done
+	var de *DeliveryError
+	if !errors.As(err, &de) || len(de.Failed) != 1 {
+		t.Fatalf("err = %v, want *DeliveryError for the timed-out destination", err)
+	}
+	if fastCount.Load() != 1 {
+		t.Fatalf("fast destination count = %d, want 1", fastCount.Load())
+	}
+}
+
+type rtFunc func(*http.Request) (*http.Response, error)
+
+func (f rtFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestTelegramMalformed2xxJSON(t *testing.T) {
+	c, err := NewTelegramChannel(testTGToken, &http.Client{Transport: rtFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/html"}},
+			Body:       io.NopCloser(strings.NewReader("<html>not json</html>")),
+		}, nil
+	})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = c.Send(context.Background(), tgChat, Message{Lines: []Line{{txt("x")}}})
+	var se *SendError
+	if !errors.As(err, &se) || !se.Permanent || !strings.Contains(err.Error(), "invalid response JSON") {
+		t.Fatalf("err = %#v, want permanent invalid response JSON error", err)
 	}
 }

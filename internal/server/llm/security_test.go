@@ -18,7 +18,7 @@ func TestParseForcesVulnsPackagesFix(t *testing.T) {
 	long := strings.Repeat("x", 500)
 	reply := `{"title":"t","vulns":["CVE-9999-1","CVE-2030-1"],"packages":[{"name":"*"},{"name":"foo-bin","type":"deb"},{"name":"libfoo\\*","type":"deb"}],` +
 		`"exploitable_if":"true","fix":{"upgrade":"` + long + `","mitigation":"a\u0007b\nc"}}`
-	r, err := e.dr.parse(reply, f, sib, "id")
+	r, err := e.dr.parse(reply, f, sib, "id", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +36,7 @@ func TestParseForcesVulnsPackagesFix(t *testing.T) {
 	if len(r.Fix.Upgrade) != 300 || strings.ContainsAny(r.Fix.Mitigation, "\n\a") {
 		t.Fatalf("fix not sanitised: %d %q", len(r.Fix.Upgrade), r.Fix.Mitigation)
 	}
-	if _, err := e.dr.parse(reply, model.Finding{VulnID: "CVE-1"}, nil, "id"); err == nil {
+	if _, err := e.dr.parse(reply, model.Finding{VulnID: "CVE-1"}, nil, "id", ""); err == nil {
 		t.Fatal("empty package set must be rejected")
 	}
 }

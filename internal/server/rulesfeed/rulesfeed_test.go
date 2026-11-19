@@ -957,3 +957,99 @@ func TestRequireSignedPointerRejectsInitialUnsigned(t *testing.T) {
 		t.Fatalf("bundle installed: seq=%d", e.feed.Seq())
 	}
 }
+
+func TestPersistedSeqFloorPreventsRollbackAfterDirWipe(t *testing.T) {
+	k := newKey(t)
+	mf, client := newMemFeed()
+	e := newEnv(t, k, "https://feed.test/feed/latest.json", client)
+	ctx := context.Background()
+
+	// Simulate an empty rules-feed directory after an accidental wipe while KV still holds seq=5.
+	_ = e.kv.KVSet(ctx, KVSeq, "5", created)
+
+	setPtr := func(seq uint64, tb []byte, sig Sig) {
+		t.Helper()
+		raw, err := MarshalJSONFile(MakePointer(seq, TarballName(seq), tb, sig))
+		if err != nil {
+			t.Fatal(err)
+		}
+		mf.mu.Lock()
+		mf.pointer = raw
+		mf.files[TarballName(seq)] = tb
+		mf.mu.Unlock()
+	}
+
+	tb4, sig4 := bundle(t, k, 4, "d")
+	setPtr(4, tb4, sig4)
+	if err := e.feed.Poll(ctx); err == nil || !strings.Contains(err.Error(), "rollback refused") {
+		t.Fatalf("rollback past KV floor accepted: %v", err)
+	}
+	if e.feed.Seq() != 0 || e.kv.get(KVSeq) != "5" || ReadState(e.dir).Seq != 0 {
+		t.Fatalf("state altered on rejected rollback: seq=%d kv=%q state=%+v", e.feed.Seq(), e.kv.get(KVSeq), ReadState(e.dir))
+	}
+
+	// Planting an older bundle (or corrupt newer + valid older bundle) on disk must not bypass the floor.
+	if err := persist(e.dir, 4, tb4, sig4); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeAtomic(filepath.Join(e.dir, TarballName(5)), []byte("corrupt")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeAtomic(filepath.Join(e.dir, TarballName(5)+".sig"), []byte("{}")); err != nil {
+		t.Fatal(err)
+	}
+	e.feed.LoadPersisted(ctx)
+	e.feed.syncFromDisk(ctx)
+	if e.feed.Seq() != 0 || e.updated != 0 {
+		t.Fatalf("older disk bundle loaded past floor: seq=%d updated=%d", e.feed.Seq(), e.updated)
+	}
+
+	// Re-publishing seq 5 recovers cleanly even from f.seq == 0.
+	tb5, sig5 := bundle(t, k, 5, "e")
+	setPtr(5, tb5, sig5)
+	if err := e.feed.Poll(ctx); err != nil {
+		t.Fatalf("recovery poll at floor seq 5 failed: %v", err)
+	}
+	if e.feed.Seq() != 5 || e.updated != 1 || ReadState(e.dir).Seq != 5 || e.kv.get(KVSeq) != "5" {
+		t.Fatalf("post-recovery state mismatch: seq=%d updated=%d kv=%q state=%+v",
+			e.feed.Seq(), e.updated, e.kv.get(KVSeq), ReadState(e.dir))
+	}
+}
+
+func TestSyncFromDiskFastNoop(t *testing.T) {
+	k := newKey(t)
+	e := newEnv(t, k, "", nil)
+	var logBuf bytes.Buffer
+	e.feed.o.Log = slog.New(slog.NewTextHandler(&logBuf, nil))
+	ctx := context.Background()
+
+	tb3, sig3 := bundle(t, k, 3, "a")
+	if _, err := Import(e.dir, []ed25519.PublicKey{k.pub}, "", tb3, sig3, created); err != nil {
+		t.Fatal(err)
+	}
+	e.feed.syncFromDisk(ctx)
+	if e.feed.Seq() != 3 || e.updated != 1 {
+		t.Fatalf("initial sync: seq=%d updated=%d", e.feed.Seq(), e.updated)
+	}
+
+	// Corrupt the already-active tarball on disk and call syncFromDisk again; the fast no-op guard
+	// must skip LoadInstalled entirely rather than re-verifying/logging warnings every minute.
+	logBuf.Reset()
+	if err := os.WriteFile(filepath.Join(e.dir, TarballName(3)), []byte("corrupt"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	e.feed.syncFromDisk(ctx)
+	if logBuf.Len() != 0 || e.feed.Seq() != 3 || e.updated != 1 {
+		t.Fatalf("syncFromDisk did not fast-return: log=%q seq=%d updated=%d", logBuf.String(), e.feed.Seq(), e.updated)
+	}
+
+	// Importing a strictly newer bundle activates it.
+	tb4, sig4 := bundle(t, k, 4, "b")
+	if _, err := Import(e.dir, []ed25519.PublicKey{k.pub}, "", tb4, sig4, created); err != nil {
+		t.Fatal(err)
+	}
+	e.feed.syncFromDisk(ctx)
+	if e.feed.Seq() != 4 || e.updated != 2 {
+		t.Fatalf("newer import not activated: seq=%d updated=%d", e.feed.Seq(), e.updated)
+	}
+}

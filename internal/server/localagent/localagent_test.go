@@ -277,6 +277,10 @@ func TestRecoversFromCrashBetweenCredentialsAndEnroll(t *testing.T) {
 	if _, err := e.st.HostByAgentKey(ctx, store.HashSecret(c.AgentKey)); err != nil {
 		t.Fatal(err)
 	}
+	adm, _ := e.st.ListHostsAdmin(ctx)
+	if len(adm) != 1 || adm[0].ReenrollAllowed || !adm[0].ReenrollUntil.IsZero() {
+		t.Fatalf("recovery opened remote re-enroll window: %+v", adm)
+	}
 }
 
 func TestPanicIsRecoveredAndAgentRestarts(t *testing.T) {
