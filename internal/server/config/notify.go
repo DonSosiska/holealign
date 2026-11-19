@@ -85,9 +85,11 @@ type Webhook struct {
 }
 
 // WebhookEndpoint is one generic webhook. URL must be https unless AllowHTTP is set. It may point to
-// any host: it comes from this file, which only the operator edits.
+// any host: it comes from this file, which only the operator edits. When the URL carries a token or
+// credential query parameter, set URLEnv instead of URL so the secret stays in the environment.
 type WebhookEndpoint struct {
 	URL       string            `yaml:"url"`
+	URLEnv    string            `yaml:"url_env"`
 	SecretEnv string            `yaml:"secret_env"`
 	Headers   map[string]string `yaml:"headers"`
 	AllowHTTP bool              `yaml:"allow_http"`
@@ -313,8 +315,15 @@ func (c *Config) validateDiscord() error {
 		if err := notify.ValidName(name); err != nil {
 			return fmt.Errorf("webhook.endpoints.%s: %w", name, err)
 		}
-		if err := notify.ValidWebhookURL(ep.URL, ep.AllowHTTP); err != nil {
-			return fmt.Errorf("webhook.endpoints.%s.url: %w", name, err)
+		switch {
+		case ep.URL != "" && ep.URLEnv != "":
+			return fmt.Errorf("webhook.endpoints.%s: specify either url or url_env, not both", name)
+		case ep.URL == "" && ep.URLEnv == "":
+			return fmt.Errorf("webhook.endpoints.%s.url: url or url_env is required", name)
+		case ep.URL != "":
+			if err := notify.ValidWebhookURL(ep.URL, ep.AllowHTTP); err != nil {
+				return fmt.Errorf("webhook.endpoints.%s.url: %w", name, err)
+			}
 		}
 		if err := notify.ValidWebhookHeaders(ep.Headers); err != nil {
 			return fmt.Errorf("webhook.endpoints.%s.headers: %w", name, err)
@@ -340,6 +349,17 @@ func (c *Config) validateEnvURLs(lookup func(string) (string, bool)) error {
 		if v, ok := lookup(env); ok && v != "" {
 			if err := notify.ValidTeamsURL(v, c.Teams.Webhooks[name].AllowAnyHost); err != nil {
 				return fmt.Errorf("teams.webhooks.%s.url_env (%s): %w", name, env, err)
+			}
+		}
+	}
+	for _, name := range sortedKeys(c.Webhook.Endpoints) {
+		ep := c.Webhook.Endpoints[name]
+		if ep.URLEnv == "" {
+			continue
+		}
+		if v, ok := lookup(ep.URLEnv); ok && v != "" {
+			if err := notify.ValidWebhookURL(v, ep.AllowHTTP); err != nil {
+				return fmt.Errorf("webhook.endpoints.%s.url_env (%s): %w", name, ep.URLEnv, err)
 			}
 		}
 	}

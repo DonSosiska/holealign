@@ -84,11 +84,11 @@ type Grype struct {
 // provRef is a reference-counted provider: Reload retires the old one, which is closed once the
 // last in-flight Match using it finished (Match does not hold g.mu while matching).
 type provRef struct {
-	p          vulnerability.Provider
-	genDir     string // optional gen-* directory owned by this provider, removed after Close
-	refs       int
-	retired    bool
-	removeDir  bool // true when retired by a newer generation (false on Close/shutdown)
+	p         vulnerability.Provider
+	genDir    string // optional gen-* directory owned by this provider, removed after Close
+	refs      int
+	retired   bool
+	removeDir bool // true when retired by a newer generation (false on Close/shutdown)
 }
 
 func (g *Grype) acquire() *provRef {
@@ -570,6 +570,7 @@ func (g *Grype) Match(ctx context.Context, kind model.TargetKind, sbom []byte, o
 	nvd := map[string]*vulnerability.Metadata{}
 	for _, m := range matches.Sorted() {
 		var md *vulnerability.Metadata
+		//lint:ignore SA1019 grype v0.122 metadata lookup
 		md, err = provider.VulnerabilityMetadata(vulnerability.Reference{ID: m.Vulnerability.ID, Namespace: m.Vulnerability.Namespace})
 		if err != nil || md == nil {
 			md = m.Vulnerability.Metadata
@@ -579,6 +580,7 @@ func (g *Grype) Match(ctx context.Context, kind model.TargetKind, sbom []byte, o
 		if cve := cveOf(m.Vulnerability); cve != "" {
 			nm, ok := nvd[cve]
 			if !ok {
+				//lint:ignore SA1019 grype v0.122 metadata lookup
 				nm, _ = provider.VulnerabilityMetadata(vulnerability.Reference{ID: cve, Namespace: "nvd:cpe"})
 				nvd[cve] = nm
 			}

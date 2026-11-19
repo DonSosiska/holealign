@@ -253,13 +253,14 @@ func exploitableMsg() Message {
 }
 
 func TestEmailDestinations(t *testing.T) {
-	for _, in := range []string{"email:ops@example.com", "email:a.b+tag@sub.example.co.uk", "email:o_p-s%1@ex-ample.org"} {
+	for _, in := range []string{"email:ops@example.com", "email:a.b+tag@sub.example.co.uk", "email:o_p-s+1@ex-ample.org"} {
 		if err := ValidateDestination(in); err != nil {
 			t.Errorf("%q: %v", in, err)
 		}
 	}
 	for _, in := range []string{
 		"email:", "email:ops", "email:ops@", "email:@example.com", "email:ops@example", "email:ops@@example.com", "email:a@b@example.com",
+		"email:o_p-s%1@ex-ample.org", "email:victim%evil.com@example.com",
 		"email:Ops Team <ops@example.com>", "email:<ops@example.com>", "email:\"ops\"@example.com", "email:ops@example.com,evil@example.net",
 		"email:ops@example.com;evil@example.net", "email:ops@example.com evil@example.net", "email:ops@[127.0.0.1]", "email:ops@127.0.0.1",
 		"email:.ops@example.com", "email:ops.@example.com", "email:o..ps@example.com", "email:ops@-example.com", "email:ops@example..com",

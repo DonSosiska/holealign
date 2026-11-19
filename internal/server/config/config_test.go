@@ -310,3 +310,47 @@ func TestFeedsGrypeAndRulesPointerConfig(t *testing.T) {
 		t.Fatalf("parsed unexpectedly: feeds=%+v feed=%+v", cfg.Feeds, cfg.Rules.Feed)
 	}
 }
+
+func TestWebhookURLEnv(t *testing.T) {
+	dir := t.TempDir()
+	write := func(body string) string {
+		p := filepath.Join(dir, "c.yaml")
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	none := func(string) (string, bool) { return "", false }
+
+	// Valid url_env config with valid HTTPS URL in env
+	y := "webhook:\n  endpoints:\n    siem:\n      url_env: HOLEALIGN_WEBHOOK_SIEM_URL\n"
+	c, err := load(write(y), func(k string) (string, bool) {
+		if k == "HOLEALIGN_WEBHOOK_SIEM_URL" {
+			return "https://siem.example.com/ingest?token=secret", true
+		}
+		return "", false
+	})
+	if err != nil {
+		t.Fatalf("valid url_env rejected: %v", err)
+	}
+	if !c.Channels()["webhook"] || c.Webhook.Endpoints["siem"].URLEnv != "HOLEALIGN_WEBHOOK_SIEM_URL" {
+		t.Fatalf("unexpected webhook config: %+v", c.Webhook)
+	}
+
+	// Both url and url_env set -> error
+	both := "webhook:\n  endpoints:\n    siem:\n      url: https://siem.example.com/a\n      url_env: HOLEALIGN_WEBHOOK_SIEM_URL\n"
+	if _, err := load(write(both), none); err == nil {
+		t.Error("config specifying both url and url_env must be rejected")
+	}
+
+	// Invalid URL in env (plain http without allow_http) -> rejected without leaking secret token
+	_, err = load(write(y), func(k string) (string, bool) {
+		if k == "HOLEALIGN_WEBHOOK_SIEM_URL" {
+			return "http://siem.example.com/ingest?token=SUPERSECRET", true
+		}
+		return "", false
+	})
+	if err == nil || !strings.Contains(err.Error(), "webhook.endpoints.siem.url_env") || strings.Contains(err.Error(), "SUPERSECRET") {
+		t.Fatalf("unexpected env URL error: %v", err)
+	}
+}

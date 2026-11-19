@@ -614,3 +614,67 @@ func TestApacheExternalIncludeAndLoadModuleTrust(t *testing.T) {
 		t.Fatalf("apachectl ran despite untrusted LoadModule: calls=%v facts=%v", ran, f)
 	}
 }
+
+func TestNginxCustomConfPathChecked(t *testing.T) {
+	vOut := "nginx version: nginx/1.24.0\nconfigure arguments: --with-cc-opt='--conf-path=/fake/ignored.conf' --prefix=/opt/nginx --conf-path=/opt/custom/nginx.conf --with-http_v2_module\n"
+	cp, pref := parseNginxConfigPaths([]byte(vOut))
+	if cp != "/opt/custom/nginx.conf" || pref != "/opt/nginx" {
+		t.Fatalf("parseNginxConfigPaths = (%q, %q), want (/opt/custom/nginx.conf, /opt/nginx)", cp, pref)
+	}
+
+	var ran []string
+	r := recordingRunner{ran: &ran, out: map[string]string{
+		"nginx -v":                 "nginx version: nginx/1.24.0\n",
+		"nginx -V":                 vOut,
+		"nginx -T -q -e /dev/null": "http { http2 on; }\n",
+	}}
+	fsys := fstest.MapFS{
+		"opt/custom/nginx.conf": {Data: []byte("http { http2 on; }\n"), Mode: 0o644},
+	}
+	// Untrusted custom --conf-path must prevent nginx -T from running even if /etc/nginx is clean.
+	env := &Env{
+		Runner:    r,
+		FS:        fsys,
+		TreeTrust: func([]string) error { return nil },
+		TreeTrustStrict: func(roots []string) error {
+			for _, p := range roots {
+				if strings.HasPrefix(p, "/opt/custom") {
+					return fmt.Errorf("%s owned by uid 1000", p)
+				}
+			}
+			return nil
+		},
+	}
+	f := collectNginx(context.Background(), env)
+	if _, ok := f["nginx.directives"]; ok {
+		t.Fatal("nginx -T ran despite untrusted --conf-path")
+	}
+	for _, c := range ran {
+		if strings.HasPrefix(c, "nginx -T") {
+			t.Fatalf("nginx -T executed despite untrusted --conf-path: %v", ran)
+		}
+	}
+
+	// Untrusted relative load_module resolved under custom --prefix must also stop nginx -T.
+	ran = nil
+	fsys2 := fstest.MapFS{
+		"opt/custom/nginx.conf": {Data: []byte("load_module modules/ngx_evil.so;\n"), Mode: 0o644},
+	}
+	env2 := &Env{
+		Runner:    recordingRunner{ran: &ran, out: r.out},
+		FS:        fsys2,
+		TreeTrust: func([]string) error { return nil },
+		TreeTrustStrict: func(roots []string) error {
+			for _, p := range roots {
+				if p == "/opt/nginx/modules/ngx_evil.so" {
+					return fmt.Errorf("%s writable by gid 1000", p)
+				}
+			}
+			return nil
+		},
+	}
+	f2 := collectNginx(context.Background(), env2)
+	if _, ok := f2["nginx.directives"]; ok {
+		t.Fatal("nginx -T ran despite untrusted load_module under custom --prefix")
+	}
+}

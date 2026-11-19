@@ -15,13 +15,17 @@ func TestFileMatchDenylistCredentialLocations(t *testing.T) {
 		"/etc/apt/auth.conf", "/etc/apt/auth.conf.d/90-private", "/etc/apt/auth.conf.d",
 		"/opt/tomcat/conf/tomcat-users.xml", "/etc/tomcat9/tomcat-users.xml", "/usr/local/etc/tomcat/Tomcat-Users.xml",
 		"/etc/hostapd/hostapd.conf", "/etc/squid/passwords", "/etc/gitlab/gitlab.rb",
-		"/etc/phpmyadmin/config-db.php", "/etc/msmtprc", "/etc/nagios/resource.cfg", "/etc/ssmtp/ssmtp.conf",
+		"/etc/phpmyadmin/config-db.php", "/etc/phpmyadmin/config.inc.php",
+		"/etc/msmtprc", "/etc/nagios/resource.cfg", "/etc/ssmtp/ssmtp.conf",
+		"/etc/my.cnf", "/etc/my.cnf.d/server.cnf", "/etc/redis.conf", "/etc/containers/auth.json",
+		"/etc/snmp/snmpd.conf", "/etc/tomcat9/server.xml", "/opt/tomcat/conf/server.xml",
+		"/etc/gitlab-runner/config.toml", "/etc/nslcd.conf", "/etc/pam_ldap.conf", "/etc/libnss-ldap.conf",
 	} {
 		if !fmDenied(p) {
 			t.Errorf("%s should be denied", p)
 		}
 	}
-	for _, p := range []string{"/etc/apt/sources.list", "/etc/apt/apt.conf.d/20auto", "/etc/squid/squid.conf", "/etc/nagios/nagios.cfg", "/etc/phpmyadmin/config.inc.php"} {
+	for _, p := range []string{"/etc/apt/sources.list", "/etc/apt/apt.conf.d/20auto", "/etc/squid/squid.conf", "/etc/nagios/nagios.cfg", "/etc/tomcat9/web.xml"} {
 		if fmDenied(p) {
 			t.Errorf("%s should be allowed", p)
 		}

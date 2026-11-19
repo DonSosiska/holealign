@@ -64,6 +64,7 @@ var fmDenyPatterns = [][]string{
 	{".htpasswd"}, {"*secret*"}, {"*credential*"}, {"*token*"},
 	{"networkmanager"}, {"wireguard"}, {"openvpn"}, {"ppp"}, {"security"}, {"polkit-1"},
 	{"ipsec*"}, {"strongswan*"}, {"cloud"}, {"mysql", "debian.cnf"}, {"*.env"}, {"tomcat-users*.xml"},
+	{"tomcat*", "server.xml"}, {"tomcat*", "conf", "server.xml"}, {"phpmyadmin", "config.inc.php"},
 }
 
 // fmDenyPaths are absolute path globs (lower case, one path.Match glob per component) of
@@ -83,6 +84,9 @@ var fmDenyPaths = []string{
 	"/etc/ssl", "/etc/pki",
 	"/etc/apt/auth.conf*", "/etc/hostapd", "/etc/squid/passwords*", "/etc/gitlab",
 	"/etc/phpmyadmin/config-db.php", "/etc/msmtprc", "/etc/nagios/resource.cfg", "/etc/ssmtp",
+	"/etc/my.cnf", "/etc/my.cnf.d", "/etc/redis.conf", "/etc/containers/auth.json",
+	"/etc/snmp/snmpd.conf", "/etc/gitlab-runner", "/etc/nslcd.conf",
+	"/etc/pam_ldap.conf", "/etc/libnss-ldap.conf",
 }
 
 // fmDenied reports whether a cleaned absolute path hits the hard denylist.
@@ -122,10 +126,12 @@ func fmDenied(abs string) bool {
 }
 
 var (
-	fmUserinfo = regexp.MustCompile(`://[^/\s@]+@`)
-	fmCryptRe  = regexp.MustCompile(`^[^:]+:\$[0-9a-z]+\$`)
-	fmEntropy  = regexp.MustCompile(`[A-Za-z0-9+/=_-]{32,}`)
-	fmBearerRe = regexp.MustCompile(`(?i)(\bbearer\s+)\S.*$`)
+	fmUserinfo     = regexp.MustCompile(`://[^/\s@]+@`)
+	fmCryptRe      = regexp.MustCompile(`^[^:\s]+:(?:\$[0-9a-z]+\$|(?i)\{(?:S?SHA(?:256|512)?|MD5|CRYPT)\}|[./0-9A-Za-z]{13}$)`)
+	fmBraceHashRe  = regexp.MustCompile(`(?i)\{(?:S?SHA(?:256|512)?|MD5|CRYPT)\}\S+`)
+	fmSNMPCreateRe = regexp.MustCompile(`(?i)^createUser\s+\S+.*`)
+	fmEntropy      = regexp.MustCompile(`[A-Za-z0-9+/=_-]{32,}`)
+	fmBearerRe     = regexp.MustCompile(`(?i)(\bbearer\s+)\S.*$`)
 
 	// fmKeyRe finds "<key><sep>" where the key (letters, digits, _ . -) contains a secret-like
 	// keyword anywhere (substring, case-insensitive), optionally quoted, and the separator is
@@ -261,8 +267,10 @@ func resolveSymlinks(fsys fs.FS, abs string, depth int) (string, error) {
 	return cur, nil
 }
 
-// isCryptLine reports whether a line looks like a shadow-style crypt hash entry.
-func isCryptLine(line string) bool { return fmCryptRe.MatchString(line) }
+// isCryptLine reports whether a line looks like a password hash entry (shadow, htpasswd) or SNMP createUser.
+func isCryptLine(line string) bool {
+	return fmCryptRe.MatchString(line) || fmSNMPCreateRe.MatchString(line)
+}
 
 // fmValueIsSetting reports whether the value following a secret-like key is a plain
 // setting rather than a secret: a boolean word, a number for tuning keys, a well-known
@@ -320,7 +328,11 @@ func maskKeyed(line string) string {
 // maskSecrets masks secret values in a line: values after secret-like keys, bearer
 // credentials, URL userinfo and long high-entropy tokens.
 func maskSecrets(line string) string {
+	if fmSNMPCreateRe.MatchString(strings.TrimSpace(line)) {
+		return "createUser ***"
+	}
 	line = fmUserinfo.ReplaceAllString(line, "://***@")
+	line = fmBraceHashRe.ReplaceAllString(line, "***")
 	line = maskKeyed(line)
 	line = fmBearerRe.ReplaceAllString(line, "${1}***")
 	line = fmEntropy.ReplaceAllStringFunc(line, func(tok string) string {

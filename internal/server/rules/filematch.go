@@ -25,6 +25,7 @@ var denyPatterns = [][]string{
 	{"networkmanager"}, {"wireguard"}, {"openvpn"}, {"ppp"}, {"security"},
 	{"polkit-1"}, {"ipsec*"}, {"strongswan*"}, {"cloud"},
 	{"mysql", "debian.cnf"}, {"*.env"}, {"tomcat-users*.xml"},
+	{"tomcat*", "server.xml"}, {"tomcat*", "conf", "server.xml"}, {"phpmyadmin", "config.inc.php"},
 }
 
 // denyPaths are absolute path globs (lowercase) of credential-bearing files and
@@ -43,6 +44,9 @@ var denyPaths = []string{
 	"/etc/ssl", "/etc/pki",
 	"/etc/apt/auth.conf*", "/etc/hostapd", "/etc/squid/passwords*", "/etc/gitlab",
 	"/etc/phpmyadmin/config-db.php", "/etc/msmtprc", "/etc/nagios/resource.cfg", "/etc/ssmtp",
+	"/etc/my.cnf", "/etc/my.cnf.d", "/etc/redis.conf", "/etc/containers/auth.json",
+	"/etc/snmp/snmpd.conf", "/etc/gitlab-runner", "/etc/nslcd.conf",
+	"/etc/pam_ldap.conf", "/etc/libnss-ldap.conf",
 }
 
 // secretSubstrings must not occur in the final path component (literal parts).

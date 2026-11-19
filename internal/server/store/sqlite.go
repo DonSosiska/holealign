@@ -225,7 +225,7 @@ func (s *SQLite) EnrollHost(ctx context.Context, p EnrollParams) (model.Host, er
 		case err != nil:
 			return err
 		default:
-			ok := allowedUntil > now
+			ok := allowedUntil > now || p.LocalRecovery
 			if !ok && p.PreviousKeyHash != "" {
 				var n int
 				if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM agent_keys WHERE host_id=? AND key_hash=?`, id, p.PreviousKeyHash).Scan(&n); err != nil {

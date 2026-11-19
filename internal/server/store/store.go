@@ -51,6 +51,9 @@ type EnrollParams struct {
 	// PreviousKeyHash is the hash of the Bearer key presented with the request. A host that already
 	// exists is re-enrolled only if this is one of its current keys or reenroll_allowed is set.
 	PreviousKeyHash string
+	// LocalRecovery permits key-less re-enrollment for the server's own in-process local agent
+	// without opening a remote re-enrollment window in the database. Never set from HTTP handlers.
+	LocalRecovery bool
 	// TokenName is the enrollment token used; recorded on the host. MaxHosts (0 = unlimited) is
 	// enforced when the host is new. TokenLabels, if non-empty, replace Labels and lock them.
 	TokenName   string

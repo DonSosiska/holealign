@@ -71,9 +71,10 @@ type Options struct {
 
 // Feed polls the rules feed and installs accepted bundles.
 type Feed struct {
-	o   Options
-	mu  sync.Mutex
-	seq uint64
+	o     Options
+	mu    sync.Mutex
+	seq   uint64
+	floor uint64
 }
 
 // New builds a Feed.
@@ -105,12 +106,46 @@ func (f *Feed) LoadPersisted(ctx context.Context) {
 	f.loadPersistedLocked(ctx)
 }
 
+// seqFloorLocked returns the highest sequence number this server has ever accepted (active, in
+// state.json, or mirrored in KV), latching f.floor monotonically upwards. Caller holds f.mu.
+func (f *Feed) seqFloorLocked(ctx context.Context) uint64 {
+	if f.seq > f.floor {
+		f.floor = f.seq
+	}
+	if st := ReadState(f.o.Dir); st.Seq > f.floor {
+		f.floor = st.Seq
+	}
+	if f.o.KV != nil {
+		if raw, err := f.o.KV.KVGet(ctx, KVSeq); err == nil {
+			if n, err := strconv.ParseUint(strings.TrimSpace(raw), 10, 64); err == nil && n > f.floor {
+				f.floor = n
+			}
+		}
+	}
+	return f.floor
+}
+
 func (f *Feed) loadPersistedLocked(ctx context.Context) bool {
+	seqs := persistedSeqs(f.o.Dir)
+	if len(seqs) == 0 || seqs[0] <= f.seq {
+		return false
+	}
+	floor := f.seqFloorLocked(ctx)
+	if seqs[0] < floor {
+		f.o.Log.Warn("rules feed: refusing persisted bundle older than recorded floor",
+			"disk_seq", seqs[0], "floor_seq", floor)
+		return false
+	}
 	inst, skipped := LoadInstalled(f.o.Dir, f.o.Keys, f.o.ServerVersion)
 	for _, err := range skipped {
 		f.o.Log.Warn("rules feed: ignoring persisted bundle", "err", err)
 	}
 	if inst == nil || inst.Bundle.Index.Seq <= f.seq {
+		return false
+	}
+	if inst.Bundle.Index.Seq < floor {
+		f.o.Log.Warn("rules feed: refusing persisted bundle older than recorded floor",
+			"disk_seq", inst.Bundle.Index.Seq, "floor_seq", floor)
 		return false
 	}
 	f.activate(ctx, inst.Bundle)
@@ -121,6 +156,9 @@ func (f *Feed) loadPersistedLocked(ctx context.Context) bool {
 // activate hands the rules to the engine and mirrors the state. Caller holds f.mu.
 func (f *Feed) activate(ctx context.Context, b *Bundle) {
 	f.seq = b.Index.Seq
+	if b.Index.Seq > f.floor {
+		f.floor = b.Index.Seq
+	}
 	if f.o.Engine != nil {
 		f.o.Engine.SetFeed(b.Index.Seq, b.Rules)
 		if err := f.o.Engine.Reload(ctx); err != nil {
@@ -175,7 +213,9 @@ func (f *Feed) Poll(ctx context.Context) error {
 	f.mu.Lock()
 	st := ReadState(f.o.Dir)
 	b, sawSigned, err := f.poll(ctx, st.SignedPointerSeen)
-	st.Seq = f.seq
+	if f.seq > st.Seq {
+		st.Seq = f.seq
+	}
 	now := f.o.Now().UTC().Format(time.RFC3339)
 	if err != nil {
 		st.Failures++
@@ -238,13 +278,14 @@ func (f *Feed) poll(ctx context.Context, signedSeen bool) (*Bundle, bool, error)
 			return nil, false, errors.New("latest.json: unsigned pointer refused (downgrade from a previously signed feed)")
 		}
 	}
+	floor := f.seqFloorLocked(ctx)
 	switch {
-	case ptr.Seq == f.seq:
-		return nil, sawSigned, nil
-	case ptr.Seq < f.seq:
+	case ptr.Seq < floor:
 		f.o.Log.Warn("rules feed: refusing a pointer to an older bundle (rollback attempt or publisher mistake)",
-			"pointer_seq", ptr.Seq, "installed_seq", f.seq)
-		return nil, false, fmt.Errorf("latest.json: rollback refused: pointer seq %d is older than installed seq %d", ptr.Seq, f.seq)
+			"pointer_seq", ptr.Seq, "installed_seq", floor)
+		return nil, false, fmt.Errorf("latest.json: rollback refused: pointer seq %d is older than installed seq %d", ptr.Seq, floor)
+	case ptr.Seq == f.seq && f.seq > 0:
+		return nil, sawSigned, nil
 	}
 	ref, err := url.Parse(ptr.URL)
 	if err != nil || ptr.URL == "" {

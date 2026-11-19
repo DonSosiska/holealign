@@ -248,6 +248,9 @@ func parseLifetime(v string) (time.Duration, error) {
 }
 
 func (s *Server) handleTokenRevoke(w http.ResponseWriter, r *http.Request, sess *session) {
+	if !s.reauth(w, r, sess) {
+		return
+	}
 	if err := s.d.Store.RevokeEnrollToken(r.Context(), r.PathValue("name")); err != nil {
 		s.storeErr(w, r, sess, err)
 		return
@@ -268,6 +271,8 @@ func (s *Server) handleUserAdd(w http.ResponseWriter, r *http.Request, sess *ses
 		msg = "Username must be 1-64 characters: letters, digits, '.', '_', '-', '@'."
 	case len(pw) < minPasswordLen:
 		msg = "Password must be at least 12 characters."
+	case len(pw) > maxPasswordBytes:
+		msg = "Password must be at most 72 bytes."
 	}
 	if msg != "" {
 		s.renderSettings(w, r, sess, http.StatusUnprocessableEntity, map[string]any{"UserError": msg, "UserName": name})
@@ -296,8 +301,12 @@ func (s *Server) handleUserPassword(w http.ResponseWriter, r *http.Request, sess
 	}
 	name := r.PathValue("name")
 	pw := r.PostFormValue("password")
-	if len(pw) < minPasswordLen {
+	switch {
+	case len(pw) < minPasswordLen:
 		s.renderSettings(w, r, sess, http.StatusUnprocessableEntity, map[string]any{"UserError": "Password must be at least 12 characters."})
+		return
+	case len(pw) > maxPasswordBytes:
+		s.renderSettings(w, r, sess, http.StatusUnprocessableEntity, map[string]any{"UserError": "Password must be at most 72 bytes."})
 		return
 	}
 	hash, err := store.HashPassword(pw)

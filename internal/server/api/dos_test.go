@@ -197,7 +197,7 @@ type fakeHostReqEval struct {
 	host []model.FactRequest
 }
 
-func (f fakeHostReqEval) FactRequests() []model.FactRequest                     { return f.all }
+func (f fakeHostReqEval) FactRequests() []model.FactRequest                   { return f.all }
 func (f fakeHostReqEval) FactRequestsFor([]model.Finding) []model.FactRequest { return f.host }
 
 func TestFactRequestsForHostPrioritizesMatchingRules(t *testing.T) {
