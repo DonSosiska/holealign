@@ -11,10 +11,16 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 )
 
 // SigAlg is the only signature algorithm.
 const SigAlg = "ed25519"
+
+// pointerSigDomain is the domain separator for latest.json pointer signatures.
+// Tarball signatures sign the 32-byte sha256(tarball); pointer signatures sign a
+// multi-line domain-prefixed message (>32 bytes), so the two can never collide.
+const pointerSigDomain = "holealign-rules-pointer-v1"
 
 // Sig is the detached signature of a tarball (rules-<seq>.tar.gz.sig, and the "sig" member of
 // latest.json). Sig is base64(ed25519.Sign(priv, sha256(tarball))).
@@ -26,10 +32,13 @@ type Sig struct {
 
 // Pointer is latest.json, the small file servers poll.
 type Pointer struct {
-	Seq    uint64 `json:"seq"`
-	URL    string `json:"url"` // relative to latest.json, or absolute
-	SHA256 string `json:"sha256"`
-	Sig    Sig    `json:"sig"`
+	Seq        uint64 `json:"seq"`
+	URL        string `json:"url"` // relative to latest.json, or absolute
+	SHA256     string `json:"sha256"`
+	Sig        Sig    `json:"sig"`
+	SignedAt   string `json:"signed_at,omitempty"`   // RFC 3339 UTC, when the pointer was signed
+	ExpiresAt  string `json:"expires_at,omitempty"`  // optional RFC 3339 UTC freshness deadline
+	PointerSig *Sig   `json:"pointer_sig,omitempty"` // ed25519 signature over seq, sha256, signed_at, expires_at
 }
 
 // GenerateKey creates a new signing key pair.
@@ -121,6 +130,14 @@ func Sign(priv ed25519.PrivateKey, tarball []byte) Sig {
 // VerifySig checks sig over tarball against the trusted keys: the algorithm must be ed25519, the
 // key_id must name one of the trusted keys, and the signature must verify with that key.
 func VerifySig(tarball []byte, sig Sig, trusted []ed25519.PublicKey) error {
+	d := sha256.Sum256(tarball)
+	if err := verifyBytes(d[:], sig, trusted, "bundle"); err != nil {
+		return err
+	}
+	return nil
+}
+
+func verifyBytes(msg []byte, sig Sig, trusted []ed25519.PublicKey, what string) error {
 	if sig.Alg != SigAlg {
 		return fmt.Errorf("unsupported signature algorithm %q", sig.Alg)
 	}
@@ -141,16 +158,104 @@ func VerifySig(tarball []byte, sig Sig, trusted []ed25519.PublicKey) error {
 	if err != nil || len(raw) != ed25519.SignatureSize {
 		return errors.New("malformed signature")
 	}
-	d := sha256.Sum256(tarball)
-	if !ed25519.Verify(key, d[:], raw) {
-		return errors.New("signature does not match the bundle")
+	if !ed25519.Verify(key, msg, raw) {
+		return fmt.Errorf("signature does not match the %s", what)
 	}
 	return nil
 }
 
-// MakePointer builds latest.json content for a signed tarball.
+func pointerSigningInput(p Pointer) ([]byte, error) {
+	if p.Seq == 0 {
+		return nil, errors.New("pointer seq is missing")
+	}
+	for name, val := range map[string]string{
+		"sha256":     p.SHA256,
+		"signed_at":  p.SignedAt,
+		"expires_at": p.ExpiresAt,
+	} {
+		if strings.ContainsAny(val, "\r\n") {
+			return nil, fmt.Errorf("pointer %s contains newline", name)
+		}
+	}
+	if p.SHA256 == "" {
+		return nil, errors.New("pointer sha256 is missing")
+	}
+	signedAt, err := time.Parse(time.RFC3339, p.SignedAt)
+	if err != nil {
+		return nil, fmt.Errorf("pointer signed_at is invalid RFC 3339: %w", err)
+	}
+	if p.ExpiresAt != "" {
+		exp, err := time.Parse(time.RFC3339, p.ExpiresAt)
+		if err != nil {
+			return nil, fmt.Errorf("pointer expires_at is invalid RFC 3339: %w", err)
+		}
+		if exp.Before(signedAt) {
+			return nil, errors.New("pointer expires_at is before signed_at")
+		}
+	}
+	return []byte(fmt.Sprintf("%s\n%d\n%s\n%s\n%s\n",
+		pointerSigDomain, p.Seq, p.SHA256, p.SignedAt, p.ExpiresAt)), nil
+}
+
+// SignPointer populates SignedAt, optional ExpiresAt (when non-zero), and PointerSig on p.
+func SignPointer(priv ed25519.PrivateKey, p *Pointer, now, expiresAt time.Time) error {
+	p.SignedAt = now.UTC().Format(time.RFC3339)
+	if !expiresAt.IsZero() {
+		p.ExpiresAt = expiresAt.UTC().Format(time.RFC3339)
+	} else {
+		p.ExpiresAt = ""
+	}
+	msg, err := pointerSigningInput(*p)
+	if err != nil {
+		return err
+	}
+	pub, _ := priv.Public().(ed25519.PublicKey)
+	s := Sig{
+		Alg:   SigAlg,
+		KeyID: KeyID(pub),
+		Sig:   base64.StdEncoding.EncodeToString(ed25519.Sign(priv, msg)),
+	}
+	p.PointerSig = &s
+	return nil
+}
+
+// VerifyPointer verifies a signed latest.json pointer against trusted keys and checks expiry
+// against now (when now is non-zero).
+func VerifyPointer(p Pointer, trusted []ed25519.PublicKey, now time.Time) error {
+	if p.PointerSig == nil {
+		return errors.New("pointer signature is missing")
+	}
+	msg, err := pointerSigningInput(p)
+	if err != nil {
+		return err
+	}
+	if err := verifyBytes(msg, *p.PointerSig, trusted, "pointer"); err != nil {
+		return fmt.Errorf("pointer %w", err)
+	}
+	if p.ExpiresAt != "" && !now.IsZero() {
+		exp, err := time.Parse(time.RFC3339, p.ExpiresAt)
+		if err != nil {
+			return fmt.Errorf("pointer expires_at: %w", err)
+		}
+		if now.After(exp) {
+			return fmt.Errorf("pointer expired at %s", p.ExpiresAt)
+		}
+	}
+	return nil
+}
+
+// MakePointer builds an unsigned latest.json pointer for a signed tarball (legacy format).
 func MakePointer(seq uint64, url string, tarball []byte, sig Sig) Pointer {
 	return Pointer{Seq: seq, URL: url, SHA256: sha256Hex(tarball), Sig: sig}
+}
+
+// MakeSignedPointer builds a signed latest.json pointer covering seq, sha256, signed_at and optional expires_at.
+func MakeSignedPointer(priv ed25519.PrivateKey, seq uint64, url string, tarball []byte, sig Sig, now, expiresAt time.Time) (Pointer, error) {
+	p := MakePointer(seq, url, tarball, sig)
+	if err := SignPointer(priv, &p, now, expiresAt); err != nil {
+		return Pointer{}, err
+	}
+	return p, nil
 }
 
 // MarshalJSONFile renders v as indented JSON with a trailing newline.

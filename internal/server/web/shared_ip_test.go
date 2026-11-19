@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -38,6 +39,82 @@ func TestKnownDeviceBypassesSharedIPLimiters(t *testing.T) {
 	// the bypass must not clear the limiter for everybody else
 	if w := e.login(shared, "admin", "correct-horse-battery"); w.Code != 429 {
 		t.Fatalf("limiter cleared by a device login: %d", w.Code)
+	}
+}
+
+func TestKnownDeviceRateLimitedOnOwnFailures(t *testing.T) {
+	e, _ := loginEnv(t)
+	w := e.login("192.0.2.10", "admin", "correct-horse-battery")
+	var dev *http.Cookie
+	for _, c := range w.Result().Cookies() {
+		if c.Name == deviceCookie {
+			dev = c
+		}
+	}
+	if dev == nil {
+		t.Fatal("no device cookie")
+	}
+	for i := 0; i < maxFailures; i++ {
+		if w := e.login("192.0.2.10", "admin", "wrong-password", dev); w.Code != 401 {
+			t.Fatalf("failure %d: got %d, want 401", i, w.Code)
+		}
+	}
+	if w := e.login("192.0.2.10", "admin", "correct-horse-battery", dev); w.Code != 429 {
+		t.Fatalf("device cookie not rate limited after %d failures: got %d, want 429", maxFailures, w.Code)
+	}
+	// Another device (fresh IP without this stolen cookie) is still unaffected by devLim.
+	if w := e.login("198.51.100.77", "admin", "correct-horse-battery"); w.Code != 303 {
+		t.Fatalf("unrelated IP affected by device limiter: %d", w.Code)
+	}
+}
+
+func TestKnownDeviceRevokedOnPasswordChangeAndDelete(t *testing.T) {
+	e, _ := loginEnv(t)
+	e.addUser("bob", "initial-bob-password")
+	w := e.login("192.0.2.10", "bob", "initial-bob-password")
+	var dev *http.Cookie
+	for _, c := range w.Result().Cookies() {
+		if c.Name == deviceCookie {
+			dev = c
+		}
+	}
+	if dev == nil {
+		t.Fatal("no device cookie for bob")
+	}
+	if !e.srv.devices.valid("bob", dev.Value) {
+		t.Fatal("device cookie not valid before password change")
+	}
+	adminSess := e.session("admin")
+	if w := e.post("/settings/users/bob/password", url.Values{
+		"password": {"brand-new-bob-password"}, "current_password": {"correct-horse-battery"},
+	}, adminSess); w.Code != 303 {
+		t.Fatalf("password change: %d", w.Code)
+	}
+	if e.srv.devices.valid("bob", dev.Value) {
+		t.Fatal("device cookie survived password change")
+	}
+	if e.srv.trust.has(ipKey("192.0.2.10"), "bob") {
+		t.Fatal("trusted IP survived password change")
+	}
+
+	// Re-login to obtain a fresh device cookie, then delete bob.
+	w = e.login("192.0.2.11", "bob", "brand-new-bob-password")
+	dev = nil
+	for _, c := range w.Result().Cookies() {
+		if c.Name == deviceCookie {
+			dev = c
+		}
+	}
+	if dev == nil {
+		t.Fatal("no fresh device cookie for bob")
+	}
+	if w := e.post("/settings/users/bob/delete", url.Values{
+		"current_password": {"correct-horse-battery"},
+	}, adminSess); w.Code != 303 {
+		t.Fatalf("user delete: %d", w.Code)
+	}
+	if e.srv.devices.valid("bob", dev.Value) {
+		t.Fatal("device cookie survived user deletion")
 	}
 }
 

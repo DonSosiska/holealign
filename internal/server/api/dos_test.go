@@ -3,13 +3,19 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/DonSosiska/holealign/internal/model"
+	"github.com/DonSosiska/holealign/internal/server/core"
+	"github.com/DonSosiska/holealign/internal/server/store"
 )
 
 // stalledUpload starts an inventory upload whose body never completes; it returns the pipe to
@@ -163,5 +169,64 @@ func TestCleanOS(t *testing.T) {
 	}
 	if g := cleanOS(model.OSInfo{ID: strings.Repeat("a", 100)}); len(g.ID) != 64 {
 		t.Fatalf("id cap: %d", len(g.ID))
+	}
+}
+
+func TestSlowBodyReaderRejectsTrickle(t *testing.T) {
+	now := time.Now()
+	sr := &slowBodyReader{
+		r:       strings.NewReader("abcdefghij"),
+		now:     func() time.Time { return now },
+		start:   now,
+		grace:   5 * time.Second,
+		minRate: 1024,
+	}
+	buf := make([]byte, 2)
+	if n, err := sr.Read(buf); err != nil || n != 2 {
+		t.Fatalf("within grace: n=%d err=%v", n, err)
+	}
+	now = now.Add(6 * time.Second) // 4 bytes in 6s << 1024 B/s
+	if _, err := sr.Read(buf); !errors.Is(err, errSlowBody) {
+		t.Fatalf("trickle after grace: got %v, want errSlowBody", err)
+	}
+}
+
+type fakeHostReqEval struct {
+	core.NoopEvaluator
+	all  []model.FactRequest
+	host []model.FactRequest
+}
+
+func (f fakeHostReqEval) FactRequests() []model.FactRequest                     { return f.all }
+func (f fakeHostReqEval) FactRequestsFor([]model.Finding) []model.FactRequest { return f.host }
+
+func TestFactRequestsForHostPrioritizesMatchingRules(t *testing.T) {
+	st, err := store.OpenSQLite(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	h, err := st.EnrollHost(context.Background(), store.EnrollParams{
+		MachineID: strings.Repeat("a", 32), Hostname: "h1", KeyHash: store.HashSecret("k1"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var all []model.FactRequest
+	for i := 0; i < 25; i++ {
+		all = append(all, model.FactRequest{
+			Name:      fmt.Sprintf("file.match:cve-2026-%04d.cfg", i),
+			Collector: "file.match",
+			Params:    map[string]string{"path": "/etc/nginx/nginx.conf", "pattern": "worker"},
+		})
+	}
+	ev := fakeHostReqEval{all: all, host: []model.FactRequest{all[24]}}
+	srv := &server{Deps: Deps{Store: st, Evaluator: ev}, log: slog.Default()}
+	got := srv.factRequestsForHost(context.Background(), h.ID)
+	if len(got) != agentMaxFactRequests {
+		t.Fatalf("len = %d, want %d", len(got), agentMaxFactRequests)
+	}
+	if got[0].Name != all[24].Name {
+		t.Fatalf("first request = %q, want host-matching %q", got[0].Name, all[24].Name)
 	}
 }

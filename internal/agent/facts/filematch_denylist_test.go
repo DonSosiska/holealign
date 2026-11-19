@@ -67,8 +67,9 @@ func strLists(t *testing.T, file, name string) []string {
 	return out
 }
 
-// The agent keeps its own copy of the server's file.match denylist. The component-pattern lists
-// must be identical; the agent's absolute paths must be a subset of the server's.
+// The agent keeps its own copy of the server's file.match denylist. Both the component-pattern
+// lists and the absolute path lists must stay identical so the agent enforces the full policy
+// independently of the server.
 func TestFileMatchDenylistInSyncWithServer(t *testing.T) {
 	const server = "../../server/rules/filematch.go"
 	srvPatterns := strLists(t, server, "denyPatterns")
@@ -76,13 +77,9 @@ func TestFileMatchDenylistInSyncWithServer(t *testing.T) {
 	if !reflect.DeepEqual(srvPatterns, agentPatterns) {
 		t.Errorf("deny pattern lists differ:\nserver: %v\nagent:  %v", srvPatterns, agentPatterns)
 	}
-	srvPaths := map[string]bool{}
-	for _, p := range strLists(t, server, "denyPaths") {
-		srvPaths[p] = true
-	}
-	for _, p := range strLists(t, "filematch.go", "fmDenyPaths") {
-		if !srvPaths[p] {
-			t.Errorf("agent deny path %q is missing from the server denyPaths", p)
-		}
+	srvPaths := strLists(t, server, "denyPaths")
+	agentPaths := strLists(t, "filematch.go", "fmDenyPaths")
+	if !reflect.DeepEqual(srvPaths, agentPaths) {
+		t.Errorf("deny path lists differ:\nserver: %v\nagent:  %v", srvPaths, agentPaths)
 	}
 }

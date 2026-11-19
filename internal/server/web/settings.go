@@ -309,6 +309,9 @@ func (s *Server) handleUserPassword(w http.ResponseWriter, r *http.Request, sess
 		s.storeErr(w, r, sess, err)
 		return
 	}
+	lu := strings.ToLower(name)
+	s.devices.revokeUser(lu)
+	s.trust.revokeUser(lu)
 	s.audit(r, sess.Username, "user_password_change", name)
 	s.redirectOK(w, r, "/settings", "password")
 }
@@ -326,6 +329,9 @@ func (s *Server) handleUserDelete(w http.ResponseWriter, r *http.Request, sess *
 		s.storeErr(w, r, sess, err)
 		return
 	}
+	lu := strings.ToLower(name)
+	s.devices.revokeUser(lu)
+	s.trust.revokeUser(lu)
 	s.audit(r, sess.Username, "user_delete", name)
 	s.redirectOK(w, r, "/settings", "deleted")
 }

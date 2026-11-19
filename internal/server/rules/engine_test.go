@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -517,4 +518,38 @@ func TestCELFunctions(t *testing.T) {
 	}
 	want(t, eval(t, e, "CVE-2000-0001", "pkg", "deb", map[string]any{"kernel.modules": []any{"nf_tables", "ext4"}}), model.VerdictExploitable)
 	want(t, eval(t, e, "CVE-2000-0001", "pkg", "deb", map[string]any{"kernel.modules": []any{"ext4"}}), model.VerdictNotExploitable)
+}
+
+func TestFactRequestsForMatchesOnlyHostFindings(t *testing.T) {
+	var rs []model.Rule
+	for i := 0; i < 25; i++ {
+		id := fmt.Sprintf("CVE-2026-%04d", i)
+		frName := FactRequestPrefix(id) + "cfg"
+		r := validRule()
+		r.ID = id
+		r.Vulns = []string{id}
+		r.Packages = []model.PackageSelector{{Name: fmt.Sprintf("pkg%02d", i), Type: "deb"}}
+		r.Facts = []string{frName}
+		r.FactRequests = []model.FactRequest{{
+			Name: frName, Collector: "file.match",
+			Params: map[string]string{"path": "/etc/nginx/nginx.conf", "pattern": `worker_processes\s+\d+`},
+		}}
+		r.ExploitableIf = fmt.Sprintf(`size(facts[%q]) > 0`, frName)
+		rs = append(rs, r)
+	}
+	e := New(rs, nil)
+	if p := e.Problems(); len(p) != 0 {
+		t.Fatalf("unexpected problems: %v", p)
+	}
+	if got := len(e.FactRequests()); got != 25 {
+		t.Fatalf("global FactRequests = %d, want 25", got)
+	}
+	// Host only has an open finding for the 25th rule (index 24), plus a resolved finding for index 0.
+	got := e.FactRequestsFor([]model.Finding{
+		{VulnID: "CVE-2026-0000", PackageName: "pkg00", PackageType: "deb", Verdict: model.VerdictResolved},
+		{VulnID: "CVE-2026-0024", PackageName: "pkg24", PackageType: "deb", Verdict: model.VerdictConditionsUnknown},
+	})
+	if len(got) != 1 || got[0].Name != FactRequestPrefix("CVE-2026-0024")+"cfg" {
+		t.Fatalf("FactRequestsFor = %+v, want only CVE-2026-0024", got)
+	}
 }

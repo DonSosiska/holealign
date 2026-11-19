@@ -222,3 +222,26 @@ func TestParseCleansTitleAndExplanation(t *testing.T) {
 		t.Fatalf("tags/newlines survived: %q %q", r.Title, r.Explanation)
 	}
 }
+
+func TestPerHostDailyCallCapPreventsStarvation(t *testing.T) {
+	// With DailyLimit=20, a single host is capped at 5 calls/day (DailyLimit/4), leaving the rest
+	// of the fleet's daily LLM budget intact.
+	e := newEnv(t, 20, goodJSON)
+	for i := 0; i < 10; i++ {
+		f := hostFinding("noisy")
+		f.VulnID = fmt.Sprintf("CVE-2030-%04d", i)
+		f.Aliases = nil
+		e.run(f)
+	}
+	if got := e.prov.n(); got != 5 {
+		t.Fatalf("noisy host made %d LLM calls, want cap 5", got)
+	}
+	// Another host still gets drafted from the remaining global budget.
+	f := hostFinding("honest")
+	f.VulnID = "CVE-2030-9999"
+	f.Aliases = nil
+	e.run(f)
+	if got := e.prov.n(); got != 6 {
+		t.Fatalf("honest host starved: total calls = %d, want 6", got)
+	}
+}

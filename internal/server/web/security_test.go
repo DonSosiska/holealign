@@ -95,7 +95,7 @@ func TestPerIPLimit(t *testing.T) {
 
 	// per-IP: many different usernames from one IP hit the IP cap
 	for i := 0; i < maxIPFailures; i++ {
-		e.srv.loginFailed("198.51.100.1", "user"+strconv.Itoa(i), false, false)
+		e.srv.loginFailed("198.51.100.1", "user"+strconv.Itoa(i), "", false, false)
 	}
 	if e.srv.limIP.acquire("198.51.100.1") {
 		t.Fatal("per-IP limit not enforced")

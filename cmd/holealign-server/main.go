@@ -242,7 +242,8 @@ func wire(cfg *config.Config, st store.Store, log *slog.Logger, trig *lateTrigge
 			comp.Feed = rulesfeed.New(rulesfeed.Options{
 				URL: cfg.Rules.Feed.URL, Interval: cfg.Rules.Feed.Interval, Keys: keys, Dir: cfg.RulesFeedDir(),
 				KV: st, Engine: engine, ServerVersion: version, Log: log,
-				OnUpdated: func(context.Context) { trig.TriggerAll() },
+				RequireSignedPointer: cfg.Rules.Feed.RequireSignedPointer,
+				OnUpdated:            func(context.Context) { trig.TriggerAll() },
 			})
 			// activate the persisted bundle before the first pipeline run
 			comp.Feed.LoadPersisted(context.Background())
@@ -492,7 +493,12 @@ func serve(cfg *config.Config) error {
 
 	trig := &lateTrigger{log: log}
 	comp := wire(cfg, st, log, trig, clientIP)
-	grypeDB := match.NewGrype(cfg.GrypeDBDir(), log)
+	grypeDB := match.NewGrypeWithOptions(match.Options{
+		DBRoot:    cfg.GrypeDBDir(),
+		LatestURL: cfg.Feeds.GrypeURL,
+		CACert:    cfg.Feeds.GrypeCAFile,
+		Log:       log,
+	})
 	defer grypeDB.Close()
 	mon := health.New(st, comp.Notifier, health.Options{
 		AgentSilentAfter: cfg.Alerts.AgentSilentAfter, FeedStaleAfter: cfg.Alerts.FeedStaleAfter,

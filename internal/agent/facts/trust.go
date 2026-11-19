@@ -71,9 +71,9 @@ func binaryTrustAbove(resolved, top string) error {
 // temporary directories are not under root-owned parents).
 var symlinkTargetTrust = binaryTrust
 
-// treeTrusted checks every root (globs allowed; missing roots are skipped), its
-// parent directory and everything below it (at most maxTrustEntries entries in total;
-// more fails closed). A symbolic link is checked at its target (and the target's
+// treeTrusted checks every root (globs allowed; missing roots are skipped), all of its
+// ancestor directories up to "/" and everything below it (at most maxTrustEntries entries
+// in total; more fails closed). A symbolic link is checked at its target (and the target's
 // ancestors); when the target is a directory its whole tree is walked with the same
 // checks, so a symlinked conf.d cannot smuggle in files the agent never looked at.
 // Directories are walked once (os.SameFile), which also ends symlink loops.
@@ -82,7 +82,11 @@ func treeTrusted(roots []string) error {
 	for _, pat := range roots {
 		matches, _ := filepath.Glob(pat)
 		for _, root := range matches {
-			if err := pathTrust(filepath.Dir(root)); err != nil {
+			parent := filepath.Dir(root)
+			if resolved, err := filepath.EvalSymlinks(parent); err == nil {
+				parent = resolved
+			}
+			if err := symlinkTargetTrust(parent); err != nil {
 				return err
 			}
 			if err := w.walk(root, root); err != nil {

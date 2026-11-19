@@ -293,14 +293,17 @@ func TestRollbackAndReplayRejected(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// a validly signed OLDER bundle served with its own (lower) seq: ignored, not an error
+	// a validly signed OLDER bundle served with its own (lower) seq: refused as rollback and recorded as a failure
 	tb1, sig1 := bundle(t, k, 1, "z")
 	srv.publish(t, 1, tb1, sig1)
-	if err := e.feed.Poll(context.Background()); err != nil {
-		t.Fatalf("lower seq pointer is ignored, got %v", err)
+	if err := e.feed.Poll(context.Background()); err == nil || !strings.Contains(err.Error(), "rollback refused") {
+		t.Fatalf("lower seq pointer must fail as rollback, got %v", err)
 	}
 	if e.feed.Seq() != 2 || e.verdict("a") != model.VerdictExploitable || e.updated != 1 {
 		t.Fatalf("rolled back: seq=%d", e.feed.Seq())
+	}
+	if !strings.Contains(e.kv.get(KVLastError), "rollback refused") || e.kv.get(KVFailures) != "1" {
+		t.Fatalf("rollback error not recorded: %q %q", e.kv.get(KVLastError), e.kv.get(KVFailures))
 	}
 
 	// replay: the old bundle behind a pointer that claims a higher seq must not be installed
@@ -316,7 +319,7 @@ func TestRollbackAndReplayRejected(t *testing.T) {
 	if e.feed.Seq() != 2 {
 		t.Fatalf("seq = %d", e.feed.Seq())
 	}
-	if !strings.Contains(e.kv.get(KVLastError), "index.json says seq") || e.kv.get(KVFailures) != "1" {
+	if !strings.Contains(e.kv.get(KVLastError), "index.json says seq") || e.kv.get(KVFailures) != "2" {
 		t.Fatalf("error not recorded: %q %q", e.kv.get(KVLastError), e.kv.get(KVFailures))
 	}
 }
@@ -796,5 +799,161 @@ func TestKeyHelpers(t *testing.T) {
 	}
 	if !errors.Is(ErrNotInstalled, ErrNotInstalled) {
 		t.Fatal()
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// memFeedClient serves latest.json and tarballs in memory over https://feed.test/feed/
+// without opening a TCP socket, so tests run in strict offline sandboxes too.
+type memFeed struct {
+	mu      sync.Mutex
+	pointer []byte
+	files   map[string][]byte
+}
+
+func newMemFeed() (*memFeed, *http.Client) {
+	mf := &memFeed{files: map[string][]byte{}}
+	c := &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			mf.mu.Lock()
+			defer mf.mu.Unlock()
+			var body []byte
+			status := http.StatusOK
+			switch r.URL.Path {
+			case "/feed/latest.json":
+				body = append([]byte(nil), mf.pointer...)
+			default:
+				name := strings.TrimPrefix(r.URL.Path, "/feed/")
+				if b, ok := mf.files[name]; ok {
+					body = append([]byte(nil), b...)
+				} else {
+					status = http.StatusNotFound
+				}
+			}
+			return &http.Response{
+				StatusCode: status,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(bytes.NewReader(body)),
+				Request:    r,
+			}, nil
+		}),
+	}
+	return mf, c
+}
+
+func TestSignedPointerFreshnessAndAntiDowngrade(t *testing.T) {
+	k, other := newKey(t), newKey(t)
+	mf, client := newMemFeed()
+	now := created
+	e := newEnv(t, k, "https://feed.test/feed/latest.json", client)
+	e.feed.o.Now = func() time.Time { return now }
+
+	setPointer := func(p Pointer, tb []byte) {
+		t.Helper()
+		raw, err := MarshalJSONFile(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mf.mu.Lock()
+		mf.pointer = raw
+		if tb != nil {
+			mf.files[TarballName(p.Seq)] = tb
+		}
+		mf.mu.Unlock()
+	}
+
+	tb1, sig1 := bundle(t, k, 1, "a")
+	p1, err := MakeSignedPointer(k.priv, 1, TarballName(1), tb1, sig1, now, now.Add(24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	setPointer(p1, tb1)
+	if err := e.feed.Poll(context.Background()); err != nil {
+		t.Fatalf("signed pointer 1 rejected: %v", err)
+	}
+	if !ReadState(e.dir).SignedPointerSeen {
+		t.Fatal("SignedPointerSeen not persisted after valid signed pointer")
+	}
+
+	// Same-seq poll still checks pointer expiry (freeze attack detection): advance clock past ExpiresAt.
+	now = created.Add(25 * time.Hour)
+	if err := e.feed.Poll(context.Background()); err == nil || !strings.Contains(err.Error(), "pointer expired") {
+		t.Fatalf("expired same-seq pointer accepted: %v", err)
+	}
+
+	// Reset clock inside validity window; verify tampered expires_at or foreign key is rejected.
+	now = created.Add(time.Hour)
+	tampered := p1
+	tampered.ExpiresAt = created.Add(48 * time.Hour).Format(time.RFC3339)
+	setPointer(tampered, nil)
+	if err := e.feed.Poll(context.Background()); err == nil || !strings.Contains(err.Error(), "signature does not match") {
+		t.Fatalf("tampered expires_at accepted: %v", err)
+	}
+
+	wrongKeyPtr, err := MakeSignedPointer(other.priv, 1, TarballName(1), tb1, sig1, now, now.Add(24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	setPointer(wrongKeyPtr, nil)
+	if err := e.feed.Poll(context.Background()); err == nil || !strings.Contains(err.Error(), "not a trusted key") {
+		t.Fatalf("foreign pointer key accepted: %v", err)
+	}
+
+	// Anti-downgrade latch: stripping pointer_sig/signed_at/expires_at on a previously signed feed must fail.
+	tb2, sig2 := bundle(t, k, 2, "b")
+	setPointer(MakePointer(2, TarballName(2), tb2, sig2), tb2)
+	if err := e.feed.Poll(context.Background()); err == nil || !strings.Contains(err.Error(), "downgrade") {
+		t.Fatalf("downgrade to unsigned pointer accepted: %v", err)
+	}
+	if e.feed.Seq() != 1 {
+		t.Fatalf("seq changed on downgrade: %d", e.feed.Seq())
+	}
+
+	// Signed seq 2 succeeds.
+	p2, err := MakeSignedPointer(k.priv, 2, TarballName(2), tb2, sig2, now, time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	setPointer(p2, tb2)
+	if err := e.feed.Poll(context.Background()); err != nil {
+		t.Fatalf("signed pointer 2 rejected: %v", err)
+	}
+	if e.feed.Seq() != 2 {
+		t.Fatalf("seq = %d, want 2", e.feed.Seq())
+	}
+
+	// Tarball signature cannot be replayed as a pointer signature (domain separation).
+	replay := MakePointer(2, TarballName(2), tb2, sig2)
+	replay.SignedAt = now.Format(time.RFC3339)
+	replay.PointerSig = &sig2
+	if err := VerifyPointer(replay, []ed25519.PublicKey{k.pub}, now); err == nil {
+		t.Fatal("tarball signature verified as pointer signature")
+	}
+}
+
+func TestRequireSignedPointerRejectsInitialUnsigned(t *testing.T) {
+	k := newKey(t)
+	mf, client := newMemFeed()
+	e := newEnv(t, k, "https://feed.test/feed/latest.json", client)
+	e.feed.o.RequireSignedPointer = true
+
+	tb, sig := bundle(t, k, 1, "a")
+	raw, err := MarshalJSONFile(MakePointer(1, TarballName(1), tb, sig))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mf.mu.Lock()
+	mf.pointer = raw
+	mf.files[TarballName(1)] = tb
+	mf.mu.Unlock()
+
+	if err := e.feed.Poll(context.Background()); err == nil || !strings.Contains(err.Error(), "require_signed_pointer") {
+		t.Fatalf("unsigned pointer accepted when required: %v", err)
+	}
+	if e.feed.Seq() != 0 {
+		t.Fatalf("bundle installed: seq=%d", e.feed.Seq())
 	}
 }

@@ -59,8 +59,12 @@ type Options struct {
 	OnUpdated func(ctx context.Context)
 	// ServerVersion is compared with a bundle's min_server_version.
 	ServerVersion string
-	Log           *slog.Logger
-	Now           func() time.Time
+	// RequireSignedPointer refuses unsigned latest.json pointers. Even when false, once a
+	// validly signed pointer has been seen on this feed, unsigned pointers are refused
+	// (anti-downgrade latch persisted in state.json).
+	RequireSignedPointer bool
+	Log                  *slog.Logger
+	Now                  func() time.Time
 	// Client overrides the HTTP client (tests). Timeout and redirect policy are always enforced.
 	Client *http.Client
 }
@@ -169,8 +173,8 @@ func (f *Feed) Poll(ctx context.Context) error {
 		return errors.New("rules.feed.url is not set")
 	}
 	f.mu.Lock()
-	b, err := f.poll(ctx)
 	st := ReadState(f.o.Dir)
+	b, sawSigned, err := f.poll(ctx, st.SignedPointerSeen)
 	st.Seq = f.seq
 	now := f.o.Now().UTC().Format(time.RFC3339)
 	if err != nil {
@@ -178,6 +182,9 @@ func (f *Feed) Poll(ctx context.Context) error {
 		st.LastError = oneLine(err.Error())
 		f.kv(ctx, KVLastError, st.LastError)
 	} else {
+		if sawSigned {
+			st.SignedPointerSeen = true
+		}
 		st.Failures, st.LastError, st.CheckedAt = 0, "", now
 		f.kv(ctx, KVCheckedAt, now)
 		f.kv(ctx, KVLastError, "")
@@ -197,67 +204,84 @@ func (f *Feed) Poll(ctx context.Context) error {
 	return err
 }
 
-// poll runs one poll cycle; it returns the newly activated bundle, if any. Caller holds f.mu.
-func (f *Feed) poll(ctx context.Context) (*Bundle, error) {
+// poll runs one poll cycle; it returns the newly activated bundle (if any) and whether the
+// pointer carried a valid signature. Caller holds f.mu.
+func (f *Feed) poll(ctx context.Context, signedSeen bool) (*Bundle, bool, error) {
 	base, err := url.Parse(f.o.URL)
 	if err != nil {
-		return nil, fmt.Errorf("rules.feed.url: %w", err)
+		return nil, false, fmt.Errorf("rules.feed.url: %w", err)
 	}
 	raw, err := f.fetch(ctx, base, MaxPointerBytes)
 	if err != nil {
-		return nil, fmt.Errorf("latest.json: %w", err)
+		return nil, false, fmt.Errorf("latest.json: %w", err)
 	}
 	var ptr Pointer
 	if err := json.Unmarshal(raw, &ptr); err != nil {
-		return nil, fmt.Errorf("latest.json: %w", err)
+		return nil, false, fmt.Errorf("latest.json: %w", err)
+	}
+	if ptr.Seq == 0 {
+		return nil, false, errors.New("latest.json: seq is missing")
+	}
+	// Verify pointer signature and freshness BEFORE the ptr.Seq == f.seq short-circuit so a
+	// frozen/expired or tampered pointer is detected even when seq has not advanced.
+	sawSigned := false
+	if ptr.PointerSig != nil || ptr.SignedAt != "" || ptr.ExpiresAt != "" {
+		if err := VerifyPointer(ptr, f.o.Keys, f.o.Now()); err != nil {
+			return nil, false, fmt.Errorf("latest.json: %w", err)
+		}
+		sawSigned = true
+	} else {
+		if f.o.RequireSignedPointer {
+			return nil, false, errors.New("latest.json: unsigned pointer refused (rules.feed.require_signed_pointer is enabled)")
+		}
+		if signedSeen {
+			return nil, false, errors.New("latest.json: unsigned pointer refused (downgrade from a previously signed feed)")
+		}
 	}
 	switch {
-	case ptr.Seq == 0:
-		return nil, errors.New("latest.json: seq is missing")
 	case ptr.Seq == f.seq:
-		return nil, nil
+		return nil, sawSigned, nil
 	case ptr.Seq < f.seq:
-		f.o.Log.Warn("rules feed: ignoring a pointer to an older bundle (rollback attempt or publisher mistake)",
+		f.o.Log.Warn("rules feed: refusing a pointer to an older bundle (rollback attempt or publisher mistake)",
 			"pointer_seq", ptr.Seq, "installed_seq", f.seq)
-		return nil, nil
+		return nil, false, fmt.Errorf("latest.json: rollback refused: pointer seq %d is older than installed seq %d", ptr.Seq, f.seq)
 	}
 	ref, err := url.Parse(ptr.URL)
 	if err != nil || ptr.URL == "" {
-		return nil, errors.New("latest.json: url is missing or invalid")
+		return nil, false, errors.New("latest.json: url is missing or invalid")
 	}
 	target := base.ResolveReference(ref)
 	if target.Scheme != base.Scheme {
-		return nil, fmt.Errorf("latest.json: bundle url scheme %q differs from the pointer's %q", target.Scheme, base.Scheme)
+		return nil, false, fmt.Errorf("latest.json: bundle url scheme %q differs from the pointer's %q", target.Scheme, base.Scheme)
 	}
 	if hostPort(target) != hostPort(base) || target.User != nil {
-		// the pointer is unsigned: it must not make the server fetch from another host or port
-		return nil, fmt.Errorf("latest.json: bundle url host %q differs from the pointer's %q", hostPort(target), hostPort(base))
+		// keep the bundle fetch pinned to the pointer's own origin
+		return nil, false, fmt.Errorf("latest.json: bundle url host %q differs from the pointer's %q", hostPort(target), hostPort(base))
 	}
 	tb, err := f.fetch(ctx, target, MaxBundleBytes)
 	if err != nil {
-		return nil, fmt.Errorf("bundle %d: %w", ptr.Seq, err)
+		return nil, false, fmt.Errorf("bundle %d: %w", ptr.Seq, err)
 	}
 	if got := sha256Hex(tb); got != ptr.SHA256 {
-		return nil, fmt.Errorf("bundle %d: sha256 %s does not match the pointer (%s)", ptr.Seq, got, ptr.SHA256)
+		return nil, false, fmt.Errorf("bundle %d: sha256 %s does not match the pointer (%s)", ptr.Seq, got, ptr.SHA256)
 	}
 	if err := VerifySig(tb, ptr.Sig, f.o.Keys); err != nil {
-		return nil, fmt.Errorf("bundle %d: %w", ptr.Seq, err)
+		return nil, false, fmt.Errorf("bundle %d: %w", ptr.Seq, err)
 	}
 	b, err := Open(tb, f.o.ServerVersion)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	// The pointer is not signed, only the tarball is: a replayed old (validly signed) bundle must
-	// not be installed under a newer sequence number.
+	// A replayed old (validly signed) bundle must not be installed under a newer sequence number.
 	if b.Index.Seq != ptr.Seq {
-		return nil, fmt.Errorf("bundle %d: index.json says seq %d", ptr.Seq, b.Index.Seq)
+		return nil, false, fmt.Errorf("bundle %d: index.json says seq %d", ptr.Seq, b.Index.Seq)
 	}
 	if err := persist(f.o.Dir, b.Index.Seq, tb, ptr.Sig); err != nil {
-		return nil, fmt.Errorf("persist bundle %d: %w", ptr.Seq, err)
+		return nil, false, fmt.Errorf("persist bundle %d: %w", ptr.Seq, err)
 	}
 	f.activate(ctx, b)
 	f.o.Log.Info("rules feed: installed bundle", "seq", b.Index.Seq, "rules", len(b.Rules), "tests", len(b.Tests))
-	return b, nil
+	return b, sawSigned, nil
 }
 
 // hostPort is the lower-case host and effective port of u (the scheme's default port when none is given).

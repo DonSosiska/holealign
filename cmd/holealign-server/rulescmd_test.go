@@ -58,8 +58,8 @@ func TestRulesCLIFlow(t *testing.T) {
 	}
 	tarball := filepath.Join(out1, "rules-7.tar.gz")
 
-	// sign -> .sig + latest.json, verify
-	if code, _, errOut := runCLI(t, "", "rules", "sign", "-key", keyFile, tarball); code != 0 {
+	// sign -> .sig + signed latest.json, verify (including -pointer)
+	if code, _, errOut := runCLI(t, "", "rules", "sign", "-key", keyFile, "-expires", "30d", tarball); code != 0 {
 		t.Fatalf("sign: %d %q", code, errOut)
 	}
 	for _, n := range []string{"rules-7.tar.gz.sig", "latest.json"} {
@@ -67,10 +67,12 @@ func TestRulesCLIFlow(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if l := mustRead(t, filepath.Join(out1, "latest.json")); !strings.Contains(l, `"seq": 7`) || !strings.Contains(l, `"url": "rules-7.tar.gz"`) {
+	latestPath := filepath.Join(out1, "latest.json")
+	if l := mustRead(t, latestPath); !strings.Contains(l, `"seq": 7`) || !strings.Contains(l, `"url": "rules-7.tar.gz"`) ||
+		!strings.Contains(l, `"signed_at"`) || !strings.Contains(l, `"expires_at"`) || !strings.Contains(l, `"pointer_sig"`) {
 		t.Fatalf("latest.json: %s", l)
 	}
-	code, out, errOut = runCLI(t, "", "rules", "verify", "-pub", pub, tarball)
+	code, out, errOut = runCLI(t, "", "rules", "verify", "-pub", pub, "-pointer", latestPath, tarball)
 	if code != 0 || !strings.Contains(out, "OK: bundle 7, 8 rules") {
 		t.Fatalf("verify: %d %q %q", code, out, errOut)
 	}
@@ -78,6 +80,9 @@ func TestRulesCLIFlow(t *testing.T) {
 	otherPub := strings.TrimSpace(strings.SplitN(strings.TrimPrefix(otherOut, "public_key: "), "\n", 2)[0])
 	if code, _, _ := runCLI(t, "", "rules", "verify", "-pub", otherPub, tarball); code == 0 {
 		t.Fatal("verified with a foreign key")
+	}
+	if code, _, _ := runCLI(t, "", "rules", "verify", "-pub", otherPub, "-pointer", latestPath, tarball); code == 0 {
+		t.Fatal("verified pointer with a foreign key")
 	}
 
 	// import + status through the server configuration

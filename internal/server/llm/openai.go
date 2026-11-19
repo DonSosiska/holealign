@@ -29,7 +29,10 @@ func newOpenAI(cfg config.LLM) (*openAIProvider, error) {
 	p := &openAIProvider{
 		baseURL: strings.TrimRight(cfg.BaseURL, "/"),
 		model:   cfg.Model,
-		hc:      &http.Client{Timeout: 120 * time.Second},
+		hc: &http.Client{
+			Timeout:       120 * time.Second,
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		},
 	}
 	if cfg.APIKeyEnv != "" {
 		p.key = os.Getenv(cfg.APIKeyEnv)

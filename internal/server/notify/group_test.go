@@ -200,3 +200,33 @@ func TestRenderGroupMergesFields(t *testing.T) {
 		t.Errorf("link must be the first event's WebURL only:\n%s", h)
 	}
 }
+
+func TestBurstFairShareAcrossHosts(t *testing.T) {
+	// One noisy host submits 60 CVSS 10.0 KEV findings; an honest host submits 2 lower-CVSS
+	// findings. interleaveByHost must guarantee the honest host appears inside burstKeep.
+	var groups []group
+	for i := 0; i < 60; i++ {
+		ev := pkgEvent(fmt.Sprintf("CVE-2025-%04d", i), "noisy", "pkg", "1")
+		ev.Host.ID = "h_noisy"
+		ev.Finding.KEV = true
+		ev.Finding.CVSS = 10.0
+		groups = append(groups, group{evs: []model.Event{ev}, idx: []int{i}})
+	}
+	for i := 0; i < 2; i++ {
+		ev := pkgEvent(fmt.Sprintf("CVE-2025-99%02d", i), "honest", "openssh-server", "1")
+		ev.Host.ID = "h_honest"
+		ev.Finding.KEV = false
+		ev.Finding.CVSS = 8.1
+		groups = append(groups, group{evs: []model.Event{ev}, idx: []int{60 + i}})
+	}
+	ordered := interleaveByHost(groups)
+	honestInKeep := 0
+	for _, g := range ordered[:burstKeep] {
+		if g.first().Host.ID == "h_honest" {
+			honestInKeep++
+		}
+	}
+	if honestInKeep != 2 {
+		t.Fatalf("honest host groups in top %d = %d, want 2 (noisy host crowded out honest host)", burstKeep, honestInKeep)
+	}
+}

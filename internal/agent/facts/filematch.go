@@ -68,10 +68,19 @@ var fmDenyPatterns = [][]string{
 
 // fmDenyPaths are absolute path globs (lower case, one path.Match glob per component) of
 // credential-bearing files and directories: a path equal to or below an entry is never read.
-// The server enforces a longer list (denyPaths in internal/server/rules/filematch.go) before a
-// request is ever sent; the agent re-checks the entries below on resolved paths. A test keeps every
-// entry here a member of the server list and both pattern lists identical.
+// Kept identical to denyPaths in internal/server/rules/filematch.go (enforced by a test), so the
+// agent enforces the exact same denylist independently of the server.
 var fmDenyPaths = []string{
+	"/etc/kubernetes", "/etc/rancher", "/etc/fstab", "/etc/exim4/passwd.client",
+	"/etc/postfix/sasl_passwd*", "/etc/samba/smbpasswd", "/etc/pgbouncer",
+	"/etc/wpa_supplicant", "/etc/environment", "/etc/default", "/etc/sysconfig",
+	"/etc/boto.cfg", "/etc/aws", "/etc/gcloud", "/etc/vault*", "/etc/consul*",
+	"/etc/nomad*", "/etc/ansible", "/etc/openldap", "/etc/ldap", "/etc/dovecot",
+	"/etc/zabbix", "/etc/telegraf", "/etc/filebeat", "/etc/grafana", "/etc/docker",
+	"/etc/opasswd", "/etc/cron*", "/etc/crontab", "/etc/redis", "/etc/mysql",
+	"/etc/postgresql", "/etc/mongod.conf", "/etc/rabbitmq", "/etc/elasticsearch",
+	"/etc/kibana", "/etc/logstash", "/etc/sssd", "/etc/krb5*", "/etc/letsencrypt",
+	"/etc/ssl", "/etc/pki",
 	"/etc/apt/auth.conf*", "/etc/hostapd", "/etc/squid/passwords*", "/etc/gitlab",
 	"/etc/phpmyadmin/config-db.php", "/etc/msmtprc", "/etc/nagios/resource.cfg", "/etc/ssmtp",
 }

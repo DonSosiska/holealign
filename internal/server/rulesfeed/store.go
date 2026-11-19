@@ -23,11 +23,12 @@ var persistedRe = regexp.MustCompile(`^rules-([0-9]{1,18})\.tar\.gz$`)
 // State is the small status record kept next to the bundle (state.json) so the CLI can report it
 // without opening the database. The same values are mirrored into the kv table for the web UI.
 type State struct {
-	Seq       uint64 `json:"seq"`
-	UpdatedAt string `json:"updated_at,omitempty"` // RFC 3339, last time a bundle was installed
-	CheckedAt string `json:"checked_at,omitempty"` // last successful poll
-	LastError string `json:"last_error,omitempty"`
-	Failures  int    `json:"failures"` // consecutive failed polls
+	Seq               uint64 `json:"seq"`
+	UpdatedAt         string `json:"updated_at,omitempty"` // RFC 3339, last time a bundle was installed
+	CheckedAt         string `json:"checked_at,omitempty"` // last successful poll
+	LastError         string `json:"last_error,omitempty"`
+	Failures          int    `json:"failures"` // consecutive failed polls
+	SignedPointerSeen bool   `json:"signed_pointer_seen,omitempty"`
 }
 
 // Installed is a verified, persisted bundle.
