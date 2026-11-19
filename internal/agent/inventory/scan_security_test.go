@@ -13,6 +13,7 @@ import (
 func TestSafeScanRecoversPanic(t *testing.T) {
 	out, err := safeScan("host", time.Minute, context.Background(), func(context.Context) ([]byte, error) {
 		var m map[string]int
+		//lint:ignore SA5000 intentional nil map write to test panic recovery
 		m["x"] = 1 // nil map write panics
 		return []byte("unreachable"), nil
 	})

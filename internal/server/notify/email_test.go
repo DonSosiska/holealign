@@ -448,7 +448,7 @@ func TestEmailHeaderInjectionInSubject(t *testing.T) {
 	s := newFakeSMTP(t, nil)
 	e := s.channel(t, nil)
 	msg := Message{ID: "id\r\nBcc: evil@example.net", Lines: []Line{
-		{txt("Alert\r\nBcc: evil@example.net\r\nX-Evil: 1 Subject: x\x00\x07 on "), bold("web‮01")},
+		{txt("Alert\r\nBcc: evil@example.net\r\nX-Evil: 1\u2028Subject: x\x00\x07 on "), bold("web\u202e01")},
 		{txt("body")},
 	}}
 	if err := e.Send(context.Background(), "ops@example.com", msg); err != nil {
@@ -467,7 +467,7 @@ func TestEmailHeaderInjectionInSubject(t *testing.T) {
 		t.Errorf("subjects = %v", got)
 	}
 	subj, _ := new(mime.WordDecoder).DecodeHeader(m.Header.Get("Subject"))
-	if strings.ContainsAny(subj, "\r\n\x00\x07 ‮") || !strings.Contains(subj, "Alert Bcc: evil@example.net") {
+	if strings.ContainsAny(subj, "\r\n\x00\x07\u2028\u202e") || !strings.Contains(subj, "Alert Bcc: evil@example.net") {
 		t.Errorf("subject = %q", subj)
 	}
 	if strings.ContainsAny(m.Header.Get("Message-ID"), "\r\n ") || len(m.Header["Message-Id"]) != 1 {

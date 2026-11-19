@@ -101,7 +101,7 @@ func isNotice(k model.EventKind) bool {
 
 // zwsp is inserted after every "@" so that "@everyone", "@room", "@channel" and "@username" in
 // untrusted text cannot ping anybody. It is idempotent.
-const zwsp = "​"
+const zwsp = "\u200b"
 
 func neutralAt(s string) string {
 	if !strings.Contains(s, "@") {
