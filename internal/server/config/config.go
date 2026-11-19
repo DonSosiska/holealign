@@ -157,6 +157,26 @@ type Limits struct {
 type Feeds struct {
 	Interval time.Duration `yaml:"interval"` // refresh period, default 6h
 	Update   bool          `yaml:"update"`   // false disables all network updates (tests, air-gapped)
+	// GrypeURL overrides the Grype DB distribution URL (https://..., optional custom mirror).
+	GrypeURL string `yaml:"grype_url"`
+	// GrypeCAFile is an optional PEM CA certificate path for verifying GrypeURL TLS connections.
+	GrypeCAFile string `yaml:"grype_ca_file"`
+}
+
+func (f *Feeds) validate() error {
+	if f.Interval <= 0 {
+		return errors.New("feeds.interval must be positive")
+	}
+	if f.GrypeURL != "" {
+		u, err := url.Parse(f.GrypeURL)
+		if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
+			return errors.New("feeds.grype_url must be an https:// URL with a host and no embedded credentials")
+		}
+	}
+	if f.GrypeCAFile != "" && !strings.HasPrefix(f.GrypeCAFile, "/") {
+		return errors.New("feeds.grype_ca_file must be an absolute path")
+	}
+	return nil
 }
 
 // Rules configures rule sources other than rules_dir and the database.
@@ -176,6 +196,9 @@ type RulesFeed struct {
 	TrustedKeys []string `yaml:"trusted_keys"`
 	// StaleAfter raises a feed_stale alert when no poll succeeded for this long (default 7d).
 	StaleAfter Duration `yaml:"stale_after"`
+	// RequireSignedPointer refuses unsigned latest.json pointers. Even when false, once a
+	// signed pointer has been verified on this feed, unsigned pointers are refused.
+	RequireSignedPointer bool `yaml:"require_signed_pointer"`
 }
 
 func (r *RulesFeed) validate() error {
@@ -353,8 +376,8 @@ func (c *Config) validate() error {
 	if !ValidEffort(c.LLM.Effort) {
 		return fmt.Errorf("llm.effort must be one of %s", strings.Join(LLMEfforts, ", "))
 	}
-	if c.Feeds.Interval <= 0 {
-		return errors.New("feeds.interval must be positive")
+	if err := c.Feeds.validate(); err != nil {
+		return err
 	}
 	if err := c.Rules.Feed.validate(); err != nil {
 		return err

@@ -20,9 +20,10 @@ import (
 const (
 	queueSize   = 256
 	failedTTL   = 7 * 24 * time.Hour
-	kvFailedPfx = "llm.failed."
-	kvCallsPfx  = "llm.calls."
-	kvCoolPfx   = "llm.cooldown."
+	kvFailedPfx    = "llm.failed."
+	kvCallsPfx     = "llm.calls."
+	kvHostCallsPfx = "llm.hostcalls." // + day + "." + host: persisted per-host daily LLM calls
+	kvCoolPfx      = "llm.cooldown."
 	kvHostPfx   = "llm.enqhost." // + day + "." + host: persisted per-host enqueue counter
 	kvEnqPfx    = "llm.enq."     // + day: persisted global enqueue counter
 
@@ -265,7 +266,7 @@ func (d *Drafter) handle(ctx context.Context, f model.Finding) {
 			return
 		}
 	}
-	if !d.underLimit(ctx, now, log) { // before any network I/O
+	if !d.underLimit(ctx, f.HostID, now, log) { // before any network I/O
 		return
 	}
 
@@ -305,7 +306,7 @@ func (d *Drafter) handle(ctx context.Context, f model.Finding) {
 		if attempt == 1 {
 			prompt = buildRetryPrompt(user, lastReply, lastErr)
 		}
-		if !d.takeCall(ctx, now, log) {
+		if !d.takeCall(ctx, f.HostID, now, log) {
 			return
 		}
 		var usage Usage
@@ -375,12 +376,19 @@ func parseFailed(v string) (time.Time, string, error) {
 	return t, host, err
 }
 
-func (d *Drafter) underLimit(ctx context.Context, now time.Time, log *slog.Logger) bool {
-	day := now.UTC().Format("2006-01-02")
-	n := 0
-	if v, err := d.d.Store.KVGet(ctx, kvCallsPfx+day); err == nil {
-		n, _ = strconv.Atoi(v)
+// perHostCallLimit caps how many LLM calls a single host may trigger per UTC day so one noisy or
+// compromised host cannot exhaust the fleet's daily LLM budget. Small daily limits (< 8) stay
+// unpartitioned.
+func (d *Drafter) perHostCallLimit() int {
+	if d.d.DailyLimit < 8 {
+		return d.d.DailyLimit
 	}
+	return max(2, d.d.DailyLimit/4)
+}
+
+func (d *Drafter) underLimit(ctx context.Context, hostID string, now time.Time, log *slog.Logger) bool {
+	day := now.UTC().Format("2006-01-02")
+	n := d.kvCount(ctx, kvCallsPfx+day)
 	if n >= d.d.DailyLimit {
 		d.mu.Lock()
 		first := d.limitLog != day
@@ -390,18 +398,21 @@ func (d *Drafter) underLimit(ctx context.Context, now time.Time, log *slog.Logge
 			log.Warn("llm: daily limit reached, dropping drafts", "limit", d.d.DailyLimit)
 		}
 		return false
+	}
+	if hostID != "" {
+		if hlim := d.perHostCallLimit(); d.kvCount(ctx, kvHostCallsPfx+day+"."+hostID) >= hlim {
+			log.Debug("llm: per-host daily call limit reached, dropping draft", "host", hostID, "limit", hlim)
+			return false
+		}
 	}
 	return true
 }
 
-// takeCall enforces and increments the UTC daily counter.
-func (d *Drafter) takeCall(ctx context.Context, now time.Time, log *slog.Logger) bool {
+// takeCall enforces and increments the global and per-host UTC daily counters.
+func (d *Drafter) takeCall(ctx context.Context, hostID string, now time.Time, log *slog.Logger) bool {
 	day := now.UTC().Format("2006-01-02")
 	k := kvCallsPfx + day
-	n := 0
-	if v, err := d.d.Store.KVGet(ctx, k); err == nil {
-		n, _ = strconv.Atoi(v)
-	}
+	n := d.kvCount(ctx, k)
 	if n >= d.d.DailyLimit {
 		d.mu.Lock()
 		first := d.limitLog != day
@@ -412,8 +423,23 @@ func (d *Drafter) takeCall(ctx context.Context, now time.Time, log *slog.Logger)
 		}
 		return false
 	}
+	var hk string
+	var hn int
+	if hostID != "" {
+		hk = kvHostCallsPfx + day + "." + hostID
+		hn = d.kvCount(ctx, hk)
+		if hlim := d.perHostCallLimit(); hn >= hlim {
+			log.Debug("llm: per-host daily call limit reached, dropping draft", "host", hostID, "limit", hlim)
+			return false
+		}
+	}
 	if err := d.d.Store.KVSet(ctx, k, strconv.Itoa(n+1), now); err != nil {
 		log.Warn("llm: counter update failed", "err", err)
+	}
+	if hk != "" {
+		if err := d.d.Store.KVSet(ctx, hk, strconv.Itoa(hn+1), now); err != nil {
+			log.Warn("llm: host call counter update failed", "err", err)
+		}
 	}
 	return true
 }

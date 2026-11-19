@@ -74,7 +74,19 @@ func (execRunner) Run(ctx context.Context, name string, args ...string) ([]byte,
 // the agent's own PATH is never consulted.
 func resolveBinary(name string) string {
 	if strings.Contains(name, "/") {
-		return name
+		resolved, err := filepath.EvalSymlinks(name)
+		if err != nil {
+			return ""
+		}
+		fi, err := os.Stat(resolved)
+		if err != nil || !fi.Mode().IsRegular() || fi.Mode()&0o111 == 0 {
+			return ""
+		}
+		if err := binaryTrust(resolved); err != nil {
+			warnSkippedOnce(name, err)
+			return ""
+		}
+		return resolved
 	}
 	return resolveBinaryIn(name, strings.Split(fixedPath, ":"), binaryTrust, warnSkippedOnce)
 }

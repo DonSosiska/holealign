@@ -21,9 +21,10 @@ const rulesUsage = `usage: holealign-server rules <command>
   keygen -out <file>                    create an ed25519 signing key (private key file, mode 0600)
   build  -rules <dir> -tests <dir> -seq N -out <dir>
                                         validate, test and pack a deterministic rules-<N>.tar.gz
-  sign   -key <file> <tarball>          write <tarball>.sig and latest.json next to the tarball
-  verify -pub <base64>[,<base64>] <tarball>
-                                        check the signature and the complete bundle
+  sign   -key <file> [-expires 30d] <tarball>
+                                        write <tarball>.sig and signed latest.json next to the tarball
+  verify -pub <base64>[,<base64>] [-pointer latest.json] <tarball>
+                                        check the signature and the complete bundle (and pointer if given)
   import [-sig file] <tarball>          install a bundle offline (needs rules.feed.trusted_keys)
   status                                show the installed rules feed bundle
   candidates -packages <file> [-rules <dir>] [-ecosystems <list>] [-since <window>] [-kev-max-age <age>]
@@ -179,12 +180,22 @@ func rulesSign(args []string, stdout, stderr io.Writer) error {
 	fs := newFlags("sign", stderr)
 	keyFile := fs.String("key", "", "private key file from `rules keygen`")
 	url := fs.String("url", "", "url for latest.json (default: the tarball's file name, relative to latest.json)")
+	expires := fs.String("expires", "", "optional freshness lifetime for latest.json, e.g. 30d or 72h")
 	pos, err := parseInterspersed(fs, args)
 	if err != nil {
 		return err
 	}
 	if *keyFile == "" || len(pos) != 1 {
-		return errors.New("usage: rules sign -key <private-key-file> [-url URL] <tarball>")
+		return errors.New("usage: rules sign -key <private-key-file> [-url URL] [-expires 30d] <tarball>")
+	}
+	now := time.Now().UTC()
+	var expiresAt time.Time
+	if *expires != "" {
+		d, err := config.ParseDuration(*expires)
+		if err != nil || d <= 0 {
+			return fmt.Errorf("-expires %q: must be a positive duration (e.g. 30d, 72h)", *expires)
+		}
+		expiresAt = now.Add(d)
 	}
 	tbPath := pos[0]
 	tb, err := os.ReadFile(tbPath)
@@ -211,7 +222,11 @@ func rulesSign(args []string, stdout, stderr io.Writer) error {
 	if u == "" {
 		u = filepath.Base(tbPath)
 	}
-	pb, err := rulesfeed.MarshalJSONFile(rulesfeed.MakePointer(b.Index.Seq, u, tb, sig))
+	ptr, err := rulesfeed.MakeSignedPointer(priv, b.Index.Seq, u, tb, sig, now, expiresAt)
+	if err != nil {
+		return err
+	}
+	pb, err := rulesfeed.MarshalJSONFile(ptr)
 	if err != nil {
 		return err
 	}
@@ -250,12 +265,13 @@ func rulesVerify(args []string, stdout, stderr io.Writer) error {
 	fs := newFlags("verify", stderr)
 	pub := fs.String("pub", "", "trusted public key(s), base64, comma-separated")
 	sigPath := fs.String("sig", "", "signature file (default: <tarball>.sig)")
+	ptrPath := fs.String("pointer", "", "optional latest.json pointer file to verify against the tarball")
 	pos, err := parseInterspersed(fs, args)
 	if err != nil {
 		return err
 	}
 	if *pub == "" || len(pos) != 1 {
-		return errors.New("usage: rules verify -pub <base64> [-sig file] <tarball>")
+		return errors.New("usage: rules verify -pub <base64> [-sig file] [-pointer latest.json] <tarball>")
 	}
 	keys, err := rulesfeed.ParsePublicKeys(splitKeys(*pub))
 	if err != nil {
@@ -280,8 +296,28 @@ func rulesVerify(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	sha := rulesfeed.SHA256(tb)
+	if *ptrPath != "" {
+		raw, err := os.ReadFile(*ptrPath)
+		if err != nil {
+			return err
+		}
+		var ptr rulesfeed.Pointer
+		if err := json.Unmarshal(raw, &ptr); err != nil {
+			return fmt.Errorf("%s: %w", *ptrPath, err)
+		}
+		if err := rulesfeed.VerifyPointer(ptr, keys, time.Now()); err != nil {
+			return fmt.Errorf("%s: %w", *ptrPath, err)
+		}
+		if ptr.Seq != b.Index.Seq {
+			return fmt.Errorf("%s: pointer seq %d does not match bundle seq %d", *ptrPath, ptr.Seq, b.Index.Seq)
+		}
+		if ptr.SHA256 != sha {
+			return fmt.Errorf("%s: pointer sha256 %s does not match bundle sha256 %s", *ptrPath, ptr.SHA256, sha)
+		}
+	}
 	fmt.Fprintf(stdout, "OK: bundle %d, %d rules, %d test files, signed by key %s, sha256 %s\n",
-		b.Index.Seq, len(b.Rules), len(b.Tests), sig.KeyID, rulesfeed.SHA256(tb))
+		b.Index.Seq, len(b.Rules), len(b.Tests), sig.KeyID, sha)
 	return nil
 }
 

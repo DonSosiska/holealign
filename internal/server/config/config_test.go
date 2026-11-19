@@ -280,3 +280,33 @@ func TestLLMEffortDefaultAndValues(t *testing.T) {
 		t.Error("invalid effort accepted")
 	}
 }
+
+func TestFeedsGrypeAndRulesPointerConfig(t *testing.T) {
+	dir := t.TempDir()
+	write := func(body string) string {
+		p := filepath.Join(dir, "c.yaml")
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	none := func(string) (string, bool) { return "", false }
+
+	for _, bad := range []string{
+		"feeds:\n  grype_url: http://mirror.example/databases\n",
+		"feeds:\n  grype_url: https://user:pass@mirror.example/databases\n",
+		"feeds:\n  grype_url: file:///tmp/latest.json\n",
+		"feeds:\n  grype_ca_file: relative/ca.pem\n",
+	} {
+		if _, err := load(write(bad), none); err == nil {
+			t.Errorf("accepted invalid feeds config: %q", bad)
+		}
+	}
+	cfg, err := load(write("feeds:\n  grype_url: https://mirror.example/databases\n  grype_ca_file: /etc/ssl/custom.pem\nrules:\n  feed:\n    require_signed_pointer: true\n"), none)
+	if err != nil {
+		t.Fatalf("valid config rejected: %v", err)
+	}
+	if cfg.Feeds.GrypeURL != "https://mirror.example/databases" || cfg.Feeds.GrypeCAFile != "/etc/ssl/custom.pem" || !cfg.Rules.Feed.RequireSignedPointer {
+		t.Fatalf("parsed unexpectedly: feeds=%+v feed=%+v", cfg.Feeds, cfg.Rules.Feed)
+	}
+}

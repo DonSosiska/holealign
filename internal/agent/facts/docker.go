@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -48,7 +49,8 @@ type dockerInspectResp struct {
 func newDockerClient(socket string) *http.Client {
 	dialer := &net.Dialer{Timeout: 5 * time.Second}
 	return &http.Client{
-		Timeout: 10 * time.Second,
+		Timeout:       10 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 				return dialer.DialContext(ctx, "unix", socket)
@@ -134,7 +136,7 @@ func collectDocker(ctx context.Context, env *Env) model.Facts {
 			"ports":    formatDockerPorts(c.Ports),
 		}
 		var insp dockerInspectResp
-		if err := dockerGet(ctx, client, "/containers/"+c.ID+"/json", &insp); err == nil {
+		if err := dockerGet(ctx, client, "/containers/"+url.PathEscape(c.ID)+"/json", &insp); err == nil {
 			entry["privileged"] = insp.HostConfig.Privileged
 		}
 		containers = append(containers, entry)

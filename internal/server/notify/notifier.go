@@ -430,9 +430,10 @@ func (n *Notifier) sendDest(ctx context.Context, dest string, groups []group) (r
 		return retry, oks, errors.Join(errs...)
 	}
 
-	// Burst: send the most important groups individually, then one summary of the rest.
-	sorted := slices.Clone(groups)
-	slices.SortStableFunc(sorted, compareGroups)
+	// Burst: fair-share interleave across hosts (each host's own groups ordered by importance),
+	// so one noisy or compromised host cannot crowd out other hosts' alerts from burstKeep or the
+	// burst summary. For a single host this preserves compareGroups order exactly.
+	sorted := interleaveByHost(groups)
 	for _, g := range sorted[:burstKeep] {
 		send1(g)
 	}
@@ -444,6 +445,38 @@ func (n *Notifier) sendDest(ctx context.Context, dest string, groups []group) (r
 	}
 	record(sorted[burstKeep:], send(summaryMessage(sorted[burstKeep:], link)))
 	return retry, oks, errors.Join(errs...)
+}
+
+// interleaveByHost orders groups per host by compareGroups, orders hosts by their most important
+// group, and then round-robins across hosts. A single host yields the exact compareGroups order.
+func interleaveByHost(groups []group) []group {
+	byHost := map[string][]group{}
+	var hosts []string
+	for _, g := range groups {
+		hid := g.first().Host.ID
+		if _, ok := byHost[hid]; !ok {
+			hosts = append(hosts, hid)
+		}
+		byHost[hid] = append(byHost[hid], g)
+	}
+	for _, h := range hosts {
+		slices.SortStableFunc(byHost[h], compareGroups)
+	}
+	slices.SortStableFunc(hosts, func(a, b string) int {
+		if c := compareGroups(byHost[a][0], byHost[b][0]); c != 0 {
+			return c
+		}
+		return strings.Compare(a, b)
+	})
+	out := make([]group, 0, len(groups))
+	for round := 0; len(out) < len(groups); round++ {
+		for _, h := range hosts {
+			if round < len(byHost[h]) {
+				out = append(out, byHost[h][round])
+			}
+		}
+	}
+	return out
 }
 
 // send delivers msg through ch, retrying transient failures (429, 5xx, network errors) with

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -42,6 +43,14 @@ const (
 	maxImageID          = 128
 	maxContainers       = 200
 	maxContainerNameLen = 256
+
+	// Slow-body bounds while holding decodeSem on POST /api/v1/inventory.
+	defaultInventoryReadIdleTimeout = 15 * time.Second
+	defaultInventoryMinReadRate     = 16 << 10 // 16 KiB/s
+	defaultInventoryRateGrace       = 5 * time.Second
+
+	// agentMaxFactRequests matches the agent's per-checkin file.match request cap.
+	agentMaxFactRequests = 20
 )
 
 var (
@@ -78,6 +87,11 @@ type Deps struct {
 	InventoryAttemptBurst      int
 	// InventoryConcurrentDecodes bounds inventory bodies being decoded at once, server-wide (default 4).
 	InventoryConcurrentDecodes int
+	// Slow-body bounds for POST /api/v1/inventory while a decodeSem slot is held; zero selects the
+	// default, negative disables.
+	InventoryReadIdleTimeout time.Duration // max pause between body reads (default 15 s)
+	InventoryMinReadRate     int64         // minimum bytes/sec after InventoryRateGrace (default 16 KiB/s)
+	InventoryRateGrace       time.Duration // grace window before enforcing min rate (default 5 s)
 	// ClientIP overrides how the client address is derived (e.g. from X-Forwarded-For behind a
 	// trusted reverse proxy). Default: the TCP peer address.
 	ClientIP func(*http.Request) string
@@ -136,6 +150,15 @@ func NewMux(d Deps) *http.ServeMux {
 	d.InventoryAttemptsPerMinute = orDefault(d.InventoryAttemptsPerMinute, 10)
 	d.InventoryAttemptBurst = orDefault(d.InventoryAttemptBurst, 6)
 	d.InventoryConcurrentDecodes = orDefault(d.InventoryConcurrentDecodes, 4)
+	if d.InventoryReadIdleTimeout == 0 {
+		d.InventoryReadIdleTimeout = defaultInventoryReadIdleTimeout
+	}
+	if d.InventoryMinReadRate == 0 {
+		d.InventoryMinReadRate = defaultInventoryMinReadRate
+	}
+	if d.InventoryRateGrace == 0 {
+		d.InventoryRateGrace = defaultInventoryRateGrace
+	}
 	if d.ClientIP == nil {
 		d.ClientIP = remoteIP
 	}
@@ -429,10 +452,7 @@ func (s *server) handleCheckin(w http.ResponseWriter, r *http.Request) {
 	if res.FactsChanged && res.Host.InventoryHash != "" && s.Pipeline != nil {
 		s.Pipeline.Trigger(host.ID)
 	}
-	reqs := s.Evaluator.FactRequests()
-	if reqs == nil {
-		reqs = []model.FactRequest{}
-	}
+	reqs := s.factRequestsForHost(r.Context(), host.ID)
 	writeJSON(w, http.StatusOK, model.CheckinResponse{
 		FactRequests:  reqs,
 		WantInventory: res.Host.InventoryHash == "" || res.Host.InventoryHash != req.InventoryHash,
@@ -440,7 +460,90 @@ func (s *server) handleCheckin(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-var errTooLarge = errors.New("decompressed body too large")
+type hostFactRequester interface {
+	FactRequestsFor(findings []model.Finding) []model.FactRequest
+}
+
+// factRequestsForHost returns the file.match requests to send to hostID. When the evaluator
+// supports per-host matching, requests needed by this host's own open findings are placed first so
+// they fit inside the agent's 20-request cap even as the global rule set grows past 20 rules.
+func (s *server) factRequestsForHost(ctx context.Context, hostID string) []model.FactRequest {
+	all := s.Evaluator.FactRequests()
+	hfr, ok := s.Evaluator.(hostFactRequester)
+	if !ok || len(all) == 0 {
+		if all == nil {
+			return []model.FactRequest{}
+		}
+		return all
+	}
+	findings, err := s.Store.HostFindings(ctx, hostID)
+	if err != nil {
+		s.log.Warn("load host findings for fact_requests", "host", hostID, "err", err)
+		return all
+	}
+	hostReqs := hfr.FactRequestsFor(findings)
+	if len(hostReqs) > agentMaxFactRequests {
+		s.log.Warn("host needs more file.match requests than agent limit", "host", hostID, "needed", len(hostReqs), "limit", agentMaxFactRequests)
+	}
+	seen := make(map[string]bool, len(hostReqs))
+	out := make([]model.FactRequest, 0, min(len(all), max(len(hostReqs), agentMaxFactRequests)))
+	for _, fr := range hostReqs {
+		if !seen[fr.Name] {
+			seen[fr.Name] = true
+			out = append(out, fr)
+		}
+	}
+	for _, fr := range all {
+		if len(out) >= agentMaxFactRequests {
+			break
+		}
+		if !seen[fr.Name] {
+			seen[fr.Name] = true
+			out = append(out, fr)
+		}
+	}
+	return out
+}
+
+var (
+	errTooLarge = errors.New("decompressed body too large")
+	errSlowBody = errors.New("inventory upload too slow")
+)
+
+// slowBodyReader guards an inventory body read against slow-body / trickle attacks that would
+// otherwise pin a global decodeSem slot for the full HTTP ReadTimeout.
+type slowBodyReader struct {
+	r       io.Reader
+	rc      *http.ResponseController
+	now     func() time.Time
+	start   time.Time
+	idle    time.Duration
+	grace   time.Duration
+	minRate int64
+	total   int64
+}
+
+func (s *slowBodyReader) Read(p []byte) (int, error) {
+	if s.idle > 0 && s.rc != nil {
+		_ = s.rc.SetReadDeadline(time.Now().Add(s.idle))
+	}
+	n, err := s.r.Read(p)
+	s.total += int64(n)
+	if err != nil {
+		var ne net.Error
+		if errors.As(err, &ne) && ne.Timeout() {
+			return n, errSlowBody
+		}
+		return n, err
+	}
+	if s.minRate > 0 && s.grace >= 0 {
+		elapsed := s.now().Sub(s.start)
+		if elapsed >= s.grace && float64(s.total) < elapsed.Seconds()*float64(s.minRate) {
+			return n, errSlowBody
+		}
+	}
+	return n, nil
+}
 
 // capReader fails with errTooLarge once more than max bytes were read.
 type capReader struct {
@@ -509,11 +612,29 @@ func (s *server) handleInventory(w http.ResponseWriter, r *http.Request) {
 		s.invalidInventory(w, host.ID, http.StatusRequestEntityTooLarge, map[string]string{"error": "inventory too large (max 64 MiB)"})
 		return
 	}
-	body := io.Reader(http.MaxBytesReader(w, r.Body, MaxInventoryBytes)) // compressed size cap
+	rc := http.NewResponseController(w)
+	defer func() { _ = rc.SetReadDeadline(time.Time{}) }()
+	rawBody := io.Reader(http.MaxBytesReader(w, r.Body, MaxInventoryBytes)) // compressed size cap
+	if s.InventoryReadIdleTimeout > 0 || s.InventoryMinReadRate > 0 {
+		rawBody = &slowBodyReader{
+			r:       rawBody,
+			rc:      rc,
+			now:     s.Now,
+			start:   s.Now(),
+			idle:    s.InventoryReadIdleTimeout,
+			grace:   s.InventoryRateGrace,
+			minRate: s.InventoryMinReadRate,
+		}
+	}
+	body := rawBody
 	switch enc := strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Encoding"))); enc {
 	case "gzip", "x-gzip":
 		gz, err := gzip.NewReader(body)
 		if err != nil {
+			if errors.Is(err, errSlowBody) {
+				s.invalidInventory(w, host.ID, http.StatusRequestTimeout, map[string]string{"error": "inventory upload too slow"})
+				return
+			}
 			s.invalidInventory(w, host.ID, http.StatusBadRequest, map[string]string{"error": "invalid gzip body"})
 			return
 		}
@@ -529,6 +650,8 @@ func (s *server) handleInventory(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(body).Decode(&p); err != nil {
 		var mbe *http.MaxBytesError
 		switch {
+		case errors.Is(err, errSlowBody):
+			s.invalidInventory(w, host.ID, http.StatusRequestTimeout, map[string]string{"error": "inventory upload too slow"})
 		case errors.Is(err, errTooLarge), errors.As(err, &mbe):
 			s.invalidInventory(w, host.ID, http.StatusRequestEntityTooLarge, map[string]string{"error": "inventory too large (max 64 MiB decompressed)"})
 		default:

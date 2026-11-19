@@ -29,14 +29,15 @@ func TestFileMatchDenylist(t *testing.T) {
 		"/etc/x/credentials", "/etc/x/api_token.conf", "/etc/NetworkManager/system-connections/a",
 		"/etc/wireguard/wg0.conf", "/etc/openvpn/c.conf", "/etc/ppp/chap-secrets", "/etc/security/limits.conf",
 		"/etc/polkit-1/x", "/etc/ipsec.conf", "/etc/strongswan.conf", "/etc/cloud/cloud.cfg",
-		"/etc/mysql/debian.cnf", "/opt/app/conf/prod.env", "/opt/app/conf/.env",
+		"/etc/mysql/debian.cnf", "/etc/mysql/my.cnf", "/etc/environment", "/etc/fstab", "/etc/kubernetes/admin.conf",
+		"/opt/app/conf/prod.env", "/opt/app/conf/.env",
 	}
 	for _, p := range denied {
 		if !fmDenied(p) {
 			t.Errorf("%s should be denied", p)
 		}
 	}
-	for _, p := range []string{"/etc/nginx/nginx.conf", "/etc/ssh/sshd_config", "/etc/mysql/my.cnf", "/opt/app/conf/app.yml", "/etc/hosts"} {
+	for _, p := range []string{"/etc/nginx/nginx.conf", "/etc/ssh/sshd_config", "/etc/apache2/apache2.conf", "/opt/app/conf/app.yml", "/etc/hosts"} {
 		if fmDenied(p) {
 			t.Errorf("%s should be allowed", p)
 		}

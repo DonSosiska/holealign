@@ -89,6 +89,7 @@ type Server struct {
 	csrfKey []byte
 	lim     *limiter // ip|user
 	limIP   *limiter // per client IP, any username
+	devLim  *limiter // deviceHash|user: rate-limits a known-device cookie on its own failures
 	names   *nameGate
 	// reauthLim counts failed re-authentications per session; it is independent of the login limiters.
 	reauthLim *limiter
@@ -143,6 +144,7 @@ func New(d Deps) (*Server, error) {
 	}
 	s.lim = newLimiter(s.now)
 	s.limIP = newLimiterCfg(s.now, maxIPFailures, ipFailWindow, 0, limiterCap)
+	s.devLim = newLimiter(s.now)
 	s.names = newNameGate(s.now)
 	s.reauthLim = newLimiterCfg(s.now, maxReauthFailures, reauthWindow, 0, limiterCap)
 	s.trust = &trustSet{now: s.now, m: map[string]time.Time{}}

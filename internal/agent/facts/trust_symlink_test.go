@@ -117,6 +117,33 @@ func TestTreeTrustedSymlinkEntriesShareTheCap(t *testing.T) {
 	}
 }
 
+func TestTreeTrustedRejectsUntrustedGrandparent(t *testing.T) {
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := symlinkTargetTrust
+	symlinkTargetTrust = func(p string) error { return binaryTrustAbove(p, base) }
+	t.Cleanup(func() { symlinkTargetTrust = old })
+
+	// base/grandparent (0777, untrusted) -> parent (0755) -> conf (0755) -> site.conf (0644)
+	gp := filepath.Join(base, "grandparent")
+	parent := filepath.Join(gp, "parent")
+	root := filepath.Join(parent, "conf")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "site.conf"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(gp, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if err := treeTrusted([]string{root}); err == nil {
+		t.Fatal("tree under a world-writable grandparent must be rejected")
+	}
+}
+
 func itoa(i int) string {
 	if i == 0 {
 		return "0"

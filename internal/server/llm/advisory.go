@@ -26,9 +26,16 @@ type OSVSource struct {
 	Client  *http.Client
 }
 
+func noRedirectClient(timeout time.Duration) *http.Client {
+	return &http.Client{
+		Timeout:       timeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+}
+
 // NewOSVSource returns the default advisory source.
 func NewOSVSource() *OSVSource {
-	return &OSVSource{BaseURL: "https://api.osv.dev", Client: &http.Client{Timeout: 20 * time.Second}}
+	return &OSVSource{BaseURL: "https://api.osv.dev", Client: noRedirectClient(20 * time.Second)}
 }
 
 type osvVuln struct {
@@ -66,7 +73,7 @@ func (o *OSVSource) Get(ctx context.Context, vulnID string, aliases []string) (s
 	}
 	hc := o.Client
 	if hc == nil {
-		hc = &http.Client{Timeout: 20 * time.Second}
+		hc = noRedirectClient(20 * time.Second)
 	}
 	var lastErr error = errors.New("no advisory found")
 	for _, id := range append([]string{vulnID}, aliases...) {

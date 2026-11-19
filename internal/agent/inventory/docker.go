@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -11,6 +12,8 @@ import (
 	"strings"
 	"time"
 )
+
+const dockerMaxJSONBytes = 16 << 20 // 16 MiB cap on Engine API JSON listings
 
 // dockerClient is a minimal Docker Engine API client over a unix socket (plain net/http).
 type dockerClient struct {
@@ -44,7 +47,11 @@ func newDockerClient(socket string) *dockerClient {
 			return d.DialContext(ctx, "unix", socket)
 		},
 	}
-	return &dockerClient{http: &http.Client{Transport: tr, Timeout: 30 * time.Second}}
+	return &dockerClient{http: &http.Client{
+		Transport:     tr,
+		Timeout:       30 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}}
 }
 
 func (d *dockerClient) get(ctx context.Context, path string, out any) error {
@@ -58,9 +65,10 @@ func (d *dockerClient) get(ctx context.Context, path string, out any) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, dockerMaxJSONBytes))
 		return fmt.Errorf("docker GET %s: status %d", path, resp.StatusCode)
 	}
-	return json.NewDecoder(resp.Body).Decode(out)
+	return json.NewDecoder(io.LimitReader(resp.Body, dockerMaxJSONBytes)).Decode(out)
 }
 
 func (d *dockerClient) images(ctx context.Context) ([]dockerImage, error) {

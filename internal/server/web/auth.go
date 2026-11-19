@@ -421,6 +421,17 @@ func (t *trustSet) has(ik, user string) bool {
 	return ok && t.now().Sub(at) <= sessionIdle
 }
 
+func (t *trustSet) revokeUser(user string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	suffix := "|" + user
+	for k := range t.m {
+		if strings.HasSuffix(k, suffix) {
+			delete(t.m, k)
+		}
+	}
+}
+
 // deviceStore remembers "known device" cookies per user (only their SHA-256 is kept, in memory).
 type deviceStore struct {
 	mu  sync.Mutex
@@ -474,11 +485,20 @@ func (d *deviceStore) valid(user, tok string) bool {
 	return ok && exp.After(d.now())
 }
 
-// trustedAttempt reports whether a login attempt comes from an address with a valid session for
-// the user or from a browser holding one of the user's known-device cookies; those skip the delay.
-func (s *Server) deviceAttempt(r *http.Request, lu string) bool {
+func (d *deviceStore) revokeUser(user string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	delete(d.m, user)
+}
+
+// deviceAttempt reports whether the request carries a valid known-device cookie for lu, returning
+// the per-device limiter key (hash(cookie)|userKey) when valid.
+func (s *Server) deviceAttempt(r *http.Request, lu string) (string, bool) {
 	c, err := r.Cookie(s.devName)
-	return err == nil && s.devices.valid(lu, c.Value)
+	if err != nil || !s.devices.valid(lu, c.Value) {
+		return "", false
+	}
+	return sha256hex(c.Value) + "|" + userKey(lu), true
 }
 
 // warnForwardedOnce logs a single warning when a request carries X-Forwarded-For but the client
@@ -507,10 +527,13 @@ func (s *Server) trustedAttempt(r *http.Request, ik, lu string) bool {
 // password checks
 // ---------------------------------------------------------------------------
 
-// loginFailed records a failed attempt in the per-(IP,user) and per-IP limiters and, for attempts
-// that did not come from a trusted source, in the per-username delay.
-func (s *Server) loginFailed(ik, uk string, trusted, device bool) {
-	if !device {
+// loginFailed records a failed attempt in the per-(IP,user) and per-IP limiters (or the
+// per-device limiter for a known-device cookie) and, for untrusted attempts, in the per-username
+// delay.
+func (s *Server) loginFailed(ik, uk, devKey string, trusted, device bool) {
+	if device {
+		s.devLim.fail(devKey)
+	} else {
 		s.limIP.fail(ik)
 		s.lim.fail(ik + "|" + uk)
 	}
@@ -629,12 +652,18 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		s.loginForm(w, r, http.StatusTooManyRequests, "Too many failed attempts. Try again in a few minutes.", user)
 	}
 	s.warnForwardedOnce(r)
-	// A browser holding one of the user's known-device cookies bypasses the per-IP and per-(IP,user)
-	// limiters: behind a proxy without trusted_proxies, or a shared NAT, other clients' failures
-	// must never lock the real user out. It still goes through the password check and the per-name
-	// delay, and its own failures are not counted against the shared IP.
-	device := s.deviceAttempt(r, lu)
-	if !device {
+	// A browser holding one of the user's known-device cookies bypasses the shared per-IP and
+	// per-(IP,user) limiters (so other clients behind a shared NAT/proxy cannot lock the user out),
+	// but is still strictly bounded by its own per-device limiter (devLim) so a stolen device cookie
+	// never permits unlimited password guessing.
+	devKey, device := s.deviceAttempt(r, lu)
+	if device {
+		if !s.devLim.acquire(devKey) {
+			tooMany()
+			return
+		}
+		defer s.devLim.release(devKey)
+	} else {
 		if !s.limIP.acquire(ik) {
 			tooMany()
 			return
@@ -677,12 +706,14 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !ok || err != nil {
-		s.loginFailed(ik, uk, trusted, device)
+		s.loginFailed(ik, uk, devKey, trusted, device)
 		s.log.Warn("web: login failed", "user", trunc64(user), "ip", ip)
 		s.loginForm(w, r, http.StatusUnauthorized, loginFailMsg, user)
 		return
 	}
-	if !device {
+	if device {
+		s.devLim.reset(devKey)
+	} else {
 		s.lim.reset(ik + "|" + uk)
 	}
 	s.names.reset(uk)

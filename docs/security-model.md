@@ -195,7 +195,22 @@ Do these in a real deployment.
 - **Matrix, Slack, Telegram, Discord, Teams, email, the generic webhook, LLM and OSV are external services.** Matrix alerts are not end-to-end encrypted, and Slack, Telegram, Discord and Microsoft see the alert text in clear (host names, package versions, vulnerability IDs), as does every mail server on the path of an email (TLS protects each hop to the server you configured, not the message at rest); LLM prompts
   include package names and versions from your hosts.
 - **Agents run as root.** The collector is hardened and isolated, but anything that runs as root on every
-  host is a high-value target: treat the server and the release pipeline accordingly.
+  host is a high-value target: treat the server and the release pipeline accordingly. Note two caveats on
+  collector containment: (1) on Docker hosts, direct `AF_UNIX` access to `/var/run/docker.sock` is not
+  read-only — a code-execution bug in a collector parser (such as Syft scanning a malicious image) could
+  call Docker Engine APIs to spawn a host-networked privileged container outside `PrivateNetwork=yes` and
+  `ProtectSystem=strict`; (2) `CAP_SYS_PTRACE` without PID/proc isolation (needed to read `/proc/1/net`
+  and `/proc/*/fd`) permits writing to `/proc/<pid>/mem` of other processes on the host.
+- **Vulnerability DB upstream trust.** While the central rules feed is ed25519-signed (both bundles and
+  signed `latest.json` freshness pointers, with an anti-downgrade latch once a signed pointer has been seen
+  and an optional `rules.feed.require_signed_pointer` setting), the Grype vulnerability database (which
+  supplies CVE matches, KEV and EPSS) is fetched over HTTPS without independent upstream signature
+  verification (only SHA-256 against `latest.json`), and `ValidateAge` is disabled so stale databases keep
+  working offline. To reduce the blast radius of a corrupted or poisoned upstream DB, updates are downloaded
+  into a staging directory and refused before activation if the database contains zero vulnerability records
+  or drops by more than 50% compared to the active database; operators can also pin a mirrored distribution
+  via `feeds.grype_url` and `feeds.grype_ca_file`. Still, a subtly modified upstream DB could suppress
+  individual CVE matches without triggering the volume anomaly guard.
 - **Single server, SQLite.** No clustering or high availability; back up regularly.
 - **The built-in local agent (agentless mode, off by default).** With `source: collector` the server process,
   running as the static user `holealign`, can request the host's facts and inventory through the collector

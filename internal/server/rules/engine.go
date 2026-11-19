@@ -250,6 +250,34 @@ func (e *Engine) FactRequests() []model.FactRequest {
 	return append([]model.FactRequest(nil), e.snap.Load().requests...)
 }
 
+// FactRequestsFor returns the deduplicated file.match fact requests of reviewed rules that match
+// at least one of the given findings, sorted by name. Used by the check-in handler to prioritize a
+// host's own rules within the agent's per-checkin request cap.
+func (e *Engine) FactRequestsFor(findings []model.Finding) []model.FactRequest {
+	if len(findings) == 0 {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []model.FactRequest
+	for _, f := range findings {
+		if f.Verdict == model.VerdictResolved {
+			continue
+		}
+		c := e.find(f)
+		if c == nil || c.rule.Status != model.RuleReviewed {
+			continue
+		}
+		for _, fr := range c.rule.FactRequests {
+			if !seen[fr.Name] {
+				seen[fr.Name] = true
+				out = append(out, fr)
+			}
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
 func statusRank(s model.RuleStatus) int {
 	if s == model.RuleReviewed {
 		return 2
