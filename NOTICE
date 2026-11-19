@@ -1,17 +1,19 @@
 Holealign
 Required Notice: Copyright 2026 DonSosiska (https://github.com/DonSosiska/holealign)
 
-Holealign itself is licensed under the PolyForm Noncommercial License 1.0.0
-(see LICENSE). Commercial use needs a separate license from the author.
+Holealign itself is licensed under the GNU Affero General Public License,
+version 3 only (AGPL-3.0-only; see LICENSE). Copyright 2026 DonSosiska.
+Commercial licenses without the AGPL obligations are available from the author.
 
 THIRD-PARTY SOFTWARE
 
 Holealign is built from Go modules written by other people. They are NOT
-covered by the PolyForm Noncommercial License. Each module keeps its own
+covered by Holealign's AGPL-3.0-only license. Each module keeps its own
 license, and you must follow those licenses when you redistribute Holealign
 binaries, packages or container images. The licenses of the main direct
 dependencies were checked in the Go module cache at the versions in go.mod
-(Apache-2.0, MIT and BSD-style licenses):
+(Apache-2.0, MIT and BSD-style licenses). These licenses (Apache-2.0, MIT,
+BSD, ISC, MPL-2.0) are compatible with AGPL-3.0:
 
   Module                                      Version    License
   ------------------------------------------  ---------  --------------------------
