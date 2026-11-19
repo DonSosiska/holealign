@@ -82,7 +82,7 @@ func TestShippedRulesLoad(t *testing.T) { shippedEngine(t) }
 func TestCVE20246387(t *testing.T) {
 	e := shippedEngine(t)
 	cfg := func(lgt string) map[string]any {
-		return map[string]any{"sshd.config": map[string]any{"logingracetime": lgt}}
+		return map[string]any{"sshd.config": map[string]any{"logingracetime": lgt}, "services.active": []any{"ssh"}}
 	}
 	mk := func(libc string, c map[string]any) map[string]any {
 		c["os.libc"] = libc
@@ -95,13 +95,21 @@ func TestCVE20246387(t *testing.T) {
 	}
 	want(t, eval(t, e, "CVE-2024-6387", "openssh-server", "deb", mk("glibc", cfg("0"))), model.VerdictNotExploitable)
 	want(t, eval(t, e, "CVE-2024-6387", "openssh-server", "apk", mk("musl", cfg("120"))), model.VerdictNotExploitable)
-	// sshd.config missing
-	ev = eval(t, e, "CVE-2024-6387", "openssh-server", "deb", map[string]any{"os.libc": "glibc"})
+	// sshd installed on disk but service stopped/masked -> not exploitable
+	want(t, eval(t, e, "CVE-2024-6387", "openssh-server", "deb", map[string]any{
+		"os.libc": "glibc", "sshd.config": map[string]any{"logingracetime": "120"}, "services.active": []any{"cron"},
+	}), model.VerdictNotExploitable)
+	// sshd.config missing for openssh-server -> conditions_unknown
+	ev = eval(t, e, "CVE-2024-6387", "openssh-server", "deb", map[string]any{"os.libc": "glibc", "services.active": []any{"ssh"}})
 	want(t, ev, model.VerdictConditionsUnknown, "sshd.config")
 	// key missing from config -> default 120
-	want(t, eval(t, e, "CVE-2024-6387", "openssh-server", "deb", mk("glibc", map[string]any{"sshd.config": map[string]any{}})), model.VerdictExploitable, "<unset>")
-	// sibling package from the same source: rule applies, but the flaw is only in sshd
+	want(t, eval(t, e, "CVE-2024-6387", "openssh-server", "deb", mk("glibc", map[string]any{
+		"sshd.config": map[string]any{}, "services.active": []any{"sshd"},
+	})), model.VerdictExploitable, "<unset>")
+	// sibling package from the same source: rule applies, and not_affected_if short-circuits
+	// even when sshd.config and services.active are absent on client-only hosts
 	want(t, eval(t, e, "CVE-2024-6387", "openssh-client", "deb", mk("glibc", cfg("120"))), model.VerdictNotExploitable)
+	want(t, eval(t, e, "CVE-2024-6387", "openssh-client", "deb", map[string]any{"os.libc": "glibc"}), model.VerdictNotExploitable)
 	// unrelated package: no rule
 	ev = eval(t, e, "CVE-2024-6387", "libssl3", "deb", mk("glibc", cfg("120")))
 	want(t, ev, model.VerdictConditionsUnknown, "no rule")
@@ -120,14 +128,18 @@ func TestCVE202348795(t *testing.T) {
 	e := shippedEngine(t)
 	debian12 := "chacha20-poly1305@openssh.com,aes128-ctr,aes192-ctr,aes256-ctr,aes128-gcm@openssh.com,aes256-gcm@openssh.com"
 	f := func(c, m string) map[string]any {
-		return map[string]any{"sshd.config": map[string]any{"ciphers": c, "macs": m}}
+		return map[string]any{"sshd.config": map[string]any{"ciphers": c, "macs": m}, "services.active": []any{"ssh"}}
 	}
 	want(t, eval(t, e, "CVE-2023-48795", "openssh-server", "deb", f(debian12, "hmac-sha2-256")), model.VerdictExploitable, "sshd.config.ciphers=chacha20")
 	want(t, eval(t, e, "CVE-2023-48795", "openssh-server", "deb", f("aes256-ctr,aes256-gcm@openssh.com", "hmac-sha2-256-etm@openssh.com")), model.VerdictNotExploitable)
 	want(t, eval(t, e, "CVE-2023-48795", "openssh-server", "deb", f("aes128-cbc", "hmac-sha2-256-etm@openssh.com")), model.VerdictExploitable)
 	want(t, eval(t, e, "CVE-2023-48795", "openssh-server", "deb", f("aes128-cbc", "hmac-sha2-256")), model.VerdictNotExploitable)
+	// sshd stopped -> not exploitable
+	want(t, eval(t, e, "CVE-2023-48795", "openssh-server", "deb", map[string]any{
+		"sshd.config": map[string]any{"ciphers": debian12, "macs": "hmac-sha2-256"}, "services.active": []any{"cron"},
+	}), model.VerdictNotExploitable)
 	// keys absent entirely
-	want(t, eval(t, e, "CVE-2023-48795", "openssh-server", "deb", map[string]any{"sshd.config": map[string]any{}}), model.VerdictNotExploitable)
+	want(t, eval(t, e, "CVE-2023-48795", "openssh-server", "deb", map[string]any{"sshd.config": map[string]any{}, "services.active": []any{"ssh"}}), model.VerdictNotExploitable)
 }
 
 func TestCVE202344487(t *testing.T) {
@@ -552,4 +564,41 @@ func TestFactRequestsForMatchesOnlyHostFindings(t *testing.T) {
 	if len(got) != 1 || got[0].Name != FactRequestPrefix("CVE-2026-0024")+"cfg" {
 		t.Fatalf("FactRequestsFor = %+v, want only CVE-2026-0024", got)
 	}
+}
+
+func TestNotAffectedIfBeforeMissingFacts(t *testing.T) {
+	// 1. Package-only not_affected_if short-circuits even when declared host facts are missing.
+	r := validRule()
+	r.Packages = []model.PackageSelector{{Name: "foo*", Type: "deb"}}
+	r.Facts = []string{"os.libc", "sshd.config"}
+	r.NotAffectedIf = `pkg.name == "foo-client"`
+	r.ExploitableIf = `facts["os.libc"] == "glibc" && facts["sshd.config"][?"k"].orValue("") == "v"`
+	e := New([]model.Rule{r}, nil)
+	if p := e.Problems(); len(p) != 0 {
+		t.Fatal(p)
+	}
+	want(t, eval(t, e, "CVE-2000-0001", "foo-client", "deb", map[string]any{}), model.VerdictNotExploitable, "not_affected_if")
+	// For foo-server, not_affected_if is false so missing facts still yield conditions_unknown.
+	want(t, eval(t, e, "CVE-2000-0001", "foo-server", "deb", map[string]any{"os.libc": "glibc"}), model.VerdictConditionsUnknown, "sshd.config")
+
+	// 2. Fact-dependent not_affected_if works when its own fact is present (even if another fact is missing),
+	//    and falls back to conditions_unknown when its own fact is missing.
+	r2 := validRule()
+	r2.ID = "R-2"
+	r2.Vulns = []string{"CVE-2000-0002"}
+	r2.Facts = []string{"os.libc", "sshd.config"}
+	r2.NotAffectedIf = `facts["os.libc"] == "musl"`
+	r2.ExploitableIf = `facts["sshd.config"][?"k"].orValue("") == "v"`
+	e2 := New([]model.Rule{r2}, nil)
+	want(t, eval(t, e2, "CVE-2000-0002", "pkg", "deb", map[string]any{"os.libc": "musl"}), model.VerdictNotExploitable)
+	want(t, eval(t, e2, "CVE-2000-0002", "pkg", "deb", map[string]any{}), model.VerdictConditionsUnknown, "os.libc")
+
+	// 3. Draft rule with package-only not_affected_if is still clamped to conditions_unknown.
+	d := r
+	d.ID = "R-draft"
+	d.Vulns = []string{"CVE-2000-0003"}
+	d.Status = model.RuleDraft
+	d.Source = "llm:test"
+	e3 := New([]model.Rule{d}, nil)
+	want(t, eval(t, e3, "CVE-2000-0003", "foo-client", "deb", map[string]any{}), model.VerdictConditionsUnknown, DraftNotExploitableReason)
 }

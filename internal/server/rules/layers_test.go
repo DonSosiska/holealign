@@ -60,7 +60,7 @@ func TestRunTestsReportsFailures(t *testing.T) {
 		{RuleID: "CVE-2024-6387", Cases: []TestCase{
 			{Name: "wrong verdict", Want: model.VerdictNotExploitable,
 				Finding: TestFinding{Vuln: "CVE-2024-6387", Package: "openssh-server", Type: "deb"},
-				Facts:   map[string]any{"os.libc": "glibc", "sshd.config": map[string]any{}}},
+				Facts:   map[string]any{"os.libc": "glibc", "services.active": []any{"ssh"}, "sshd.config": map[string]any{}}},
 			{Name: "other rule matches", Want: model.VerdictExploitable,
 				Finding: TestFinding{Vuln: "CVE-2023-44487", Package: "nginx", Type: "deb"}},
 		}},
@@ -74,11 +74,16 @@ func TestRunTestsReportsFailures(t *testing.T) {
 
 func TestParseTestsStrict(t *testing.T) {
 	for name, doc := range map[string]string{
-		"unknown key": "- {name: a, want: exploitable, finding: {vuln: V, package: p}, bogus: 1}\n",
-		"bad verdict": "- {name: a, want: maybe, finding: {vuln: V, package: p}}\n",
-		"no name":     "- {want: exploitable, finding: {vuln: V, package: p}}\n",
-		"no finding":  "- {name: a, want: exploitable}\n",
-		"empty":       "",
+		"unknown key":          "- {name: a, want: exploitable, finding: {vuln: V, package: p}, bogus: 1}\n",
+		"bad verdict":          "- {name: a, want: maybe, finding: {vuln: V, package: p}}\n",
+		"no name":              "- {want: exploitable, finding: {vuln: V, package: p}}\n",
+		"no finding":           "- {name: a, want: exploitable}\n",
+		"empty":                "",
+		"unknown fact":         "- {name: a, want: exploitable, finding: {vuln: V, package: p}, facts: {os.nope: x}}\n",
+		"wrong fact type":      "- {name: a, want: exploitable, finding: {vuln: V, package: p}, facts: {services.active: ssh}}\n",
+		"wrong map value type": "- {name: a, want: exploitable, finding: {vuln: V, package: p}, facts: {sshd.config: {logingracetime: 120}}}\n",
+		"uppercase sshd key":   "- {name: a, want: exploitable, finding: {vuln: V, package: p}, facts: {sshd.config: {LoginGraceTime: '120'}}}\n",
+		"nginx dir not list":   "- {name: a, want: exploitable, finding: {vuln: V, package: p}, facts: {nginx.directives: {http2: 'on'}}}\n",
 	} {
 		if _, err := ParseTests([]byte(doc)); err == nil {
 			t.Errorf("%s: accepted", name)

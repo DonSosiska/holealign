@@ -21,7 +21,9 @@ state_dir: /var/lib/holealign-agent
 allow_insecure_http: true   # test network only; production requires https
 YAML
 
+ssh-keygen -A >/dev/null 2>&1
 sshd -T >/dev/null  # fail early if sshd_config is broken
+/usr/sbin/sshd
 holealign-agent -once || echo "initial agent run failed" >&2
 touch /tmp/agent-first-run-done
 exec sleep infinity

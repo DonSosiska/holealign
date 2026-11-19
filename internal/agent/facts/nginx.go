@@ -414,6 +414,99 @@ func nginxSupportsErrorLogFlag(version string) bool {
 	return n[2] >= 5
 }
 
+// isNginxIsolationErr reports whether `nginx -T` failed only because the collector runs inside
+// PrivateNetwork=yes (DNS lookup of an upstream hostname fails) or ProtectSystem=strict (opening
+// log or temp paths fails with EROFS).
+func isNginxIsolationErr(out string) bool {
+	low := strings.ToLower(out)
+	return strings.Contains(low, "host not found in upstream") ||
+		strings.Contains(low, "read-only file system")
+}
+
+// parseNginxStaticConfig reads and parses the verified nginx configuration graph directly from
+// fsys without executing nginx. Used only as a fallback after treeOK and nginxIncludesTrusted
+// succeeded and `nginx -T` failed due to collector isolation (PrivateNetwork / ProtectSystem).
+func parseNginxStaticConfig(fsys fs.FS, roots []string) (map[string][]string, bool) {
+	if fsys == nil {
+		return nil, false
+	}
+	var queue []string
+	for _, root := range roots {
+		queue = append(queue, root+"/nginx.conf")
+	}
+	prefixOf := func(file string) string {
+		for _, r := range roots {
+			if strings.HasPrefix(file, r+"/") {
+				return r
+			}
+		}
+		return path.Dir(file)
+	}
+	visited := map[string]bool{}
+	merged := map[string][]string{}
+	readCount := 0
+	for len(queue) > 0 {
+		file := queue[0]
+		queue = queue[1:]
+		if visited[file] {
+			continue
+		}
+		visited[file] = true
+		f, err := openGuarded(fsys, file, false)
+		if err != nil {
+			continue
+		}
+		if len(visited) > nginxIncMaxFiles {
+			f.Close()
+			return nil, false
+		}
+		data, err := io.ReadAll(io.LimitReader(f, nginxIncMaxBytes+1))
+		f.Close()
+		if err != nil || len(data) > nginxIncMaxBytes {
+			return nil, false
+		}
+		readCount++
+		for k, vs := range parseNginxDirectives(data) {
+			merged[k] = append(merged[k], vs...)
+		}
+		text := stripNginxComments(string(data))
+		for _, m := range reNginxIncludeDir.FindAllStringSubmatch(text, -1) {
+			if m[1] != "include" {
+				continue
+			}
+			arg := strings.Trim(m[2], `"'`)
+			if arg == "" || strings.ContainsAny(arg, "$\x00") {
+				continue
+			}
+			p := arg
+			if !strings.HasPrefix(p, "/") {
+				p = path.Join(prefixOf(file), p)
+			}
+			p = path.Clean(p)
+			matches := []string{p}
+			if hasMeta(p) {
+				ms, _ := fs.Glob(fsys, relPath(p))
+				matches = matches[:0]
+				for _, x := range ms {
+					matches = append(matches, "/"+x)
+				}
+			}
+			for _, x := range matches {
+				if !visited[x] {
+					queue = append(queue, x)
+				}
+			}
+			if len(queue)+len(visited) > 4*nginxIncMaxFiles {
+				return nil, false
+			}
+		}
+	}
+	if readCount == 0 {
+		return nil, false
+	}
+	return merged, true
+}
+
 func collectNginx(ctx context.Context, env *Env) model.Facts {
 	f := model.Facts{}
 
@@ -440,17 +533,10 @@ func collectNginx(ctx context.Context, env *Env) model.Facts {
 	}
 
 	// nginx -T parses the whole config, which may load modules and include files outside the
-	// verified roots (checked above).
-	//
-	// NOTE (verify on a real host under holealign-collector.service, ProtectSystem=strict):
-	// nginx -t/-T opens the configured error_log and every access_log for writing and creates
-	// its temp paths, so on a read-only file system it can fail with "open() ... failed (30:
-	// Read-only file system)" and print no dump. `-q -e /dev/null` (nginx >= 1.19.5) only
-	// replaces the compile-time default error log; logs named in the config are still opened.
-	// We deliberately do NOT add `-g 'pid /dev/null; error_log /dev/null;'`: `pid` is a
-	// non-repeatable directive, so it would fail with "directive is duplicate" on every config
-	// that sets its own pid file, which is almost all of them. If nginx.directives is missing on
-	// a real host, add the log/temp directories to ReadWritePaths= of the collector unit.
+	// verified roots (checked above). When nginx -T fails only because the collector has no
+	// network (PrivateNetwork=yes, upstream DNS lookup) or a read-only filesystem
+	// (ProtectSystem=strict, opening log/temp paths), fall back to static parsing of the
+	// already-verified config graph.
 	args := []string{"-T"}
 	if ver, _ := f["nginx.version"].(string); nginxSupportsErrorLogFlag(ver) {
 		args = []string{"-T", "-q", "-e", "/dev/null"}
@@ -463,6 +549,11 @@ func collectNginx(ctx context.Context, env *Env) model.Facts {
 		dirs := parseNginxDirectives(out)
 		f["nginx.directives"] = dirs
 		f["nginx.http2"] = nginxHTTP2(dirs)
+	} else if isNginxIsolationErr(string(out)) {
+		if dirs, ok := parseNginxStaticConfig(env.FS, nginxConfigRoots); ok {
+			f["nginx.directives"] = dirs
+			f["nginx.http2"] = nginxHTTP2(dirs)
+		}
 	}
 	return f
 }

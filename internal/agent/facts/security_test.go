@@ -485,3 +485,132 @@ func TestBinaryTrustRejectsWritable(t *testing.T) {
 		t.Error("group-writable binary accepted")
 	}
 }
+
+func TestNginxStaticFallbackUnderIsolation(t *testing.T) {
+	fsys := fstest.MapFS{
+		"etc/nginx/nginx.conf": {Data: []byte("http {\n  include /etc/nginx/conf.d/*.conf;\n}\n"), Mode: 0o644},
+		"etc/nginx/conf.d/app.conf": {Data: []byte(
+			"server {\n  listen 443 ssl http2;\n  proxy_pass http://internal-backend:8080;\n}\n",
+		), Mode: 0o644},
+	}
+
+	// 1. PrivateNetwork=yes DNS failure -> falls back to verified static config parsing
+	rDNS := &fakeRunner{
+		out: map[string]string{
+			"nginx -v":                 "nginx version: nginx/1.24.0\n",
+			"nginx -V":                 "nginx version: nginx/1.24.0\nconfigure arguments: --with-http_v2_module\n",
+			"nginx -T -q -e /dev/null": "nginx: [emerg] host not found in upstream \"internal-backend\" in /etc/nginx/conf.d/app.conf:3\n",
+		},
+		errs: map[string]error{"nginx -T -q -e /dev/null": fmt.Errorf("exit status 1")},
+	}
+	f := collectNginx(context.Background(), &Env{Runner: rDNS, FS: fsys, TreeTrust: func([]string) error { return nil }})
+	if f["nginx.http2"] != true {
+		t.Fatalf("DNS isolation fallback: nginx.http2 = %v, want true (facts=%v)", f["nginx.http2"], f)
+	}
+	dirs, ok := f["nginx.directives"].(map[string][]string)
+	if !ok || len(dirs["proxy_pass"]) != 1 {
+		t.Fatalf("DNS isolation fallback: nginx.directives = %#v", f["nginx.directives"])
+	}
+
+	// 2. ProtectSystem=strict EROFS failure -> also falls back to static config parsing
+	rRO := &fakeRunner{
+		out: map[string]string{
+			"nginx -v":                 "nginx version: nginx/1.24.0\n",
+			"nginx -T -q -e /dev/null": "nginx: [emerg] open() \"/var/log/nginx/error.log\" failed (30: Read-only file system)\n",
+		},
+		errs: map[string]error{"nginx -T -q -e /dev/null": fmt.Errorf("exit status 1")},
+	}
+	fRO := collectNginx(context.Background(), &Env{Runner: rRO, FS: fsys, TreeTrust: func([]string) error { return nil }})
+	if fRO["nginx.http2"] != true {
+		t.Fatalf("EROFS fallback: nginx.http2 = %v, want true", fRO["nginx.http2"])
+	}
+
+	// 3. Genuine syntax error -> fail closed (no static fallback)
+	rSyntax := &fakeRunner{
+		out: map[string]string{
+			"nginx -v":                 "nginx version: nginx/1.24.0\n",
+			"nginx -T -q -e /dev/null": "nginx: [emerg] unexpected \"}\" in /etc/nginx/nginx.conf:5\n",
+		},
+		errs: map[string]error{"nginx -T -q -e /dev/null": fmt.Errorf("exit status 1")},
+	}
+	fSyn := collectNginx(context.Background(), &Env{Runner: rSyntax, FS: fsys, TreeTrust: func([]string) error { return nil }})
+	if _, ok := fSyn["nginx.directives"]; ok {
+		t.Fatalf("syntax error must not trigger static fallback: %v", fSyn)
+	}
+}
+
+func TestSSHDExternalIncludeAndPKCS11Trust(t *testing.T) {
+	fsys := fstest.MapFS{
+		"etc/ssh/sshd_config": {Data: []byte(
+			"Include /etc/ssh/sshd_config.d/*.conf\nInclude /srv/deploy/ssh.conf\nPKCS11Provider /opt/evil/p11.so\n",
+		), Mode: 0o644},
+		"etc/ssh/sshd_config.d/10.conf": {Data: []byte("LoginGraceTime 60\n"), Mode: 0o644},
+	}
+	locs, err := sshdExternalLocations(fsys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"/opt/evil/p11.so", "/srv/deploy/ssh.conf"}
+	if !reflect.DeepEqual(locs, want) {
+		t.Fatalf("sshdExternalLocations = %v, want %v", locs, want)
+	}
+
+	var ran []string
+	r := recordingRunner{ran: &ran, out: map[string]string{"sshd -V": "OpenSSH_9.2p1 Debian-2\n"}}
+	env := &Env{
+		Runner: r,
+		FS:     fsys,
+		TreeTrust: func(roots []string) error {
+			for _, p := range roots {
+				if strings.HasPrefix(p, "/srv/deploy") {
+					return fmt.Errorf("owned by uid 1000")
+				}
+			}
+			return nil
+		},
+	}
+	f := collectSSHD(context.Background(), env)
+	if _, ok := f["sshd.config"]; ok {
+		t.Fatal("sshd -T ran despite untrusted external Include")
+	}
+	for _, c := range ran {
+		if c == "sshd -T" {
+			t.Fatal("sshd -T was invoked despite untrusted Include")
+		}
+	}
+}
+
+func TestApacheExternalIncludeAndLoadModuleTrust(t *testing.T) {
+	fsys := fstest.MapFS{
+		"etc/apache2/apache2.conf": {Data: []byte(
+			"IncludeOptional /srv/app/vhosts/*.conf\nLoadModule evil_module /tmp/evil.so\n",
+		), Mode: 0o644},
+	}
+	locs, err := apacheExternalLocations(fsys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"/srv/app/vhosts/*.conf", "/tmp/evil.so"}
+	if !reflect.DeepEqual(locs, want) {
+		t.Fatalf("apacheExternalLocations = %v, want %v", locs, want)
+	}
+
+	var ran []string
+	r := recordingRunner{ran: &ran, out: map[string]string{"apachectl -v": "Server version: Apache/2.4.59\n", "apachectl -M": " http2_module (shared)\n"}}
+	env := &Env{
+		Runner: r,
+		FS:     fsys,
+		TreeTrust: func(roots []string) error {
+			for _, p := range roots {
+				if strings.HasPrefix(p, "/tmp/") {
+					return fmt.Errorf("world-writable parent")
+				}
+			}
+			return nil
+		},
+	}
+	f := collectApache(context.Background(), env)
+	if len(ran) != 0 || len(f) != 0 {
+		t.Fatalf("apachectl ran despite untrusted LoadModule: calls=%v facts=%v", ran, f)
+	}
+}
