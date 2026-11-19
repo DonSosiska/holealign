@@ -6,7 +6,7 @@ Contents: [How is it different?](#how-is-holealign-different-from-trivy-grype-wa
 [Internet](#does-it-need-internet-access) - [Data leaving a host](#what-data-leaves-a-monitored-host) -
 [LLM](#can-it-run-without-an-llm) - [Distros](#which-distributions-are-supported) -
 [Resources](#how-much-cpu-memory-and-disk-does-it-use) - [Containers](#does-it-scan-containers) -
-[Licence](#licensing) - [Other](#other-questions)
+[License](#licensing) - [Other](#other-questions)
 
 ## How is Holealign different from Trivy, Grype, Wazuh or Vuls?
 
@@ -113,14 +113,14 @@ Kubernetes) are not listed.
 
 ## Licensing
 
-Holealign is source-available under the [PolyForm Noncommercial License 1.0.0](../LICENSE). You may use,
-modify and share it for noncommercial purposes: personal use, research, education, hobby projects, and
-use by charities, educational institutions, public research and safety organizations, environmental
-organizations and government institutions. It is not an OSI open-source licence. **Commercial use
-requires a separate licence**: contact the maintainer through
-[GitHub](https://github.com/DonSosiska/holealign) (do not post confidential details in a public issue).
-Dependencies keep their own licences ([NOTICE](../NOTICE)). This page is a summary, not legal advice;
-the LICENSE file is what applies.
+Holealign is open source under the [GNU Affero General Public License v3.0 only](../LICENSE)
+(AGPL-3.0-only). You may use, modify and run it for any purpose, including commercial use, at no cost. If you
+distribute it, or let users interact with a modified version over a network, you must offer the source of
+your modified version to those users under the same license. A commercial license without the AGPL
+obligations is available from the maintainer for those who cannot accept the AGPL terms: contact the
+maintainer through [GitHub](https://github.com/DonSosiska/holealign) (do not post confidential details in a
+public issue). Dependencies keep their own licenses ([NOTICE](../NOTICE)). This page is a summary, not legal
+advice; the LICENSE file is what applies.
 
 ## Other questions
 

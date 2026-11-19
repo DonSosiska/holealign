@@ -94,7 +94,7 @@ nfpms:
     homepage: https://github.com/DonSosiska/holealign
     maintainer: "Holealign <noreply@holealign.invalid>"
     description: "Holealign agent: sends host facts and package inventory to holealign-server."
-    license: PolyForm-Noncommercial-1.0.0
+    license: AGPL-3.0-only
     bindir: /usr/bin
     contents:
       - src: deploy/systemd/holealign-agent.service
@@ -120,7 +120,7 @@ nfpms:
     homepage: https://github.com/DonSosiska/holealign
     maintainer: "Holealign <noreply@holealign.invalid>"
     description: "Holealign server: matches vulnerabilities, evaluates exploitability, alerts to Matrix."
-    license: PolyForm-Noncommercial-1.0.0
+    license: AGPL-3.0-only
     bindir: /usr/bin
     contents:
       - src: deploy/systemd/holealign-server.service

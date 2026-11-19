@@ -11,6 +11,9 @@ First public state of the project. No tagged release yet.
 
 ### Changed
 
+- License changed from PolyForm Noncommercial 1.0.0 to AGPL-3.0-only from this version on. Releases up to
+  and including v0.1.0-rc2 remain under PolyForm Noncommercial 1.0.0. A commercial license without the AGPL
+  obligations is still available from the author. Package metadata now uses `AGPL-3.0-only`.
 - `matrix.default_rooms`, `matrix.routes[].rooms` and `alerts.ops_rooms` are deprecated aliases of
   `notify.default`, `notify.routes[].to` and `notify.ops`: still accepted, merged, with one WARN at startup.
   Routes edited in the web UI are stored with the key `to` (rows with the old key `rooms` still load).

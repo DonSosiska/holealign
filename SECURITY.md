@@ -88,5 +88,6 @@ checksums. See [docs/installation.md](docs/installation.md#verifying-releases) f
 
 ## License
 
-Holealign is source-available under the PolyForm Noncommercial License 1.0.0 (see [LICENSE](LICENSE)).
+Holealign is open source under the AGPL-3.0-only license (see [LICENSE](LICENSE)); a commercial license is
+available from the maintainer.
 Reporting a vulnerability does not change the license terms.

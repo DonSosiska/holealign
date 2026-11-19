@@ -1,7 +1,7 @@
 # Holealign
 
 [![ci](https://github.com/DonSosiska/holealign/actions/workflows/ci.yml/badge.svg)](https://github.com/DonSosiska/holealign/actions/workflows/ci.yml)
-License: [PolyForm Noncommercial 1.0.0](LICENSE) (source-available, not open source)
+License: [AGPL-3.0-only](LICENSE) (open source)
 
 English | [Українська](README.uk.md)
 
@@ -172,14 +172,12 @@ binaries into `bin/`; `make docker` builds the server image from source. See
 
 ## License
 
-Holealign is **source-available** under the [PolyForm Noncommercial License
-1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0/) (see [LICENSE](LICENSE)). You
-may use, modify and distribute it for any noncommercial purpose: personal use, research,
-education, hobby projects, and use by charities, educational institutions, public research and
-safety organizations, environmental organizations and government institutions. It is not an OSI
-open-source license. Third-party dependencies keep their own licenses: [NOTICE](NOTICE).
+Holealign is open source under the [GNU Affero General Public License v3.0 only](LICENSE)
+(AGPL-3.0-only). You may use, modify and run it for any purpose, including commercial use, at no cost.
+If you distribute Holealign, or let users interact with a modified version of it over a network, you must
+offer the complete source of your modified version to those users under the same license. Third-party
+dependencies keep their own licenses: [NOTICE](NOTICE).
 
-**Commercial use** (for example use by a for-profit company for its business) is not covered and
-requires a separate license. Commercial licensing is available on request: contact the maintainer
-through [GitHub](https://github.com/DonSosiska/holealign) (do not post confidential details in a
-public issue).
+A commercial license without the AGPL obligations is available from the maintainer for those who cannot
+accept the AGPL terms. Contact the maintainer through [GitHub](https://github.com/DonSosiska/holealign)
+(do not post confidential details in a public issue).
