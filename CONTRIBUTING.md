@@ -1,7 +1,7 @@
 # Contributing
 
-Thanks for helping. Holealign is source-available under the
-[PolyForm Noncommercial License 1.0.0](LICENSE) and is also offered under other terms (see
+Thanks for helping. Holealign is open source under the
+[AGPL-3.0-only](LICENSE) license and is also offered under other terms (see
 [License of contributions](#license-of-contributions)). Please read this page before opening an issue or a
 pull request.
 
@@ -79,14 +79,14 @@ commit; do not mix a refactor with a fix.
 
 ## License of contributions
 
-Holealign is dual-licensed: it is available to everyone under the PolyForm Noncommercial License 1.0.0, and
+Holealign is dual-licensed: it is available to everyone under the GNU Affero General Public License v3.0 only (AGPL-3.0-only), and
 the author also offers it under other terms, for example a commercial license. To make that possible,
 **code contributions from external contributors require agreeing to a contributor license agreement (CLA)
 before they are merged.** The maintainer will send it on your first pull request; there is nothing to sign
 before you open one. The agreement:
 
 1. **Inbound = outbound.** Your contribution is licensed to the project and its users under the same
-   license as the project, the PolyForm Noncommercial License 1.0.0.
+   license as the project, the AGPL-3.0-only.
 2. **Right to relicense.** The author may also offer the project, including your contribution, under other
    terms, for example a commercial license. You grant the author a perpetual, worldwide, non-exclusive,
    royalty-free right to use, modify, sublicense and relicense your contribution under any terms, including
