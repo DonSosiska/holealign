@@ -394,22 +394,7 @@ outer:
 	}
 
 	enrichEPSS(ctx, f, o.EPSSURL, out, log)
-	sort.SliceStable(out, func(i, j int) bool {
-		a, b := out[i], out[j]
-		if a.KEV != b.KEV {
-			return a.KEV
-		}
-		if a.EPSS != b.EPSS {
-			return a.EPSS > b.EPSS
-		}
-		if a.CVSS != b.CVSS {
-			return a.CVSS > b.CVSS
-		}
-		if a.Vuln != b.Vuln {
-			return a.Vuln < b.Vuln
-		}
-		return a.Package < b.Package
-	})
+	rankCandidates(out, pol.cutoff)
 	if len(out) > o.Max {
 		out = out[:o.Max]
 	}
@@ -418,6 +403,63 @@ outer:
 	}
 	log.Info("candidates selected", "count", len(out), "http_requests", f.count)
 	return out, nil
+}
+
+// rankCandidates sorts cs in place into drafting priority (the bot drafts in list order).
+//
+// Bucket 1: records published after cutoff (inside the Since window), newest first; ties by KEV,
+// CVSS, EPSS, Vuln, Package. Bucket 2: everything else (older KEV or unfixed records, and records
+// whose Published is empty or unparsable), ordered KEV, EPSS, CVSS, Vuln, Package.
+// Why: EPSS of a new CVE is near 0 for days, so ranking by EPSS first starved fresh vulnerabilities
+// behind old records that already had a score.
+func rankCandidates(cs []Candidate, cutoff time.Time) {
+	type item struct {
+		c      Candidate
+		pub    time.Time
+		recent bool
+	}
+	items := make([]item, len(cs))
+	for i, c := range cs {
+		it := item{c: c}
+		if t, err := time.Parse(time.RFC3339, c.Published); err == nil && t.After(cutoff) {
+			it.pub, it.recent = t, true
+		}
+		items[i] = it
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		a, b := items[i], items[j]
+		if a.recent != b.recent {
+			return a.recent
+		}
+		if a.recent && !a.pub.Equal(b.pub) {
+			return a.pub.After(b.pub)
+		}
+		if a.c.KEV != b.c.KEV {
+			return a.c.KEV
+		}
+		if a.recent {
+			if a.c.CVSS != b.c.CVSS {
+				return a.c.CVSS > b.c.CVSS
+			}
+			if a.c.EPSS != b.c.EPSS {
+				return a.c.EPSS > b.c.EPSS
+			}
+		} else {
+			if a.c.EPSS != b.c.EPSS {
+				return a.c.EPSS > b.c.EPSS
+			}
+			if a.c.CVSS != b.c.CVSS {
+				return a.c.CVSS > b.c.CVSS
+			}
+		}
+		if a.c.Vuln != b.c.Vuln {
+			return a.c.Vuln < b.c.Vuln
+		}
+		return a.c.Package < b.c.Package
+	})
+	for i := range items {
+		cs[i] = items[i].c
+	}
 }
 
 // policy holds the time limits of the relevance filter.

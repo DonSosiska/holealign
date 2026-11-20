@@ -368,8 +368,11 @@ if present, otherwise the record is skipped. KEV entries of any severity pass. A
 `-rules` already covers it (the CVE or an alias in `vulns`, and a selector that matches: `source`
 against the package, `name` globs against the package and `binary_packages`). So a long-fixed
 vulnerability such as Heartbleed (CVE-2014-0160) or CVE-2015-7547 no longer shows up, however often
-OSV re-modifies the record. Sorting: KEV first, then EPSS (batches of 100), then CVSS; `-max` caps the
-list. A CVE appearing for the same package in several ecosystems is listed once (the first wins).
+OSV re-modifies the record. Sorting (the bot drafts in list order, so this is the drafting priority): first the records published
+inside the `-since` window, newest `published` first (ties: KEV, then CVSS, then EPSS, then ID and package);
+then everything else (older KEV or unfixed records, and records with a missing or unparsable `published`) by
+KEV, then EPSS (batches of 100), then CVSS. Fresh records come first because the EPSS of a new CVE stays
+near 0 for days. `-max` caps the list after sorting. A CVE appearing for the same package in several ecosystems is listed once (the first wins).
 Each entry: `vuln, aliases, package, source, binary_packages, type, ecosystem, severity, cvss, epss,
 kev, published`. `package` and `source` are the source package; `binary_packages` is best effort
 (Debian records carry no binaries: it is `[package]`) and the draft does not depend on it. Further

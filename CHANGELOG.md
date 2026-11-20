@@ -11,6 +11,9 @@ First public state of the project. No tagged release yet.
 
 ### Changed
 
+- Rules bot: `rules candidates` now lists the vulnerabilities published inside the `-since` window first,
+  newest first, and only then older KEV/unfixed records (KEV, EPSS, CVSS), so the freshest vulnerabilities
+  are drafted first. Previously EPSS ranked above recency and starved new CVEs.
 - License changed from PolyForm Noncommercial 1.0.0 to AGPL-3.0-only from this version on. Releases up to
   and including v0.1.0-rc2 remain under PolyForm Noncommercial 1.0.0. A commercial license without the AGPL
   obligations is still available from the author. Package metadata now uses `AGPL-3.0-only`.
