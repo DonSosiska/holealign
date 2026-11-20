@@ -138,8 +138,9 @@ func TestCandidatesBulk(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// KEV first (1004, 1006: EPSS equal, CVSS 6.1 each, so by ID), then by CVSS: 1002 (7.8).
-	if got := ids(cs); got != "CVE-2099-1004,CVE-2099-1006,CVE-2099-1001,CVE-2099-1002" && got != "CVE-2099-1004,CVE-2099-1006,CVE-2099-1002,CVE-2099-1001" {
+	// Recent bucket first: 1002 (published inside the window). Then the rest by KEV (1004, 1006: EPSS
+	// and CVSS equal, so by ID), then 1001. Before the newest-first rule 1001 and 1002 came after the KEV pair.
+	if got := ids(cs); got != "CVE-2099-1002,CVE-2099-1004,CVE-2099-1006,CVE-2099-1001" {
 		t.Fatalf("candidates: %s", got)
 	}
 	for _, c := range cs {
