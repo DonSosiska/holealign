@@ -313,3 +313,65 @@ func TestParsePackagesAndSince(t *testing.T) {
 		t.Fatal("bad since accepted")
 	}
 }
+
+func TestRankCandidates(t *testing.T) {
+	cutoff := time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC)
+	day := func(d int) string { return cutoff.AddDate(0, 0, d).Format(time.RFC3339) }
+	order := func(cs []Candidate) string {
+		var s []string
+		for _, c := range cs {
+			s = append(s, c.Vuln)
+		}
+		return strings.Join(s, ",")
+	}
+	cs := []Candidate{
+		{Vuln: "old-kev", Package: "a", Published: day(-100), KEV: true},
+		{Vuln: "old-epss", Package: "a", Published: day(-50), EPSS: 0.9},
+		{Vuln: "empty", Package: "a", EPSS: 0.5},
+		{Vuln: "bad", Package: "a", Published: "yesterday", EPSS: 0.4},
+		{Vuln: "new-old", Package: "a", Published: day(5)},
+		{Vuln: "new-new", Package: "a", Published: day(10), EPSS: 0.9},
+		{Vuln: "edge", Package: "a", Published: day(0), KEV: true},
+	}
+	rankCandidates(cs, cutoff)
+	// recent bucket newest first; the record exactly at the cutoff is not recent; an old KEV record
+	// ranks after a non-KEV recent one; empty/unparsable go to the second bucket by KEV, EPSS.
+	if got := order(cs); got != "new-new,new-old,edge,old-kev,old-epss,empty,bad" {
+		t.Fatalf("order: %s", got)
+	}
+
+	// ties inside the window: same Published -> KEV, CVSS, EPSS, Vuln, Package
+	p := day(3)
+	cs = []Candidate{
+		{Vuln: "e", Package: "a", Published: p, EPSS: 0.2, CVSS: 7},
+		{Vuln: "d", Package: "b", Published: p, CVSS: 7},
+		{Vuln: "d", Package: "a", Published: p, CVSS: 7},
+		{Vuln: "c", Package: "a", Published: p, CVSS: 9},
+		{Vuln: "b", Package: "a", Published: p, CVSS: 5, KEV: true},
+		{Vuln: "f", Package: "a", Published: p, CVSS: 7, EPSS: 0.9},
+	}
+	rankCandidates(cs, cutoff)
+	got := []string{}
+	for _, c := range cs {
+		got = append(got, c.Vuln+"/"+c.Package)
+	}
+	if want := "b/a,c/a,f/a,e/a,d/a,d/b"; strings.Join(got, ",") != want {
+		t.Fatalf("ties: %v want %s", got, want)
+	}
+
+	// second bucket keeps KEV > EPSS > CVSS > Vuln > Package, and ranking is deterministic
+	cs = []Candidate{
+		{Vuln: "z", Package: "a", CVSS: 9},
+		{Vuln: "y", Package: "a", CVSS: 8, EPSS: 0.1},
+		{Vuln: "x", Package: "a", CVSS: 1, KEV: true, Published: day(-1)},
+	}
+	rankCandidates(cs, cutoff)
+	if g := order(cs); g != "x,y,z" {
+		t.Fatalf("old bucket: %s", g)
+	}
+	again := append([]Candidate(nil), cs...)
+	rankCandidates(again, cutoff)
+	if order(again) != order(cs) {
+		t.Fatal("not deterministic")
+	}
+}
