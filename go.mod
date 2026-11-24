@@ -5,10 +5,11 @@ go 1.27.4
 require (
 	cel.dev/cel-go v0.33.4
 	github.com/anchore/clio v0.1.2
-	github.com/anchore/grype v0.122.0
+	github.com/anchore/grype v0.122.1
 	github.com/anchore/syft v1.57.2
 	github.com/anthropics/anthropic-sdk-go/v2 v2.11.0
 	github.com/glebarez/go-sqlite v1.23.0
+	github.com/wagoodman/go-progress v0.0.0-20260303201901-10176f79b2c0
 	golang.org/x/crypto v0.59.0
 	golang.org/x/sys v0.50.0
 	golang.org/x/text v0.44.0
@@ -297,7 +298,6 @@ require (
 	github.com/vbauerster/mpb/v8 v8.16.2 // indirect
 	github.com/vifraa/gopom v1.0.0 // indirect
 	github.com/wagoodman/go-partybus v0.0.0-20230516145632-8ccac152c651 // indirect
-	github.com/wagoodman/go-progress v0.0.0-20260303201901-10176f79b2c0 // indirect
 	github.com/xanzy/ssh-agent v0.3.3 // indirect
 	github.com/xi2/xz v0.0.0-20171230120015-48954b6210f8 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
